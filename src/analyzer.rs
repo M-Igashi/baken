@@ -5,16 +5,25 @@ use std::process::Command;
 
 use crate::scanner;
 
-/// True Peak ceiling for lossless files and high-bitrate (≥256kbps) lossy files
-/// Based on AES TD1008: high-rate codecs work satisfactorily with -0.5 dBTP
-const TARGET_TRUE_PEAK_HIGH_QUALITY: f64 = -0.5;
+/// Default delivery True Peak ceiling for all formats (dBTP).
+///
+/// AES TD1008 §7B (Sources of Peak Overshoot — Codecs) states that high-rate
+/// (≥256 kbps) coders "may work satisfactorily with as little as -0.5 dBTP for
+/// the limiting threshold." The bitrate-dependent slack (-1.0 dBTP for lower
+/// rates) in TD1008 applies to the *limiter threshold prior to the codec*, not
+/// to delivery / post-encode files. headroom operates exclusively on already-
+/// encoded end-product files, so the same -0.5 dBTP target is used uniformly.
+pub const DEFAULT_TARGET_TRUE_PEAK: f64 = -0.5;
 
-/// True Peak ceiling for low-bitrate (<256kbps) lossy files
-/// Based on AES TD1008: lower bit rate codecs tend to overshoot peaks more
-const TARGET_TRUE_PEAK_LOW_BITRATE: f64 = -1.0;
+/// Legacy bitrate-split ceilings (opt-in via `--tp-split-bitrate`).
+/// Mirrors the pre-v1.10 behaviour: -0.5 dBTP for ≥256 kbps lossy and lossless,
+/// -1.0 dBTP for <256 kbps lossy. Retained for users who prefer to mirror
+/// TD1008's pre-encode interpretation.
+pub const SPLIT_TARGET_TRUE_PEAK_HIGH: f64 = -0.5;
+pub const SPLIT_TARGET_TRUE_PEAK_LOW: f64 = -1.0;
 
-/// Bitrate threshold in kbps (AES TD1008 uses 256kbps as reference)
-const HIGH_BITRATE_THRESHOLD: u32 = 256;
+/// Bitrate threshold in kbps (AES TD1008 uses 256 kbps as reference high-rate).
+pub const HIGH_BITRATE_THRESHOLD: u32 = 256;
 
 /// Gain step size in dB (fixed by MP3/AAC format specification)
 pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
@@ -128,15 +137,49 @@ fn get_bitrate(path: &Path) -> Option<u32> {
         .map(|bps| bps / 1000) // Convert to kbps
 }
 
-fn get_target_true_peak(is_lossy: bool, bitrate_kbps: Option<u32>) -> f64 {
-    if !is_lossy {
-        return TARGET_TRUE_PEAK_HIGH_QUALITY;
+/// How the delivery True Peak ceiling is selected per file.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TpTargetMode {
+    /// Uniform target for every file (default, post-encode delivery interpretation).
+    Uniform(f64),
+    /// Bitrate-split target mirroring AES TD1008 pre-encode recommendations.
+    /// `(high_rate_target, low_rate_target)`.
+    SplitBitrate(f64, f64),
+}
+
+impl TpTargetMode {
+    pub fn default_uniform() -> Self {
+        TpTargetMode::Uniform(DEFAULT_TARGET_TRUE_PEAK)
     }
 
-    match bitrate_kbps {
-        Some(kbps) if kbps >= HIGH_BITRATE_THRESHOLD => TARGET_TRUE_PEAK_HIGH_QUALITY,
-        _ => TARGET_TRUE_PEAK_LOW_BITRATE,
+    fn target_for(&self, is_lossy: bool, bitrate_kbps: Option<u32>) -> f64 {
+        match *self {
+            TpTargetMode::Uniform(t) => t,
+            TpTargetMode::SplitBitrate(high, low) => {
+                if !is_lossy {
+                    return high;
+                }
+                match bitrate_kbps {
+                    Some(kbps) if kbps >= HIGH_BITRATE_THRESHOLD => high,
+                    _ => low,
+                }
+            }
+        }
     }
+}
+
+impl Default for TpTargetMode {
+    fn default() -> Self {
+        TpTargetMode::default_uniform()
+    }
+}
+
+fn get_target_true_peak(
+    mode: TpTargetMode,
+    is_lossy: bool,
+    bitrate_kbps: Option<u32>,
+) -> f64 {
+    mode.target_for(is_lossy, bitrate_kbps)
 }
 
 /// Extract the first balanced `{...}` JSON object from a string slice.
@@ -202,7 +245,7 @@ fn extract_loudnorm_json(stderr: &str, path: &Path) -> Result<LoudnormOutput> {
     ))
 }
 
-pub fn analyze_file(path: &Path) -> Result<AudioAnalysis> {
+pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<AudioAnalysis> {
     let output = Command::new("ffmpeg")
         .args([
             "-nostdin",
@@ -242,7 +285,7 @@ pub fn analyze_file(path: &Path) -> Result<AudioAnalysis> {
     };
 
     let is_lossy = is_mp3 || is_aac;
-    let target_tp = get_target_true_peak(is_lossy, bitrate_kbps);
+    let target_tp = get_target_true_peak(tp_mode, is_lossy, bitrate_kbps);
     let headroom = target_tp - input_tp;
 
     let (gain_method, effective_gain, lossless_gain_steps) = if headroom < MIN_EFFECTIVE_GAIN {

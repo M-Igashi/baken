@@ -6,7 +6,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::analyzer::{self, AudioAnalysis, GainMethod};
+use crate::analyzer::{self, AudioAnalysis, GainMethod, TpTargetMode};
 use crate::args::Cli;
 use crate::processor;
 use crate::report::{self, AnalysisSummary};
@@ -24,14 +24,37 @@ pub fn run() -> Result<()> {
 
     analyzer::check_ffmpeg()?;
 
+    let tp_mode = cli.tp_mode();
+    print_tp_target_banner(tp_mode);
+
     if cli.is_non_interactive() {
-        run_scriptable(&cli)
+        run_scriptable(&cli, tp_mode)
     } else {
-        run_interactive()
+        run_interactive(tp_mode)
     }
 }
 
-fn run_interactive() -> Result<()> {
+fn print_tp_target_banner(tp_mode: TpTargetMode) {
+    match tp_mode {
+        TpTargetMode::Uniform(t) => {
+            println!(
+                "{} TP target: {} dBTP (uniform delivery ceiling, AES TD1008 §7B)",
+                style("▸").cyan(),
+                style(format!("{:+.1}", t)).bold(),
+            );
+        }
+        TpTargetMode::SplitBitrate(high, low) => {
+            println!(
+                "{} TP target: {} dBTP for ≥256 kbps, {} dBTP for <256 kbps (legacy split)",
+                style("▸").cyan(),
+                style(format!("{:+.1}", high)).bold(),
+                style(format!("{:+.1}", low)).bold(),
+            );
+        }
+    }
+}
+
+fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     let target_dir = std::env::current_dir().context("Failed to get current directory")?;
 
     println!(
@@ -57,7 +80,7 @@ fn run_interactive() -> Result<()> {
         style(files.len()).cyan()
     );
 
-    let all_analyses = analyze_files(&files)?;
+    let all_analyses = analyze_files(&files, tp_mode)?;
 
     let summary = AnalysisSummary::from_analyses(&all_analyses);
 
@@ -70,7 +93,7 @@ fn run_interactive() -> Result<()> {
         return Ok(());
     }
 
-    report::print_analysis_report(&all_analyses);
+    report::print_analysis_report(&all_analyses, tp_mode);
 
     let processable_analyses: Vec<_> = all_analyses
         .iter()
@@ -128,7 +151,7 @@ fn run_interactive() -> Result<()> {
     Ok(())
 }
 
-fn run_scriptable(cli: &Cli) -> Result<()> {
+fn run_scriptable(cli: &Cli, tp_mode: TpTargetMode) -> Result<()> {
     let (files, base_dir) = if cli.paths.is_empty() {
         let cwd = std::env::current_dir().context("Failed to get current directory")?;
         (scanner::scan_audio_files(&cwd), cwd)
@@ -155,7 +178,7 @@ fn run_scriptable(cli: &Cli) -> Result<()> {
         style(files.len()).cyan()
     );
 
-    let all_analyses = analyze_files(&files)?;
+    let all_analyses = analyze_files(&files, tp_mode)?;
 
     let summary = AnalysisSummary::from_analyses(&all_analyses);
 
@@ -167,7 +190,7 @@ fn run_scriptable(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    report::print_analysis_report(&all_analyses);
+    report::print_analysis_report(&all_analyses, tp_mode);
 
     let processable_analyses: Vec<_> = all_analyses.iter().filter(|a| a.has_headroom()).collect();
 
@@ -366,7 +389,7 @@ fn print_banner() {
     println!();
 }
 
-fn analyze_files(files: &[PathBuf]) -> Result<Vec<AudioAnalysis>> {
+fn analyze_files(files: &[PathBuf], tp_mode: TpTargetMode) -> Result<Vec<AudioAnalysis>> {
     let pb = ProgressBar::new(files.len() as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -379,7 +402,8 @@ fn analyze_files(files: &[PathBuf]) -> Result<Vec<AudioAnalysis>> {
     let results: Vec<Result<AudioAnalysis, (PathBuf, anyhow::Error)>> = files
         .par_iter()
         .map(|file| {
-            let result = analyzer::analyze_file(file).map_err(|e| (file.clone(), e));
+            let result = analyzer::analyze_file_with_target(file, tp_mode)
+                .map_err(|e| (file.clone(), e));
             pb.inc(1);
             result
         })

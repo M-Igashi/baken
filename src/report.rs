@@ -3,7 +3,7 @@ use chrono::Local;
 use console::Style;
 use std::path::Path;
 
-use crate::analyzer::{AudioAnalysis, GainMethod};
+use crate::analyzer::{AudioAnalysis, GainMethod, TpTargetMode, GAIN_STEP};
 
 pub fn generate_csv(
     analyses: &[&AudioAnalysis],
@@ -78,7 +78,7 @@ pub fn generate_csv(
     Ok(output_path)
 }
 
-pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
+pub fn print_analysis_report(analyses: &[AudioAnalysis], tp_mode: TpTargetMode) {
     let header_style = Style::new().bold().cyan();
     let lossless_style = Style::new().green();
     let mp3_lossless_style = Style::new().yellow();
@@ -96,10 +96,12 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
 
     println!();
 
+    let mp3_label = native_lossless_label("MP3", tp_mode);
+    let aac_label = native_lossless_label("AAC/M4A", tp_mode);
     let sections: &[(GainMethod, &str, &Style)] = &[
         (GainMethod::FfmpegLossless, "lossless files (ffmpeg, precise gain)", &lossless_style),
-        (GainMethod::Mp3Lossless, "MP3 files (native lossless, 1.5dB steps, target: -2.0 dBTP)", &mp3_lossless_style),
-        (GainMethod::AacLossless, "AAC/M4A files (native lossless, 1.5dB steps)", &mp3_lossless_style),
+        (GainMethod::Mp3Lossless, mp3_label.as_str(), &mp3_lossless_style),
+        (GainMethod::AacLossless, aac_label.as_str(), &mp3_lossless_style),
         (GainMethod::Mp3Reencode, "MP3 files (re-encode required for precise gain)", &reencode_style),
         (GainMethod::AacReencode, "AAC/M4A files (re-encode required)", &reencode_style),
     ];
@@ -125,6 +127,24 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
             "{} No files with available headroom found.",
             dim_style.apply_to("ℹ")
         );
+    }
+}
+
+fn native_lossless_label(format: &str, tp_mode: TpTargetMode) -> String {
+    match tp_mode {
+        TpTargetMode::Uniform(t) => format!(
+            "{} files (native lossless, {:.1} dB steps, requires TP ≤ {:+.1} dBTP)",
+            format,
+            GAIN_STEP,
+            t - GAIN_STEP
+        ),
+        TpTargetMode::SplitBitrate(high, low) => format!(
+            "{} files (native lossless, {:.1} dB steps; ≥256k requires TP ≤ {:+.1}, <256k requires TP ≤ {:+.1})",
+            format,
+            GAIN_STEP,
+            high - GAIN_STEP,
+            low - GAIN_STEP
+        ),
     }
 }
 

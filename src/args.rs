@@ -1,6 +1,10 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+use crate::analyzer::{
+    TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW,
+};
+
 /// Audio loudness analyzer and gain adjustment tool.
 ///
 /// Run without arguments for interactive mode in the current directory.
@@ -10,6 +14,15 @@ use std::path::PathBuf;
 pub struct Cli {
     /// Files, directories, or glob patterns to process. Defaults to current directory.
     pub paths: Vec<String>,
+
+    /// Delivery True Peak ceiling in dBTP (default: -0.5). Negative values only.
+    #[arg(long, value_name = "DB", allow_hyphen_values = true, conflicts_with = "tp_split_bitrate")]
+    pub tp_target: Option<f64>,
+
+    /// Restore the legacy bitrate-dependent ceiling (-0.5 dBTP for ≥256 kbps,
+    /// -1.0 dBTP for <256 kbps). Mirrors AES TD1008 pre-encode recommendations.
+    #[arg(long)]
+    pub tp_split_bitrate: bool,
 
     /// Apply lossless gain adjustment (default in non-interactive mode)
     #[arg(long, conflicts_with = "no_lossless")]
@@ -60,6 +73,23 @@ impl Cli {
             || self.report.is_some()
             || self.no_report
             || self.analyze_only
+            || self.tp_target.is_some()
+            || self.tp_split_bitrate
+    }
+
+    /// Resolve the True Peak target mode from CLI flags.
+    ///
+    /// Precedence: explicit `--tp-target` overrides everything; `--tp-split-bitrate`
+    /// switches to the legacy split; otherwise the uniform default
+    /// (`DEFAULT_TARGET_TRUE_PEAK`) is used.
+    pub fn tp_mode(&self) -> TpTargetMode {
+        if let Some(t) = self.tp_target {
+            TpTargetMode::Uniform(t)
+        } else if self.tp_split_bitrate {
+            TpTargetMode::SplitBitrate(SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW)
+        } else {
+            TpTargetMode::Uniform(DEFAULT_TARGET_TRUE_PEAK)
+        }
     }
 
     /// Whether lossless processing is enabled in non-interactive mode (default: true).

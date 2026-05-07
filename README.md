@@ -11,7 +11,7 @@ This tool is designed for DJs and producers who want to maximize loudness while 
 ## Key Features
 
 - **Single binary**: mp3rgain is built-in as a library — only ffmpeg required as external dependency
-- **Smart True Peak ceiling**: Based on AES TD1008, uses -0.5 dBTP for high-quality files, -1.0 dBTP for low-bitrate
+- **Uniform True Peak ceiling**: -0.5 dBTP for every file by default — the most aggressive, AES TD1008–blessed delivery target — fully overridable via `--tp-target`
 - **Multiple processing methods**: ffmpeg for lossless formats, built-in mp3rgain for lossless MP3/AAC gain, ffmpeg re-encode for precise gain
 - **Non-destructive workflow**: Original files are backed up before processing
 - **Metadata preservation**: Audio tags (ID3v2, Vorbis comment, BWF) are preserved during processing, and files are overwritten in place so Rekordbox cue points and other external metadata remain linked
@@ -33,7 +33,7 @@ headroom selects the optimal method for each file based on format and headroom:
 
 Each MP3 and AAC/M4A file is categorized into one of three tiers:
 
-1. **Native Lossless** — ≥1.5 dB headroom to bitrate-aware ceiling
+1. **Native Lossless** — ≥1.5 dB headroom to the configured ceiling
    - Truly lossless global_gain header modification in 1.5dB steps
    - Uses built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library
    - Applied automatically (no user confirmation needed)
@@ -47,13 +47,39 @@ Each MP3 and AAC/M4A file is categorized into one of three tiers:
 
 ## True Peak Ceiling
 
-Based on [AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) recommendations. The ceiling depends on bitrate, not format:
+### Default — uniform delivery target
 
-| Bitrate | Ceiling | Native lossless requires |
-|---------|---------|------------------------|
+Every file targets **-0.5 dBTP** by default. This is the maximum-aggression value that [AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) §7B describes for high-rate codec inputs ("may work satisfactorily with as little as -0.5 dBTP for the limiting threshold").
+
+| File class | Ceiling | Native lossless requires |
+|---|---|---|
 | Lossless (FLAC, AIFF, WAV) | **-0.5 dBTP** | — |
-| Lossy ≥256kbps | **-0.5 dBTP** | TP ≤ -2.0 dBTP |
-| Lossy <256kbps | **-1.0 dBTP** | TP ≤ -2.5 dBTP |
+| MP3 (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP |
+| AAC/M4A (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP |
+
+### Why a single ceiling — pre-encode vs delivery
+
+TD1008 has two related but distinct numbers:
+
+1. **Generic delivery recommendation (§4)** — "Maximum True Peak level not exceed -1 dBTP at the codec input of lossy-encoded streams." This is the *pre-encode* limiter threshold.
+2. **High-rate codec relaxation (§7B)** — "High-rate (e.g., 256 kbps) coders may work satisfactorily with as little as -0.5 dBTP" — also a *codec-input* threshold; "the limiting threshold may need to be reduced below the recommended -1.0 dBTP" for lower bit rates.
+
+Both bullets describe the *limiter that sits in front of the encoder*. headroom operates in the opposite position: on **already-encoded delivery files**. There is no further codec stage downstream to absorb additional overshoot, so the bitrate-dependent slack TD1008 grants the pre-encode limiter does not transfer to the end product. A single, codec-agnostic delivery ceiling is the correct interpretation. -0.5 dBTP is chosen because it is the most aggressive value TD1008 sanctions for any limiter in the chain; lossless and high-rate lossy files were already at -0.5, and low-rate files now stop giving up an unnecessary 0.5 dB of loudness.
+
+See [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) for a longer walk-through with citations.
+
+### Tuning the ceiling
+
+| Goal | Flag | Resulting ceiling |
+|---|---|---|
+| Default (max-aggressive delivery) | *(none)* | -0.5 dBTP for all files |
+| Match Spotify / Apple Music / YouTube delivery max | `--tp-target -1.0` | -1.0 dBTP for all files |
+| Conservative master with extra player headroom | `--tp-target -2.0` | -2.0 dBTP for all files |
+| Mirror TD1008's pre-encode interpretation | `--tp-split-bitrate` | -0.5 dBTP ≥256 kbps, -1.0 dBTP <256 kbps |
+
+`--tp-target` and `--tp-split-bitrate` are mutually exclusive. `--tp-split-bitrate` reproduces headroom's pre-1.10 default exactly.
+
+The native-lossless threshold scales with the chosen ceiling: it is always `target − 1.5 dB` (e.g. `-0.5` → TP ≤ -2.0; `-1.0` → TP ≤ -2.5; `-2.0` → TP ≤ -3.5).
 
 ## How It Works
 
@@ -91,15 +117,15 @@ $ headroom
   track02.aif    -14.1    -4.5 dBTP   -0.5 dBTP   +4.0 dB
   track03.wav    -12.5    -2.8 dBTP   -0.5 dBTP   +2.3 dB
 
-● 2 MP3 files (native lossless, 1.5dB steps, target: -2.0 dBTP)
+● 2 MP3 files (native lossless, 1.5 dB steps, requires TP ≤ -2.0 dBTP)
   Filename        LUFS    True Peak    Target        Gain
-  track04.mp3    -14.0    -5.5 dBTP   -2.0 dBTP   +3.0 dB
-  track05.mp3    -13.5    -6.0 dBTP   -2.0 dBTP   +3.0 dB
+  track04.mp3    -14.0    -5.5 dBTP   -0.5 dBTP   +4.5 dB
+  track05.mp3    -13.5    -6.0 dBTP   -0.5 dBTP   +4.5 dB
 
-● 2 AAC/M4A files (native lossless, 1.5dB steps)
+● 2 AAC/M4A files (native lossless, 1.5 dB steps, requires TP ≤ -2.0 dBTP)
   Filename        LUFS    True Peak    Target        Gain
-  track08.m4a    -13.0    -4.0 dBTP   -1.0 dBTP   +3.0 dB
-  track09.m4a    -12.5    -4.5 dBTP   -1.0 dBTP   +3.0 dB
+  track08.m4a    -13.0    -4.0 dBTP   -0.5 dBTP   +3.0 dB
+  track09.m4a    -12.5    -4.5 dBTP   -0.5 dBTP   +3.0 dB
 
 ● 2 MP3 files (re-encode required for precise gain)
   Filename        LUFS    True Peak    Target        Gain
@@ -109,6 +135,8 @@ $ headroom
 ● 1 AAC/M4A files (re-encode required)
   Filename        LUFS    True Peak    Target        Gain
   track10.m4a    -12.5    -1.8 dBTP   -0.5 dBTP   +1.3 dB
+
+▸ TP target: -0.5 dBTP (uniform delivery ceiling, AES TD1008 §7B)
 
 ✓ Report saved: ./headroom_report_20250109_123456.csv
 
@@ -188,6 +216,12 @@ headroom --lossless track1.mp3 track2.flac
 
 # Glob patterns
 headroom --lossless --no-report "./music/**/*.mp3"
+
+# Tighter ceiling for streaming-platform delivery (Spotify / Apple / YouTube max)
+headroom --lossless --tp-target -1.0 ./album/
+
+# Restore the legacy bitrate-dependent split (pre-v1.10 behaviour)
+headroom --lossless --tp-split-bitrate ./album/
 ```
 
 **Non-interactive defaults** (when any flag or path is provided):
@@ -206,10 +240,10 @@ Run `headroom --help` for the full flag reference.
 | Filename | Format | Bitrate (kbps) | LUFS | True Peak (dBTP) | Target (dBTP) | Headroom (dB) | Method | Effective Gain (dB) |
 |----------|--------|----------------|------|------------------|---------------|---------------|--------|---------------------|
 | track01.flac | Lossless | - | -13.3 | -3.2 | -0.5 | +2.7 | ffmpeg | +2.7 |
-| track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -2.0 | +3.5 | mp3rgain | +3.0 |
+| track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 |
 | track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | re-encode | +1.0 |
-| track08.m4a | AAC | 256 | -13.0 | -4.0 | -1.0 | +3.0 | native | +3.0 |
-| track10.m4a | AAC | 256 | -12.5 | -1.8 | -0.5 | +1.3 | re-encode | +1.3 |
+| track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 |
+| track10.m4a | AAC | 256 | -12.5 | -1.8 | -0.5 | +0.7 | re-encode | +0.7 |
 
 ### Backup Structure
 
@@ -244,13 +278,17 @@ Both MP3 and AAC store a "global_gain" value as an integer. Each ±1 increment c
 
 headroom uses the built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library to directly modify this field — no decoding or re-encoding involved.
 
-### Bitrate-Aware Ceiling for Native Lossless
+### Native Lossless Threshold
 
-Since native lossless gain only works in 1.5dB steps, at least 1.5dB of headroom to the target ceiling is required:
-- **≥256kbps**: Target -0.5 dBTP → requires TP ≤ -2.0 dBTP
-- **<256kbps**: Target -1.0 dBTP → requires TP ≤ -2.5 dBTP
+Since native lossless gain only works in 1.5 dB steps, at least 1.5 dB of headroom to the configured target ceiling is required. The threshold scales automatically:
 
-Example: 320kbps file at -3.5 dBTP gets 2 steps (+3.0dB) → -0.5 dBTP (optimal)
+| Target | Requires TP ≤ |
+|---|---|
+| -0.5 dBTP (default) | -2.0 dBTP |
+| -1.0 dBTP (`--tp-target -1.0`) | -2.5 dBTP |
+| -2.0 dBTP (`--tp-target -2.0`) | -3.5 dBTP |
+
+Example: 320 kbps file at -3.5 dBTP, default target → 2 steps (+3.0 dB) → -0.5 dBTP (optimal).
 
 ### Re-encode Quality
 
