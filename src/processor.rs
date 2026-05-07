@@ -39,43 +39,22 @@ pub fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("wav");
-
     let temp_path = file_path.with_extension(format!("tmp.{}", extension));
 
-    let mut args = vec![
-        "-y".to_string(),
-        "-i".to_string(),
-        path_str(file_path)?.to_string(),
-        "-af".to_string(),
-        format!("volume={}dB", gain_db),
-    ];
+    let input = path_str(file_path)?;
+    let temp = path_str(&temp_path)?;
+    let volume_arg = format!("volume={}dB", gain_db);
 
-    match extension.to_lowercase().as_str() {
-        "flac" => {
-            args.extend(["-c:a".to_string(), "flac".to_string()]);
-        }
-        "aiff" | "aif" => {
-            // ffmpeg's AIFF muxer drops ID3v2 chunks unless -write_id3v2 is set.
-            args.extend([
-                "-c:a".to_string(),
-                "pcm_s24be".to_string(),
-                "-write_id3v2".to_string(),
-                "1".to_string(),
-            ]);
-        }
-        "wav" => {
-            // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
-            args.extend([
-                "-c:a".to_string(),
-                "pcm_s24le".to_string(),
-                "-write_bext".to_string(),
-                "1".to_string(),
-            ]);
-        }
+    let mut args: Vec<&str> = vec!["-y", "-i", input, "-af", &volume_arg];
+    match extension.to_ascii_lowercase().as_str() {
+        "flac" => args.extend(["-c:a", "flac"]),
+        // ffmpeg's AIFF muxer drops ID3v2 chunks unless -write_id3v2 is set.
+        "aiff" | "aif" => args.extend(["-c:a", "pcm_s24be", "-write_id3v2", "1"]),
+        // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
+        "wav" => args.extend(["-c:a", "pcm_s24le", "-write_bext", "1"]),
         _ => {}
     }
-
-    args.push(path_str(&temp_path)?.to_string());
+    args.push(temp);
 
     let output = Command::new("ffmpeg")
         .args(&args)
@@ -206,7 +185,6 @@ pub fn apply_gain_aac_reencode(
 }
 
 pub fn process_file(
-    file_path: &Path,
     analysis: &AudioAnalysis,
     base_dir: &Path,
     backup_dir: Option<&Path>,
@@ -214,6 +192,8 @@ pub fn process_file(
     if !analysis.has_headroom() {
         return Ok(());
     }
+
+    let file_path = analysis.path.as_path();
 
     if let Some(backup) = backup_dir {
         backup_file(file_path, base_dir, backup).context("Backup failed")?;

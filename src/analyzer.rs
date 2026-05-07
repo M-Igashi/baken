@@ -87,6 +87,16 @@ impl GainMethod {
             GainMethod::None => "-",
         }
     }
+
+    /// Processing method label for reports ("ffmpeg" / "native" / "re-encode").
+    pub fn method_label(&self) -> &'static str {
+        match self {
+            GainMethod::FfmpegLossless => "ffmpeg",
+            GainMethod::Mp3Lossless | GainMethod::AacLossless => "native",
+            GainMethod::Mp3Reencode | GainMethod::AacReencode => "re-encode",
+            GainMethod::None => "none",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

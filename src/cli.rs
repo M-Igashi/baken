@@ -360,24 +360,13 @@ fn prompt_reencode_processing(summary: &AnalysisSummary) -> Result<bool> {
 
 fn print_banner() {
     let banner_style = Style::new().cyan().bold();
-    let version = env!("CARGO_PKG_VERSION");
-    let title = format!("headroom v{}", version);
-    let padding = (37 - title.len() - 2) / 2;
-    let title_line = format!(
-        "│{:padding$}{}{:padding$}│",
-        "",
-        title,
-        "",
-        padding = padding
-    );
-    // Ensure exactly 39 chars wide
-    let title_line = format!("{:<39}", title_line);
+    let title = format!("headroom v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!(
         "{}",
         banner_style.apply_to("╭─────────────────────────────────────╮")
     );
-    println!("{}", banner_style.apply_to(&title_line));
+    println!("{}", banner_style.apply_to(format!("│{:^37}│", title)));
     println!(
         "{}",
         banner_style.apply_to("│   Audio Loudness Analyzer & Gain    │")
@@ -389,14 +378,22 @@ fn print_banner() {
     println!();
 }
 
-fn analyze_files(files: &[PathBuf], tp_mode: TpTargetMode) -> Result<Vec<AudioAnalysis>> {
-    let pb = ProgressBar::new(files.len() as u64);
+fn make_progress_bar(len: usize, label: &str) -> ProgressBar {
+    let pb = ProgressBar::new(len as u64);
     pb.set_style(
         ProgressStyle::default_bar()
-            .template("{spinner:.green} Analyzing... [{bar:40.cyan/blue}] {pos}/{len}")
+            .template(&format!(
+                "{{spinner:.green}} {} [{{bar:40.cyan/blue}}] {{pos}}/{{len}}",
+                label
+            ))
             .unwrap()
             .progress_chars("█▓░"),
     );
+    pb
+}
+
+fn analyze_files(files: &[PathBuf], tp_mode: TpTargetMode) -> Result<Vec<AudioAnalysis>> {
+    let pb = make_progress_bar(files.len(), "Analyzing...");
 
     // par_iter preserves input order in the collected Vec, so indexing is unnecessary.
     let results: Vec<Result<AudioAnalysis, (PathBuf, anyhow::Error)>> = files
@@ -434,16 +431,10 @@ fn process_files(
     base_dir: &std::path::Path,
     backup_dir: Option<&std::path::Path>,
 ) -> Result<()> {
-    let pb = ProgressBar::new(analyses.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} Processing... [{bar:40.cyan/blue}] {pos}/{len}")
-            .unwrap()
-            .progress_chars("█▓░"),
-    );
+    let pb = make_progress_bar(analyses.len(), "Processing...");
 
     for analysis in analyses {
-        if let Err(e) = processor::process_file(&analysis.path, analysis, base_dir, backup_dir) {
+        if let Err(e) = processor::process_file(analysis, base_dir, backup_dir) {
             pb.println(format!(
                 "{} {}: {}",
                 style("⚠").yellow(),

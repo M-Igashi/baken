@@ -11,15 +11,7 @@ pub fn scan_audio_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            // Skip macOS AppleDouble/resource fork files
-            let filename = e.file_name().to_string_lossy();
-            if filename.starts_with("._") {
-                return false;
-            }
-            is_supported_audio_file(e.path())
-        })
+        .filter(|e| e.file_type().is_file() && is_audio_candidate(e.path()))
         .map(|e| e.path().to_path_buf())
         .collect()
 }

@@ -40,28 +40,21 @@ pub fn generate_csv(
         .context("Failed to write CSV header")?;
 
     for analysis in analyses {
-        let format = analysis.gain_method.format_label();
         let bitrate = analysis
             .bitrate_kbps
             .map(|b| b.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let method = match analysis.gain_method {
-            GainMethod::FfmpegLossless => "ffmpeg",
-            GainMethod::Mp3Lossless | GainMethod::AacLossless => "native",
-            GainMethod::Mp3Reencode | GainMethod::AacReencode => "re-encode",
-            GainMethod::None => "none",
-        };
 
         writer
             .write_record([
                 &analysis.filename,
-                format,
+                analysis.gain_method.format_label(),
                 &bitrate,
                 &format!("{:.1}", analysis.input_i),
                 &format!("{:.1}", analysis.input_tp),
                 &format!("{:.1}", analysis.target_tp),
                 &format!("{:+.1}", analysis.headroom),
-                method,
+                analysis.gain_method.method_label(),
                 &format!("{:+.1}", analysis.effective_gain),
             ])
             .context("Failed to write CSV record")?;
