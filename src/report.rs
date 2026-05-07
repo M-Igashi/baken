@@ -40,13 +40,7 @@ pub fn generate_csv(
         .context("Failed to write CSV header")?;
 
     for analysis in analyses {
-        let format = if analysis.is_mp3 {
-            "MP3"
-        } else if analysis.is_aac {
-            "AAC"
-        } else {
-            "Lossless"
-        };
+        let format = analysis.gain_method.format_label();
         let bitrate = analysis
             .bitrate_kbps
             .map(|b| b.to_string())

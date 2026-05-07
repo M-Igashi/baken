@@ -53,22 +53,18 @@ pub enum GainMethod {
 pub struct AudioAnalysis {
     pub filename: String,
     pub path: std::path::PathBuf,
-    pub input_i: f64,              // Integrated loudness (LUFS)
-    pub input_tp: f64,             // True peak (dBTP)
-    pub is_mp3: bool,              // Whether file is MP3
-    pub is_aac: bool,              // Whether file is AAC/M4A
-    pub bitrate_kbps: Option<u32>, // Bitrate for lossy files
+    pub input_i: f64,
+    pub input_tp: f64,
+    pub bitrate_kbps: Option<u32>,
 
-    // Gain calculation results
-    pub target_tp: f64,          // Target True Peak ceiling for re-encode (dBTP)
-    pub headroom: f64,           // Available gain to target_tp (dB)
-    pub gain_method: GainMethod, // How this file should be processed
-    pub effective_gain: f64,        // Actual gain to apply
-    pub lossless_gain_steps: i32,   // For MP3/AAC lossless: number of gain steps
+    pub target_tp: f64,
+    pub headroom: f64,
+    pub gain_method: GainMethod,
+    pub effective_gain: f64,
+    pub lossless_gain_steps: i32,
 }
 
 impl AudioAnalysis {
-    /// Returns true if this file requires re-encoding
     pub fn requires_reencode(&self) -> bool {
         matches!(
             self.gain_method,
@@ -76,9 +72,20 @@ impl AudioAnalysis {
         )
     }
 
-    /// Returns true if this file has any available headroom
     pub fn has_headroom(&self) -> bool {
         !matches!(self.gain_method, GainMethod::None)
+    }
+}
+
+impl GainMethod {
+    /// Container format label for the file ("MP3" / "AAC" / "Lossless").
+    pub fn format_label(&self) -> &'static str {
+        match self {
+            GainMethod::Mp3Lossless | GainMethod::Mp3Reencode => "MP3",
+            GainMethod::AacLossless | GainMethod::AacReencode => "AAC",
+            GainMethod::FfmpegLossless => "Lossless",
+            GainMethod::None => "-",
+        }
     }
 }
 
@@ -86,22 +93,6 @@ impl AudioAnalysis {
 struct LoudnormOutput {
     input_i: String,
     input_tp: String,
-    #[allow(dead_code)]
-    input_lra: String,
-    #[allow(dead_code)]
-    input_thresh: String,
-    #[allow(dead_code)]
-    output_i: String,
-    #[allow(dead_code)]
-    output_tp: String,
-    #[allow(dead_code)]
-    output_lra: String,
-    #[allow(dead_code)]
-    output_thresh: String,
-    #[allow(dead_code)]
-    normalization_type: String,
-    #[allow(dead_code)]
-    target_offset: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,10 +139,6 @@ pub enum TpTargetMode {
 }
 
 impl TpTargetMode {
-    pub fn default_uniform() -> Self {
-        TpTargetMode::Uniform(DEFAULT_TARGET_TRUE_PEAK)
-    }
-
     fn target_for(&self, is_lossy: bool, bitrate_kbps: Option<u32>) -> f64 {
         match *self {
             TpTargetMode::Uniform(t) => t,
@@ -170,16 +157,8 @@ impl TpTargetMode {
 
 impl Default for TpTargetMode {
     fn default() -> Self {
-        TpTargetMode::default_uniform()
+        TpTargetMode::Uniform(DEFAULT_TARGET_TRUE_PEAK)
     }
-}
-
-fn get_target_true_peak(
-    mode: TpTargetMode,
-    is_lossy: bool,
-    bitrate_kbps: Option<u32>,
-) -> f64 {
-    mode.target_for(is_lossy, bitrate_kbps)
 }
 
 /// Extract the first balanced `{...}` JSON object from a string slice.
@@ -277,15 +256,15 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
 
     let is_mp3 = scanner::is_mp3(path);
     let is_aac = scanner::is_aac(path);
+    let is_lossy = is_mp3 || is_aac;
 
-    let bitrate_kbps = if is_mp3 || is_aac {
+    let bitrate_kbps = if is_lossy {
         get_bitrate(path)
     } else {
         None
     };
 
-    let is_lossy = is_mp3 || is_aac;
-    let target_tp = get_target_true_peak(tp_mode, is_lossy, bitrate_kbps);
+    let target_tp = tp_mode.target_for(is_lossy, bitrate_kbps);
     let headroom = target_tp - input_tp;
 
     let (gain_method, effective_gain, lossless_gain_steps) = if headroom < MIN_EFFECTIVE_GAIN {
@@ -320,8 +299,6 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
         path: path.to_path_buf(),
         input_i,
         input_tp,
-        is_mp3,
-        is_aac,
         bitrate_kbps,
         target_tp,
         headroom,

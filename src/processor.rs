@@ -29,12 +29,6 @@ pub fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Resu
     Ok(backup_path)
 }
 
-fn replace_file_with_temp(file_path: &Path, temp_path: &Path) -> Result<()> {
-    fs::remove_file(file_path).context("Failed to remove original file")?;
-    fs::rename(temp_path, file_path).context("Failed to rename processed file")?;
-    Ok(())
-}
-
 fn path_str(path: &Path) -> Result<&str> {
     path.to_str().ok_or_else(|| anyhow!("Invalid path: {}", path.display()))
 }
@@ -92,7 +86,7 @@ pub fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         return Err(anyhow!("ffmpeg failed: {}", stderr));
     }
 
-    replace_file_with_temp(file_path, &temp_path)
+    fs::rename(&temp_path, file_path).context("Failed to rename processed file")
 }
 
 /// Apply lossless gain to MP3 files using mp3rgain library (1.5dB steps)
@@ -115,35 +109,62 @@ pub fn apply_gain_aac_native(file_path: &Path, gain_steps: i32) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ReencodeFormat {
+    Mp3,
+    Aac,
+}
+
+impl ReencodeFormat {
+    fn temp_ext(self) -> &'static str {
+        match self {
+            ReencodeFormat::Mp3 => "tmp.mp3",
+            ReencodeFormat::Aac => "tmp.m4a",
+        }
+    }
+
+    fn default_bitrate(self) -> &'static str {
+        match self {
+            ReencodeFormat::Mp3 => "320k",
+            ReencodeFormat::Aac => "256k",
+        }
+    }
+
+    fn encoders(self) -> &'static [&'static str] {
+        match self {
+            ReencodeFormat::Mp3 => &["libmp3lame"],
+            // Tries libfdk_aac first (higher quality), falls back to built-in aac.
+            ReencodeFormat::Aac => &["libfdk_aac", "aac"],
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ReencodeFormat::Mp3 => "MP3",
+            ReencodeFormat::Aac => "AAC",
+        }
+    }
+}
+
 fn apply_gain_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
-    temp_ext: &str,
-    default_bitrate: &str,
-    encoders: &[&str],
-    label: &str,
+    format: ReencodeFormat,
 ) -> Result<()> {
-    let temp_path = file_path.with_extension(temp_ext);
+    let temp_path = file_path.with_extension(format.temp_ext());
     let bitrate = bitrate_kbps
         .map(|kbps| format!("{}k", kbps))
-        .unwrap_or_else(|| default_bitrate.to_string());
+        .unwrap_or_else(|| format.default_bitrate().to_string());
+    let volume_arg = format!("volume={}dB", gain_db);
 
     let input = path_str(file_path)?;
     let temp = path_str(&temp_path)?;
+    let label = format.label();
 
-    for encoder in encoders {
+    for encoder in format.encoders() {
         let args = [
-            "-y",
-            "-i",
-            input,
-            "-af",
-            &format!("volume={}dB", gain_db),
-            "-c:a",
-            encoder,
-            "-b:a",
-            &bitrate,
-            temp,
+            "-y", "-i", input, "-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate, temp,
         ];
 
         let output = Command::new("ffmpeg")
@@ -152,7 +173,8 @@ fn apply_gain_reencode(
             .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
 
         if output.status.success() {
-            return replace_file_with_temp(file_path, &temp_path);
+            return fs::rename(&temp_path, file_path)
+                .context("Failed to rename processed file");
         }
 
         let _ = fs::remove_file(&temp_path);
@@ -164,39 +186,20 @@ fn apply_gain_reencode(
     ))
 }
 
-/// Apply gain to MP3 files by re-encoding (lossy, but precise control)
 pub fn apply_gain_mp3_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
 ) -> Result<()> {
-    apply_gain_reencode(
-        file_path,
-        gain_db,
-        bitrate_kbps,
-        "tmp.mp3",
-        "320k",
-        &["libmp3lame"],
-        "MP3",
-    )
+    apply_gain_reencode(file_path, gain_db, bitrate_kbps, ReencodeFormat::Mp3)
 }
 
-/// Apply gain to AAC/M4A files by re-encoding (always required, no lossless option).
-/// Tries libfdk_aac first (higher quality), falls back to built-in aac.
 pub fn apply_gain_aac_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
 ) -> Result<()> {
-    apply_gain_reencode(
-        file_path,
-        gain_db,
-        bitrate_kbps,
-        "tmp.m4a",
-        "256k",
-        &["libfdk_aac", "aac"],
-        "AAC",
-    )
+    apply_gain_reencode(file_path, gain_db, bitrate_kbps, ReencodeFormat::Aac)
 }
 
 pub fn process_file(
