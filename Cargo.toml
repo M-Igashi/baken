@@ -34,7 +34,7 @@ walkdir = "2.4"
 chrono = "0.4"
 
 # MP3/AAC lossless gain adjustment
-mp3rgain = { version = "2.5", default-features = false, features = ["aac"] }
+mp3rgain = { version = "2.6", default-features = false, features = ["aac"] }
 
 # Update notification
 update-informer = { version = "1.2", default-features = false, features = ["github", "ureq", "rustls-tls"] }
