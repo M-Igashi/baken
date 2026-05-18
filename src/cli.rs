@@ -7,14 +7,19 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::analyzer::{self, AudioAnalysis, GainMethod, TpTargetMode};
-use crate::args::Cli;
+use crate::args::{Cli, Command};
 use crate::processor;
+use crate::rbsort;
 use crate::report::{self, AnalysisSummary};
 use crate::scanner;
 use crate::updater;
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Command::Rbsort(args)) = &cli.command {
+        return rbsort::run(args);
+    }
 
     print_banner();
 

@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::analyzer::{
@@ -12,6 +12,9 @@ use crate::analyzer::{
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct Cli {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Files, directories, or glob patterns to process. Defaults to current directory.
     pub paths: Vec<String>,
 
@@ -106,4 +109,29 @@ impl Cli {
     pub fn report_enabled(&self) -> bool {
         !self.no_report
     }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Sort a Rekordbox playlist by Camelot Key then BPM, output as a new XML playlist.
+    Rbsort(RbsortArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct RbsortArgs {
+    /// Path to rekordbox collection.xml (File > Export Collection in xml format)
+    #[arg(long, value_name = "PATH")]
+    pub xml: PathBuf,
+
+    /// Source playlist path, '/'-separated (e.g., "Folder/MyPlaylist")
+    #[arg(long, value_name = "PATH")]
+    pub playlist: String,
+
+    /// Output XML path
+    #[arg(long, short, value_name = "PATH")]
+    pub output: PathBuf,
+
+    /// Name for the new sorted playlist (default: "<source> (Key+BPM)")
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
 }
