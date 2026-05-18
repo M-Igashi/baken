@@ -1,12 +1,14 @@
 # headroom
 
-Audio loudness analyzer and gain adjustment tool for mastering and DJ workflows.
+A toolkit for Rekordbox DJ workflows: loudness normalization for CDJ export, plus a Rekordbox XML playlist sorter for harmonic mixing.
 
 ## What is this?
 
 **headroom** simulates the behavior of Rekordbox's Auto Gain feature, but with a key difference: it identifies files with available headroom (True Peak below the target ceiling) and applies gain adjustment **without using a limiter**.
 
 This tool is designed for DJs and producers who want to maximize loudness while preserving dynamics, ensuring tracks hit the optimal True Peak ceiling without clipping.
+
+**New in v2.0.0** — a companion `rbsort` subcommand sorts a Rekordbox playlist by **Camelot Key (1A→12B) then BPM ascending**, and appends the result as a new playlist to your `collection.xml`. Useful for harmonic mixing prep when the Rekordbox UI does not expose multi-column sort. See [Rekordbox Playlist Sorter](#rekordbox-playlist-sorter-rbsort).
 
 ## Key Features
 
@@ -18,6 +20,7 @@ This tool is designed for DJs and producers who want to maximize loudness while 
 - **No limiter**: Pure gain adjustment only — dynamics are preserved
 - **Interactive CLI**: Guided step-by-step process with two-stage confirmation
 - **Scriptable CLI**: Non-interactive mode for pipelines and CI (paths, globs, and flags)
+- **Rekordbox playlist sorter** *(v2.0+)*: `headroom rbsort` produces a new playlist sorted by Camelot Key then BPM
 
 ## Processing Methods
 
@@ -102,7 +105,7 @@ $ cd ~/Music/DJ-Tracks
 $ headroom
 
 ╭─────────────────────────────────────╮
-│          headroom v1.7.3            │
+│          headroom v2.0.0            │
 │   Audio Loudness Analyzer & Gain    │
 ╰─────────────────────────────────────╯
 
@@ -232,6 +235,48 @@ headroom --lossless --tp-split-bitrate ./album/
 - `--analyze-only` runs analysis + report only, skips processing
 
 Run `headroom --help` for the full flag reference.
+
+## Rekordbox Playlist Sorter (`rbsort`)
+
+*Added in v2.0.0.*
+
+Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `headroom rbsort` reads your `collection.xml`, sorts a target playlist by **Camelot Key (1A → 12B) ascending** then **BPM ascending**, and appends the result as a new playlist node to the same XML. The original playlist is left untouched.
+
+### Workflow
+
+1. **Set key display to Camelot** in Rekordbox: *Preferences > View > Display format of key > Camelot*.
+2. **Export**: *File > Export Collection in xml format* → e.g. `~/Music/rekordbox/collection.xml`.
+3. **Run rbsort**:
+   ```bash
+   headroom rbsort \
+     --xml ~/Music/rekordbox/collection.xml \
+     --playlist "Sets/Friday" \
+     --output ~/Music/rekordbox/sorted.xml
+   ```
+4. **Import the result back into Rekordbox**: *Preferences > Advanced > rekordbox xml > Imported Library* → select `sorted.xml`. A "rekordbox xml" tree appears in the left sidebar.
+5. **Drag** the new `Sets/Friday (Key+BPM)` playlist from the imported tree into your real collection.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--xml <PATH>` | Path to `collection.xml` (required) |
+| `--playlist <PATH>` | Source playlist path, '/'-separated (e.g. `"Folder/MyPlaylist"`) |
+| `--output <PATH>` (`-o`) | Output XML path (required) |
+| `--name <NAME>` | Name for the new sorted playlist. Default: `<source> (Key+BPM)` |
+
+### Sort rules
+
+- **Primary**: Camelot Key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
+- **Secondary**: BPM ascending within each key group
+- Tracks with no Camelot key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
+
+### Notes
+
+- Requires Camelot notation in the `Tonality` field. Non-Camelot values (e.g. `Am`, `C#`) are silently sorted last.
+- Only `KeyType="0"` (TrackID-referenced) playlists are supported.
+- `rbsort` does **not** require ffmpeg — only the analyzer subcommand does.
+- The new playlist is appended inside the same `<PLAYLISTS>` ROOT NODE; the ROOT `Count` attribute is incremented automatically.
 
 ## Output
 
