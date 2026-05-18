@@ -28,7 +28,7 @@ pub fn run(args: &RbsortArgs) -> Result<()> {
         args.output.display()
     );
     println!(
-        "  {} Import via Rekordbox: Preferences > Advanced > rekordbox xml",
+        "  {} Import via Rekordbox: Preferences > Advanced > Database > rekordbox xml",
         style("ℹ").blue()
     );
     Ok(())

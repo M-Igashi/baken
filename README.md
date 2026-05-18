@@ -244,7 +244,7 @@ Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `headroom rb
 
 ### Workflow
 
-1. **Set key display to Camelot** in Rekordbox: *Preferences > View > Display format of key > Camelot*.
+1. **Set key display to Alphanumeric (1A..12B notation)** in Rekordbox: *Preferences > View > Key display format > Alphanumeric*.
 2. **Export**: *File > Export Collection in xml format* → e.g. `~/Music/rekordbox/collection.xml`.
 3. **Run rbsort**:
    ```bash
@@ -253,7 +253,7 @@ Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `headroom rb
      --playlist "Sets/Friday" \
      --output ~/Music/rekordbox/sorted.xml
    ```
-4. **Import the result back into Rekordbox**: *Preferences > Advanced > rekordbox xml > Imported Library* → select `sorted.xml`. A "rekordbox xml" tree appears in the left sidebar.
+4. **Import the result back into Rekordbox**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select `sorted.xml`. A "rekordbox xml" tree appears in the left sidebar.
 5. **Drag** the new `Sets/Friday (Key+BPM)` playlist from the imported tree into your real collection.
 
 ### Flags
@@ -273,7 +273,7 @@ Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `headroom rb
 
 ### Notes
 
-- Requires Camelot notation in the `Tonality` field. Non-Camelot values (e.g. `Am`, `C#`) are silently sorted last.
+- Requires the `Tonality` field to be exported as 1A..12B (Rekordbox's "Alphanumeric" key display format). Non-matching values (e.g. `Am`, `C#`) are silently sorted last.
 - Only `KeyType="0"` (TrackID-referenced) playlists are supported.
 - `rbsort` does **not** require ffmpeg — only the analyzer subcommand does.
 - The new playlist is appended inside the same `<PLAYLISTS>` ROOT NODE; the ROOT `Count` attribute is incremented automatically.
