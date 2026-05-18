@@ -6,7 +6,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::analyzer::{self, AudioAnalysis, GainMethod, TpTargetMode};
+use crate::analyzer::{self, AudioAnalysis, TpTargetMode};
 use crate::args::{Cli, Command};
 use crate::processor;
 use crate::rbsort;
@@ -288,17 +288,15 @@ fn print_final_summary(files_to_process: &[&AudioAnalysis]) {
         files_to_process.len()
     );
 
-    for (method, label) in [
-        (GainMethod::FfmpegLossless, "lossless files (ffmpeg)"),
-        (GainMethod::Mp3Lossless, "MP3 files (native, lossless)"),
-        (GainMethod::AacLossless, "AAC/M4A files (native, lossless)"),
-        (GainMethod::Mp3Reencode, "MP3 files (re-encoded)"),
-        (GainMethod::AacReencode, "AAC/M4A files (re-encoded)"),
+    let summary = AnalysisSummary::from_iter(files_to_process.iter().copied());
+
+    for (count, label) in [
+        (summary.lossless_count, "lossless files (ffmpeg)"),
+        (summary.mp3_lossless_count, "MP3 files (native, lossless)"),
+        (summary.aac_lossless_count, "AAC/M4A files (native, lossless)"),
+        (summary.mp3_reencode_count, "MP3 files (re-encoded)"),
+        (summary.aac_reencode_count, "AAC/M4A files (re-encoded)"),
     ] {
-        let count = files_to_process
-            .iter()
-            .filter(|a| a.gain_method == method)
-            .count();
         if count > 0 {
             println!("  {} {} {}", style("•").dim(), count, label);
         }

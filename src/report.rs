@@ -184,6 +184,10 @@ pub struct AnalysisSummary {
 
 impl AnalysisSummary {
     pub fn from_analyses(analyses: &[AudioAnalysis]) -> Self {
+        Self::from_iter(analyses.iter())
+    }
+
+    pub fn from_iter<'a, I: IntoIterator<Item = &'a AudioAnalysis>>(analyses: I) -> Self {
         let mut summary = Self {
             lossless_count: 0,
             mp3_lossless_count: 0,
@@ -212,11 +216,7 @@ impl AnalysisSummary {
         self.mp3_reencode_count + self.aac_reencode_count
     }
 
-    pub fn total(&self) -> usize {
-        self.total_lossless() + self.total_reencode()
-    }
-
     pub fn has_processable(&self) -> bool {
-        self.total() > 0
+        self.total_lossless() + self.total_reencode() > 0
     }
 }

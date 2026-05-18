@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -109,47 +110,41 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-                match name.as_str() {
-                    "COLLECTION" => in_collection = true,
-                    "PLAYLISTS" => in_playlists = true,
-                    "NODE" if in_playlists => {
-                        let n = get_attr(&e, "Name")?.unwrap_or_default();
-                        let t = get_attr(&e, "Type")?.unwrap_or_default();
-                        path_stack.push(n);
-                        if t == "1" && path_stack.len() > 1 && current.is_none() {
-                            let key_type = get_attr(&e, "KeyType")?.unwrap_or_default();
-                            current = Some(CollectedPlaylist {
-                                path: path_stack[1..].to_vec(),
-                                key_type,
-                                track_ids: Vec::new(),
-                            });
-                        }
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                b"COLLECTION" => in_collection = true,
+                b"PLAYLISTS" => in_playlists = true,
+                b"NODE" if in_playlists => {
+                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
+                    path_stack.push(name);
+                    if ty == "1" && path_stack.len() > 1 && current.is_none() {
+                        current = Some(CollectedPlaylist {
+                            path: path_stack[1..].to_vec(),
+                            key_type,
+                            track_ids: Vec::new(),
+                        });
                     }
-                    "TRACK" if in_collection => {
-                        record_collection_track(&e, &mut collection)?;
-                    }
-                    _ => {}
                 }
-            }
-            Ok(Event::Empty(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-                if in_collection && name == "TRACK" {
+                b"TRACK" if in_collection => {
                     record_collection_track(&e, &mut collection)?;
-                } else if name == "TRACK" {
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => match e.name().as_ref() {
+                b"TRACK" if in_collection => {
+                    record_collection_track(&e, &mut collection)?;
+                }
+                b"TRACK" => {
                     if let Some(cur) = current.as_mut() {
                         if let Some(k) = get_attr(&e, "Key")? {
                             cur.track_ids.push(k);
                         }
                     }
-                } else if in_playlists && name == "NODE" {
+                }
+                b"NODE" if in_playlists => {
                     // Self-closing NODE (empty folder or playlist).
-                    let n = get_attr(&e, "Name")?.unwrap_or_default();
-                    let t = get_attr(&e, "Type")?.unwrap_or_default();
-                    path_stack.push(n);
-                    if t == "1" && path_stack.len() > 1 {
-                        let key_type = get_attr(&e, "KeyType")?.unwrap_or_default();
+                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
+                    path_stack.push(name);
+                    if ty == "1" && path_stack.len() > 1 {
                         playlists.push(CollectedPlaylist {
                             path: path_stack[1..].to_vec(),
                             key_type,
@@ -158,24 +153,22 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
                     }
                     path_stack.pop();
                 }
-            }
-            Ok(Event::End(e)) => {
-                let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-                match name.as_str() {
-                    "COLLECTION" => in_collection = false,
-                    "PLAYLISTS" => in_playlists = false,
-                    "NODE" if in_playlists => {
-                        if let Some(cur) = current.as_ref() {
-                            // Matches when we leave the same NODE that started `current`.
-                            if path_stack.len() > 1 && path_stack[1..] == cur.path[..] {
-                                playlists.push(current.take().unwrap());
-                            }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                b"COLLECTION" => in_collection = false,
+                b"PLAYLISTS" => in_playlists = false,
+                b"NODE" if in_playlists => {
+                    if let Some(cur) = current.as_ref() {
+                        // Matches when we leave the same NODE that started `current`.
+                        if path_stack.len() > 1 && path_stack[1..] == cur.path[..] {
+                            playlists.push(current.take().unwrap());
                         }
-                        path_stack.pop();
                     }
-                    _ => {}
+                    path_stack.pop();
                 }
-            }
+                _ => {}
+            },
             Err(e) => bail!(
                 "XML parse error at byte {}: {}",
                 reader.buffer_position(),
@@ -189,15 +182,44 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
     Ok((collection, playlists))
 }
 
+/// Extract `(Name, Type, KeyType)` from a playlist NODE in a single attribute scan.
+fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, String)> {
+    let mut name = String::new();
+    let mut ty = String::new();
+    let mut key_type = String::new();
+    for attr in e.attributes() {
+        let attr = attr?;
+        #[allow(deprecated)]
+        let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
+        match attr.key.as_ref() {
+            b"Name" => name = val()?,
+            b"Type" => ty = val()?,
+            b"KeyType" => key_type = val()?,
+            _ => {}
+        }
+    }
+    Ok((name, ty, key_type))
+}
+
 fn record_collection_track(
     e: &BytesStart,
     collection: &mut HashMap<String, TrackMeta>,
 ) -> Result<()> {
-    if let Some(id) = get_attr(e, "TrackID")? {
-        let tonality = get_attr(e, "Tonality")?.unwrap_or_default();
-        let bpm_str = get_attr(e, "AverageBpm")?.unwrap_or_default();
-        let camelot = parse_camelot(&tonality);
-        let bpm = bpm_str.parse::<f64>().ok().filter(|v| *v > 0.0);
+    let mut id: Option<String> = None;
+    let mut camelot: Option<u8> = None;
+    let mut bpm: Option<f64> = None;
+    for attr in e.attributes() {
+        let attr = attr?;
+        #[allow(deprecated)]
+        let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
+        match attr.key.as_ref() {
+            b"TrackID" => id = Some(val()?),
+            b"Tonality" => camelot = parse_camelot(&val()?),
+            b"AverageBpm" => bpm = val()?.parse::<f64>().ok().filter(|v| *v > 0.0),
+            _ => {}
+        }
+    }
+    if let Some(id) = id {
         collection.insert(id, TrackMeta { camelot, bpm });
     }
     Ok(())
@@ -215,31 +237,32 @@ fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Compare two `Option`s placing `None` after `Some`, using `cmp` on the inner values.
+fn cmp_some_first<T, F>(a: Option<T>, b: Option<T>, cmp: F) -> Ordering
+where
+    F: FnOnce(T, T) -> Ordering,
+{
+    match (a, b) {
+        (Some(x), Some(y)) => cmp(x, y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
 fn sort_tracks(track_ids: &[String], collection: &HashMap<String, TrackMeta>) -> Vec<String> {
     let mut items: Vec<(&String, Option<u8>, Option<f64>)> = track_ids
         .iter()
         .map(|tid| {
-            let m = collection.get(tid).cloned().unwrap_or_default();
-            (tid, m.camelot, m.bpm)
+            let m = collection.get(tid);
+            (tid, m.and_then(|m| m.camelot), m.and_then(|m| m.bpm))
         })
         .collect();
 
     items.sort_by(|a, b| {
-        let cmp_key = match (a.1, b.1) {
-            (Some(x), Some(y)) => x.cmp(&y),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        };
-        if cmp_key != std::cmp::Ordering::Equal {
-            return cmp_key;
-        }
-        match (a.2, b.2) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
+        cmp_some_first(a.1, b.1, |x, y| x.cmp(&y)).then_with(|| {
+            cmp_some_first(a.2, b.2, |x, y| x.partial_cmp(&y).unwrap_or(Ordering::Equal))
+        })
     });
 
     items.into_iter().map(|(t, _, _)| t.clone()).collect()
@@ -259,13 +282,13 @@ fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>>
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Eof) => break,
-                Ok(Event::Start(e)) => {
-                    let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-                    if name == "PLAYLISTS" {
+                Ok(Event::Start(e)) => match e.name().as_ref() {
+                    b"PLAYLISTS" => {
                         in_playlists = true;
                         playlists_depth = 0;
                         writer.write_event(Event::Start(e.into_owned()))?;
-                    } else if in_playlists && name == "NODE" {
+                    }
+                    b"NODE" if in_playlists => {
                         playlists_depth += 1;
                         if playlists_depth == 1 {
                             // ROOT NODE — bump Count by 1 (we insert one folder).
@@ -287,25 +310,23 @@ fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>>
                         } else {
                             writer.write_event(Event::Start(e.into_owned()))?;
                         }
-                    } else {
-                        writer.write_event(Event::Start(e.into_owned()))?;
                     }
-                }
-                Ok(Event::End(e)) => {
-                    let name = std::str::from_utf8(e.name().as_ref())?.to_string();
-                    if in_playlists && name == "NODE" {
+                    _ => writer.write_event(Event::Start(e.into_owned()))?,
+                },
+                Ok(Event::End(e)) => match e.name().as_ref() {
+                    b"NODE" if in_playlists => {
                         if playlists_depth == 1 {
                             emit_sorted_folder(&mut writer, playlists)?;
                         }
                         playlists_depth -= 1;
                         writer.write_event(Event::End(e.into_owned()))?;
-                    } else if name == "PLAYLISTS" {
+                    }
+                    b"PLAYLISTS" => {
                         in_playlists = false;
                         writer.write_event(Event::End(e.into_owned()))?;
-                    } else {
-                        writer.write_event(Event::End(e.into_owned()))?;
                     }
-                }
+                    _ => writer.write_event(Event::End(e.into_owned()))?,
+                },
                 Ok(other) => {
                     writer.write_event(other)?;
                 }

@@ -84,10 +84,7 @@ fn default_output_path(input: &Path) -> Result<PathBuf> {
         name.push(".");
         name.push(ext);
     }
-    Ok(match input.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.join(name),
-        _ => PathBuf::from(name),
-    })
+    Ok(input.with_file_name(name))
 }
 
 #[cfg(test)]

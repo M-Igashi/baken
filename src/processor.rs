@@ -11,7 +11,7 @@ pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
     Ok(backup_dir)
 }
 
-pub fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<PathBuf> {
+fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<PathBuf> {
     // Preserve directory structure relative to base_dir so sibling files with
     // the same name in different folders don't collide in the backup.
     let relative_path = file_path
@@ -34,7 +34,7 @@ fn path_str(path: &Path) -> Result<&str> {
 }
 
 /// Apply gain to lossless files using ffmpeg volume filter
-pub fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
+fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let extension = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -71,7 +71,7 @@ pub fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
 }
 
 /// Apply lossless gain to MP3 files using mp3rgain library (1.5dB steps)
-pub fn apply_gain_mp3_native(file_path: &Path, gain_steps: i32) -> Result<()> {
+fn apply_gain_mp3_native(file_path: &Path, gain_steps: i32) -> Result<()> {
     if gain_steps == 0 {
         return Ok(());
     }
@@ -81,7 +81,7 @@ pub fn apply_gain_mp3_native(file_path: &Path, gain_steps: i32) -> Result<()> {
 }
 
 /// Apply lossless gain to AAC/M4A files using mp3rgain library (1.5dB steps)
-pub fn apply_gain_aac_native(file_path: &Path, gain_steps: i32) -> Result<()> {
+fn apply_gain_aac_native(file_path: &Path, gain_steps: i32) -> Result<()> {
     if gain_steps == 0 {
         return Ok(());
     }
@@ -168,7 +168,7 @@ fn apply_gain_reencode(
     ))
 }
 
-pub fn apply_gain_mp3_reencode(
+fn apply_gain_mp3_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
@@ -176,7 +176,7 @@ pub fn apply_gain_mp3_reencode(
     apply_gain_reencode(file_path, gain_db, bitrate_kbps, ReencodeFormat::Mp3)
 }
 
-pub fn apply_gain_aac_reencode(
+fn apply_gain_aac_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
