@@ -70,19 +70,16 @@ fn scan_xml(
                             }
                         }
                     }
+                    "TRACK" if in_collection => {
+                        record_collection_track(&e, &mut collection)?;
+                    }
                     _ => {}
                 }
             }
             Ok(Event::Empty(e)) => {
                 let name = std::str::from_utf8(e.name().as_ref())?.to_string();
                 if in_collection && name == "TRACK" {
-                    if let Some(id) = get_attr(&e, "TrackID")? {
-                        let tonality = get_attr(&e, "Tonality")?.unwrap_or_default();
-                        let bpm_str = get_attr(&e, "AverageBpm")?.unwrap_or_default();
-                        let camelot = parse_camelot(&tonality);
-                        let bpm = bpm_str.parse::<f64>().ok().filter(|v| *v > 0.0);
-                        collection.insert(id, TrackMeta { camelot, bpm });
-                    }
+                    record_collection_track(&e, &mut collection)?;
                 } else if in_target && name == "TRACK" {
                     if let Some(k) = get_attr(&e, "Key")? {
                         tracks.push(k);
@@ -132,6 +129,20 @@ fn scan_xml(
     }
 
     Ok((collection, tracks))
+}
+
+fn record_collection_track(
+    e: &BytesStart,
+    collection: &mut HashMap<String, TrackMeta>,
+) -> Result<()> {
+    if let Some(id) = get_attr(e, "TrackID")? {
+        let tonality = get_attr(e, "Tonality")?.unwrap_or_default();
+        let bpm_str = get_attr(e, "AverageBpm")?.unwrap_or_default();
+        let camelot = parse_camelot(&tonality);
+        let bpm = bpm_str.parse::<f64>().ok().filter(|v| *v > 0.0);
+        collection.insert(id, TrackMeta { camelot, bpm });
+    }
+    Ok(())
 }
 
 fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
@@ -371,5 +382,42 @@ mod tests {
     fn missing_playlist_errors() {
         let result = scan_xml(SAMPLE_XML.as_bytes(), &["Nope".to_string()]);
         assert!(result.is_err());
+    }
+
+    // Real Rekordbox exports wrap each COLLECTION <TRACK> with child elements
+    // (TEMPO, POSITION_MARK). quick-xml then yields Event::Start, not
+    // Event::Empty — so the scanner must read attributes from both.
+    const NESTED_TRACK_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="2">
+    <TRACK TrackID="1" Name="Slow" AverageBpm="120.00" Tonality="1A">
+      <TEMPO Inizio="0.025" Bpm="120.00" Metro="4/4" Battito="1"/>
+      <POSITION_MARK Name="" Type="0" Start="0.025" Num="-1"/>
+    </TRACK>
+    <TRACK TrackID="2" Name="Fast" AverageBpm="128.00" Tonality="1A">
+      <TEMPO Inizio="0.010" Bpm="128.00" Metro="4/4" Battito="1"/>
+    </TRACK>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="1">
+      <NODE Name="MyList" Type="1" KeyType="0" Entries="2">
+        <TRACK Key="2"/>
+        <TRACK Key="1"/>
+      </NODE>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>
+"#;
+
+    #[test]
+    fn scans_collection_tracks_with_children() {
+        let (col, ids) = scan_xml(NESTED_TRACK_XML.as_bytes(), &["MyList".to_string()]).unwrap();
+        assert_eq!(ids, vec!["2", "1"]);
+        assert_eq!(col.get("1").and_then(|m| m.camelot), parse_camelot("1A"));
+        assert_eq!(col.get("1").and_then(|m| m.bpm), Some(120.0));
+        assert_eq!(col.get("2").and_then(|m| m.camelot), parse_camelot("1A"));
+        assert_eq!(col.get("2").and_then(|m| m.bpm), Some(128.0));
+        let sorted = sort_tracks(&ids, &col);
+        assert_eq!(sorted, vec!["1", "2"]); // 120 BPM before 128 within 1A
     }
 }
