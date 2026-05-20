@@ -2,7 +2,7 @@
 
 **Built for the Rekordbox → CDJ workflow.**
 
-Rekordbox's Auto Gain and multi-column sort live only inside the software — they don't survive the USB export to your CDJs. headroom bakes loudness gain and Camelot Key + BPM playlist order into the files themselves, so what you prep in Rekordbox is what plays on the deck.
+Rekordbox's Auto Gain doesn't survive USB export, and Rekordbox has never offered compound Key+BPM sort (Serato had it for years — but never exported to CDJs). headroom bakes both into the files themselves, so what you prep is what plays on the deck.
 
 ## What is this?
 
