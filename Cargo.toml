@@ -34,7 +34,7 @@ walkdir = "2.4"
 chrono = "0.4"
 
 # MP3/AAC lossless gain adjustment
-mp3rgain = { version = "2.6", default-features = false, features = ["aac"] }
+mp3rgain = { version = "2.7", default-features = false, features = ["aac"] }
 
 # XML parsing (rbsort subcommand)
 quick-xml = "0.40"

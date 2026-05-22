@@ -959,9 +959,9 @@ dependencies = [
 
 [[package]]
 name = "mp3rgain"
-version = "2.6.1"
+version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "222d7fea52018d490d3c64bb88406306981a0fd58607bab6d3b4cd50d94db5a3"
+checksum = "63a7c7c3ecc74e3b3c849938c866ce52c425ad47ca8d799558e980978a86aa51"
 dependencies = [
  "anyhow",
  "colored",
@@ -1379,9 +1379,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.149"
+version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
  "itoa",
  "memchr",
