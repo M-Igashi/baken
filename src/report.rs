@@ -138,14 +138,19 @@ fn native_lossless_label(format: &str, tp_mode: TpTargetMode) -> String {
 fn print_file_table(files: &[&AudioAnalysis], filename_width: usize, accent_style: &Style) {
     let dim_style = Style::new().dim();
 
+    // Pad before styling: fmt width counts ANSI escape bytes, so applying a
+    // width specifier to an already-styled value breaks column alignment.
     println!(
-        "  {:<width$} {:>8} {:>12} {:>10} {:>12}",
-        dim_style.apply_to("Filename"),
-        dim_style.apply_to("LUFS"),
-        dim_style.apply_to("True Peak"),
-        dim_style.apply_to("Target"),
-        dim_style.apply_to("Gain"),
-        width = filename_width,
+        "  {}",
+        dim_style.apply_to(format!(
+            "{:<width$} {:>8} {:>12} {:>10} {:>12}",
+            "Filename",
+            "LUFS",
+            "True Peak",
+            "Target",
+            "Gain",
+            width = filename_width,
+        ))
     );
 
     for analysis in files {
@@ -158,11 +163,11 @@ fn print_file_table(files: &[&AudioAnalysis], filename_width: usize, accent_styl
             analysis.filename.clone()
         };
 
-        let gain_str = format!("{:+.1} dB", analysis.effective_gain);
-        let target_str = format!("{:.1}", analysis.target_tp);
+        let gain_str = format!("{:>12}", format!("{:+.1} dB", analysis.effective_gain));
+        let target_str = format!("{:>8.1}", analysis.target_tp);
 
         println!(
-            "  {:<width$} {:>8.1} {:>10.1} dBTP {:>8} dBTP {:>12}",
+            "  {:<width$} {:>8.1} {:>10.1} dBTP {} dBTP {}",
             display_name,
             analysis.input_i,
             analysis.input_tp,

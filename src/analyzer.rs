@@ -264,6 +264,16 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
         .parse()
         .context("Failed to parse input_tp")?;
 
+    // loudnorm reports "-inf" for silent audio; a non-finite value would blow up
+    // the gain math (inf headroom -> i32::MAX gain steps), so reject it here.
+    if !input_i.is_finite() || !input_tp.is_finite() {
+        return Err(anyhow!(
+            "Non-finite loudness measurement (input_i={}, input_tp={}); file may be silent or corrupted",
+            input_i,
+            input_tp
+        ));
+    }
+
     let is_mp3 = scanner::is_mp3(path);
     let is_aac = scanner::is_aac(path);
     let is_lossy = is_mp3 || is_aac;

@@ -14,8 +14,13 @@ pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
 fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<PathBuf> {
     // Preserve directory structure relative to base_dir so sibling files with
     // the same name in different folders don't collide in the backup.
+    // base_dir can be empty (mixed-root inputs), making strip_prefix return the
+    // path unchanged; an absolute result would hijack join() below and copy the
+    // file onto itself, so fall back to the bare filename in that case.
     let relative_path = file_path
         .strip_prefix(base_dir)
+        .ok()
+        .filter(|p| !p.is_absolute() && !p.as_os_str().is_empty())
         .unwrap_or(file_path.file_name().map(Path::new).unwrap_or(file_path));
 
     let backup_path = backup_dir.join(relative_path);
@@ -70,60 +75,55 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     fs::rename(&temp_path, file_path).context("Failed to rename processed file")
 }
 
-/// Apply lossless gain to MP3 files using mp3rgain library (1.5dB steps)
-fn apply_gain_mp3_native(file_path: &Path, gain_steps: i32) -> Result<()> {
-    if gain_steps == 0 {
-        return Ok(());
-    }
-    mp3rgain::apply_gain(file_path, gain_steps)
-        .context("mp3rgain failed to apply MP3 gain")?;
-    Ok(())
-}
-
-/// Apply lossless gain to AAC/M4A files using mp3rgain library (1.5dB steps)
-fn apply_gain_aac_native(file_path: &Path, gain_steps: i32) -> Result<()> {
-    if gain_steps == 0 {
-        return Ok(());
-    }
-    mp3rgain::aac::apply_aac_gain(file_path, gain_steps)
-        .context("mp3rgain failed to apply AAC gain")?;
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
-enum ReencodeFormat {
+enum LossyFormat {
     Mp3,
     Aac,
 }
 
-impl ReencodeFormat {
+impl LossyFormat {
     fn temp_ext(self) -> &'static str {
         match self {
-            ReencodeFormat::Mp3 => "tmp.mp3",
-            ReencodeFormat::Aac => "tmp.m4a",
+            LossyFormat::Mp3 => "tmp.mp3",
+            LossyFormat::Aac => "tmp.m4a",
         }
     }
 
     fn default_bitrate(self) -> &'static str {
         match self {
-            ReencodeFormat::Mp3 => "320k",
-            ReencodeFormat::Aac => "256k",
+            LossyFormat::Mp3 => "320k",
+            LossyFormat::Aac => "256k",
         }
     }
 
     fn encoders(self) -> &'static [&'static str] {
         match self {
-            ReencodeFormat::Mp3 => &["libmp3lame"],
+            LossyFormat::Mp3 => &["libmp3lame"],
             // Tries libfdk_aac first (higher quality), falls back to built-in aac.
-            ReencodeFormat::Aac => &["libfdk_aac", "aac"],
+            LossyFormat::Aac => &["libfdk_aac", "aac"],
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            ReencodeFormat::Mp3 => "MP3",
-            ReencodeFormat::Aac => "AAC",
+            LossyFormat::Mp3 => "MP3",
+            LossyFormat::Aac => "AAC",
         }
+    }
+}
+
+/// Apply lossless gain to MP3/AAC files using mp3rgain library (1.5dB steps)
+fn apply_gain_native(file_path: &Path, gain_steps: i32, format: LossyFormat) -> Result<()> {
+    if gain_steps == 0 {
+        return Ok(());
+    }
+    match format {
+        LossyFormat::Mp3 => mp3rgain::apply_gain(file_path, gain_steps)
+            .map(|_| ())
+            .context("mp3rgain failed to apply MP3 gain"),
+        LossyFormat::Aac => mp3rgain::aac::apply_aac_gain(file_path, gain_steps)
+            .map(|_| ())
+            .context("mp3rgain failed to apply AAC gain"),
     }
 }
 
@@ -131,7 +131,7 @@ fn apply_gain_reencode(
     file_path: &Path,
     gain_db: f64,
     bitrate_kbps: Option<u32>,
-    format: ReencodeFormat,
+    format: LossyFormat,
 ) -> Result<()> {
     let temp_path = file_path.with_extension(format.temp_ext());
     let bitrate = bitrate_kbps
@@ -168,22 +168,6 @@ fn apply_gain_reencode(
     ))
 }
 
-fn apply_gain_mp3_reencode(
-    file_path: &Path,
-    gain_db: f64,
-    bitrate_kbps: Option<u32>,
-) -> Result<()> {
-    apply_gain_reencode(file_path, gain_db, bitrate_kbps, ReencodeFormat::Mp3)
-}
-
-fn apply_gain_aac_reencode(
-    file_path: &Path,
-    gain_db: f64,
-    bitrate_kbps: Option<u32>,
-) -> Result<()> {
-    apply_gain_reencode(file_path, gain_db, bitrate_kbps, ReencodeFormat::Aac)
-}
-
 pub fn process_file(
     analysis: &AudioAnalysis,
     base_dir: &Path,
@@ -201,14 +185,24 @@ pub fn process_file(
 
     match analysis.gain_method {
         GainMethod::FfmpegLossless => apply_gain_ffmpeg(file_path, analysis.effective_gain),
-        GainMethod::Mp3Lossless => apply_gain_mp3_native(file_path, analysis.lossless_gain_steps),
-        GainMethod::AacLossless => apply_gain_aac_native(file_path, analysis.lossless_gain_steps),
-        GainMethod::Mp3Reencode => {
-            apply_gain_mp3_reencode(file_path, analysis.effective_gain, analysis.bitrate_kbps)
+        GainMethod::Mp3Lossless => {
+            apply_gain_native(file_path, analysis.lossless_gain_steps, LossyFormat::Mp3)
         }
-        GainMethod::AacReencode => {
-            apply_gain_aac_reencode(file_path, analysis.effective_gain, analysis.bitrate_kbps)
+        GainMethod::AacLossless => {
+            apply_gain_native(file_path, analysis.lossless_gain_steps, LossyFormat::Aac)
         }
+        GainMethod::Mp3Reencode => apply_gain_reencode(
+            file_path,
+            analysis.effective_gain,
+            analysis.bitrate_kbps,
+            LossyFormat::Mp3,
+        ),
+        GainMethod::AacReencode => apply_gain_reencode(
+            file_path,
+            analysis.effective_gain,
+            analysis.bitrate_kbps,
+            LossyFormat::Aac,
+        ),
         GainMethod::None => Ok(()),
     }
 }

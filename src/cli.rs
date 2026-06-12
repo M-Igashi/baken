@@ -436,7 +436,8 @@ fn process_files(
 ) -> Result<()> {
     let pb = make_progress_bar(analyses.len(), "Processing...");
 
-    for analysis in analyses {
+    // Each file is processed independently; ProgressBar is thread-safe.
+    analyses.par_iter().for_each(|analysis| {
         if let Err(e) = processor::process_file(analysis, base_dir, backup_dir) {
             pb.println(format!(
                 "{} {}: {}",
@@ -446,7 +447,7 @@ fn process_files(
             ));
         }
         pb.inc(1);
-    }
+    });
 
     pb.finish_and_clear();
 
