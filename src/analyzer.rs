@@ -115,6 +115,21 @@ struct FfprobeOutput {
     format: FfprobeFormat,
 }
 
+/// Parse the overall bitrate from ffmpeg's input dump on stderr, e.g.
+/// `  Duration: 00:03:50.32, start: 0.025057, bitrate: 320 kb/s`.
+/// Returns None for "N/A" or unexpected formatting; callers fall back to ffprobe.
+fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
+    stderr
+        .lines()
+        .find(|line| line.trim_start().starts_with("Duration:"))?
+        .split("bitrate:")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 fn get_bitrate(path: &Path) -> Option<u32> {
     let output = Command::new("ffprobe")
         .args([
@@ -278,8 +293,10 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
     let is_aac = scanner::is_aac(path);
     let is_lossy = is_mp3 || is_aac;
 
+    // The loudnorm run's stderr already contains the bitrate in the input
+    // dump; reuse it to avoid spawning ffprobe per file (issue #47).
     let bitrate_kbps = if is_lossy {
-        get_bitrate(path)
+        parse_stderr_bitrate(&stderr).or_else(|| get_bitrate(path))
     } else {
         None
     };
@@ -396,6 +413,21 @@ mod tests {
         let loudnorm = result.unwrap();
         assert_eq!(loudnorm.input_i, "-14.00");
         assert_eq!(loudnorm.input_tp, "-1.00");
+    }
+
+    #[test]
+    fn test_parse_stderr_bitrate() {
+        let stderr = "Input #0, mp3, from 'track.mp3':\n  Duration: 00:03:50.32, start: 0.025057, bitrate: 320 kb/s\n  Stream #0:0: Audio: mp3";
+        assert_eq!(parse_stderr_bitrate(stderr), Some(320));
+    }
+
+    #[test]
+    fn test_parse_stderr_bitrate_na_and_missing() {
+        assert_eq!(
+            parse_stderr_bitrate("  Duration: 00:03:50.32, start: 0.0, bitrate: N/A\n"),
+            None
+        );
+        assert_eq!(parse_stderr_bitrate("no duration line here"), None);
     }
 
     /// Test fallback when marker is not present (older ffmpeg versions)
