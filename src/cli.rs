@@ -252,8 +252,7 @@ fn run_scriptable(cli: &Cli, tp_mode: TpTargetMode) -> Result<()> {
         let dir = if path.as_os_str().is_empty() {
             processor::create_backup_dir(&base_dir)?
         } else {
-            std::fs::create_dir_all(path).context("Failed to create backup directory")?;
-            path.clone()
+            processor::ensure_backup_dir(path)?
         };
         println!("{} Backup directory: {}", style("✓").green(), dir.display());
         Some(dir)

@@ -1,19 +1,31 @@
 use anyhow::{anyhow, Result};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 const LOSSLESS_EXTENSIONS: &[&str] = &["flac", "aiff", "aif", "wav"];
 const MP3_EXTENSIONS: &[&str] = &["mp3"];
 const AAC_EXTENSIONS: &[&str] = &["m4a", "aac", "mp4"];
 
+/// Marker file written into backup directories created by headroom.
+/// Directories containing it are skipped during recursive scans so backup
+/// copies are never re-analyzed and re-adjusted (issue #45).
+pub const BACKUP_MARKER: &str = ".headroom-backup";
+
 pub fn scan_audio_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
         .into_iter()
+        // depth 0 is the scan root itself: scanning a backup dir explicitly
+        // is intentional, so only skip marked dirs found during descent.
+        .filter_entry(|e| e.depth() == 0 || !is_backup_dir(e))
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file() && is_audio_candidate(e.path()))
         .map(|e| e.path().to_path_buf())
         .collect()
+}
+
+fn is_backup_dir(entry: &DirEntry) -> bool {
+    entry.file_type().is_dir() && entry.path().join(BACKUP_MARKER).is_file()
 }
 
 /// Resolve a list of input strings (file paths, directories, globs) into a
