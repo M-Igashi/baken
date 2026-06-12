@@ -6,9 +6,20 @@ use std::process::Command;
 use crate::analyzer::{AudioAnalysis, GainMethod};
 
 pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
-    let backup_dir = base_dir.join("backup");
-    fs::create_dir_all(&backup_dir).context("Failed to create backup directory")?;
-    Ok(backup_dir)
+    ensure_backup_dir(&base_dir.join("backup"))
+}
+
+/// Create (if needed) and mark a backup directory. The marker file lets the
+/// scanner skip backup copies on subsequent runs (issue #45) without relying
+/// on magic directory names.
+pub fn ensure_backup_dir(backup_dir: &Path) -> Result<PathBuf> {
+    fs::create_dir_all(backup_dir).context("Failed to create backup directory")?;
+    let marker = backup_dir.join(crate::scanner::BACKUP_MARKER);
+    if !marker.exists() {
+        fs::write(&marker, "Created by headroom; this directory is skipped when scanning.\n")
+            .context("Failed to write backup marker file")?;
+    }
+    Ok(backup_dir.to_path_buf())
 }
 
 fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<PathBuf> {
