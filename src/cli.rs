@@ -23,20 +23,26 @@ pub fn run() -> Result<()> {
 
     print_banner();
 
-    if !cli.no_update_check {
-        updater::check_and_notify();
-    }
+    // Runs in the background during analysis; the notification is printed
+    // last so the network call never delays startup (issue #46).
+    let update_check = (!cli.no_update_check).then(updater::spawn_check);
 
     analyzer::check_ffmpeg()?;
 
     let tp_mode = cli.tp_mode();
     print_tp_target_banner(tp_mode);
 
-    if cli.is_non_interactive() {
+    let result = if cli.is_non_interactive() {
         run_scriptable(&cli, tp_mode)
     } else {
         run_interactive(tp_mode)
+    };
+
+    if let Some(handle) = update_check {
+        updater::notify(handle);
     }
+
+    result
 }
 
 fn print_tp_target_banner(tp_mode: TpTargetMode) {
