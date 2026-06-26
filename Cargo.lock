@@ -69,9 +69,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "atomic-waker"
@@ -959,9 +959,9 @@ dependencies = [
 
 [[package]]
 name = "mp3rgain"
-version = "2.8.1"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "062c9c27b516b5c8ec0e8ef92ebdbb00df8be138747910ba106ad56d9af61bcd"
+checksum = "f5c3cd2468b6d0e77fb2fc53e9be501186930c072f8b1dc22d2fd7b696b1a3f4"
 dependencies = [
  "anyhow",
  "colored",
