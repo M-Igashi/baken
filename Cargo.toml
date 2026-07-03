@@ -37,7 +37,7 @@ chrono = "0.4"
 mp3rgain = { version = "2.7", default-features = false, features = ["aac"] }
 
 # XML parsing (rbsort subcommand)
-quick-xml = "0.40"
+quick-xml = "0.41"
 
 # Update notification
 update-informer = { version = "1.2", default-features = false, features = ["github", "ureq", "rustls-tls"] }
