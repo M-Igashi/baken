@@ -4,6 +4,12 @@
 
 Rekordbox's Auto Gain doesn't survive USB export, and Rekordbox has never offered compound Key+BPM sort (Serato had it for years — but never exported to CDJs). headroom bakes both into the files themselves, so what you prep is what plays on the deck.
 
+> [!IMPORTANT]
+> **headroom is being renamed to Bake'n Deck (`baken`) in August 2026.**
+> Starting with **v3.0.0**, the binary, crate, Homebrew formula, and repository become `baken`, and the site moves to `baken.ravers.workers.dev`. The v3.0.0 release also adds the `cdjsafe` transcoder subcommand.
+>
+> This is a **hard cut** — `brew install M-Igashi/tap/headroom`, `cargo install headroom`, `winget install M-Igashi.headroom`, and `headroom-bin` (AUR) will **stop receiving updates**. Reinstall via the new `baken` packages once 3.0.0 ships. Details: [#60](https://github.com/M-Igashi/headroom/issues/60).
+
 ## What is this?
 
 **headroom** simulates the behavior of Rekordbox's Auto Gain feature, but with a key difference: it identifies files with available headroom (True Peak below the target ceiling) and applies gain adjustment **without using a limiter**.
