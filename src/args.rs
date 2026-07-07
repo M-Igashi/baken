@@ -5,16 +5,43 @@ use crate::analyzer::{
     TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 
-/// Audio loudness analyzer and gain adjustment tool.
+/// Bake'n Deck — Rekordbox → CDJ prep toolkit.
 ///
-/// Run without arguments for interactive mode in the current directory.
-/// Provide paths or any flag to run in non-interactive (scriptable) mode.
+/// What you prep is what plays on the deck: bakes loudness gain into audio
+/// files (headroom) and Key+BPM sort order into playlists (rbsort), so
+/// Rekordbox software-only features survive the USB export to CDJs.
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(name = "baken", version, about, long_about = None, arg_required_else_help = true)]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
+}
 
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Analyze loudness and apply gain adjustment without a limiter.
+    ///
+    /// Run `baken headroom` with no arguments for interactive mode in the
+    /// current directory (cd into your music folder first, or pass the
+    /// folder as an argument). Provide paths or any flag to run in
+    /// non-interactive (scriptable) mode.
+    Headroom(HeadroomArgs),
+    /// Sort a Rekordbox playlist by Camelot Key then BPM, output as a new XML playlist.
+    Rbsort(RbsortArgs),
+    /// Transcode a Rekordbox playlist to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
+    /// with cues and beatgrid carried over via a new XML playlist.
+    ///
+    /// Pre-NXS2 CDJs only play MP3 reliably. cdjsafe re-encodes every track in
+    /// the target playlist to 320 kbps CBR MP3 @ 44.1 kHz (sources already
+    /// matching that profile are copied byte-identically), and emits an updated
+    /// XML where each new track is a fresh entry that inherits the source's
+    /// beatgrid (TEMPO) and cue points (POSITION_MARK) verbatim. Import the XML
+    /// in Rekordbox and use "Import to Collection" — no re-analysis needed.
+    Cdjsafe(CdjsafeArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HeadroomArgs {
     /// Files, directories, or glob patterns to process. Defaults to current directory.
     pub paths: Vec<String>,
 
@@ -47,7 +74,7 @@ pub struct Cli {
     #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
     pub backup: Option<PathBuf>,
 
-    /// Generate CSV report at PATH (default: <target>/headroom_report_<timestamp>.csv)
+    /// Generate CSV report at PATH (default: <target>/baken_report_<timestamp>.csv)
     #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "no_report")]
     pub report: Option<PathBuf>,
 
@@ -64,7 +91,7 @@ pub struct Cli {
     pub no_update_check: bool,
 }
 
-impl Cli {
+impl HeadroomArgs {
     /// Returns true if any non-interactive option or path was provided.
     pub fn is_non_interactive(&self) -> bool {
         !self.paths.is_empty()
@@ -111,10 +138,25 @@ impl Cli {
     }
 }
 
-#[derive(Subcommand, Debug)]
-pub enum Command {
-    /// Sort a Rekordbox playlist by Camelot Key then BPM, output as a new XML playlist.
-    Rbsort(RbsortArgs),
+#[derive(Args, Debug)]
+pub struct CdjsafeArgs {
+    /// Path to rekordbox collection.xml (File > Export Collection in xml format)
+    #[arg(long, value_name = "PATH")]
+    pub xml: PathBuf,
+
+    /// Playlist to convert. Top-level playlists: just the name; nested:
+    /// '/'-separate folder/playlist names (e.g. "Sets/Friday").
+    #[arg(long, value_name = "PATH")]
+    pub playlist: String,
+
+    /// Directory to write the CDJ-safe MP3 files into (created if missing).
+    #[arg(long, value_name = "DIR")]
+    pub out_dir: PathBuf,
+
+    /// Output XML path. Optional — defaults to the input filename with "-out"
+    /// appended to the stem, in the same directory.
+    #[arg(long, short, value_name = "PATH")]
+    pub output: Option<PathBuf>,
 }
 
 #[derive(Args, Debug)]

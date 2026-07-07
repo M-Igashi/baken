@@ -19,7 +19,7 @@ pub fn generate_csv(
         p.to_path_buf()
     } else {
         let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("headroom_report_{}.csv", timestamp);
+        let filename = format!("baken_report_{}.csv", timestamp);
         output_dir.join(&filename)
     };
 

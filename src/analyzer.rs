@@ -11,7 +11,7 @@ use crate::scanner;
 /// (≥256 kbps) coders "may work satisfactorily with as little as -0.5 dBTP for
 /// the limiting threshold." The bitrate-dependent slack (-1.0 dBTP for lower
 /// rates) in TD1008 applies to the *limiter threshold prior to the codec*, not
-/// to delivery / post-encode files. headroom operates exclusively on already-
+/// to delivery / post-encode files. baken operates exclusively on already-
 /// encoded end-product files, so the same -0.5 dBTP target is used uniformly.
 pub const DEFAULT_TARGET_TRUE_PEAK: f64 = -0.5;
 

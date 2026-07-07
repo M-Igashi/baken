@@ -65,7 +65,7 @@ pub fn run(args: &RbsortArgs) -> Result<()> {
     Ok(())
 }
 
-fn split_playlist_path(s: &str) -> Vec<String> {
+pub(crate) fn split_playlist_path(s: &str) -> Vec<String> {
     s.split('/')
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
@@ -74,7 +74,7 @@ fn split_playlist_path(s: &str) -> Vec<String> {
 
 /// Derive default output path: same directory as input, filename stem with
 /// "-out" appended, extension preserved. e.g. `/a/b/c.xml` -> `/a/b/c-out.xml`.
-fn default_output_path(input: &Path) -> Result<PathBuf> {
+pub(crate) fn default_output_path(input: &Path) -> Result<PathBuf> {
     let stem = input
         .file_stem()
         .ok_or_else(|| anyhow!("--xml has no filename: {}", input.display()))?;

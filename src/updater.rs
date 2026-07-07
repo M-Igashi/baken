@@ -3,7 +3,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use update_informer::{registry, Check};
 
-const PKG_NAME: &str = "M-Igashi/headroom";
+const PKG_NAME: &str = "M-Igashi/baken";
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -36,7 +36,7 @@ pub fn notify(handle: JoinHandle<Option<String>>) {
 }
 
 fn check() -> Option<String> {
-    if std::env::var_os("HEADROOM_NO_UPDATE_CHECK").is_some() {
+    if std::env::var_os("BAKEN_NO_UPDATE_CHECK").is_some() {
         return None;
     }
 
@@ -75,9 +75,9 @@ enum InstallMethod {
 impl InstallMethod {
     fn command(self) -> &'static str {
         match self {
-            InstallMethod::Homebrew => "brew upgrade headroom",
-            InstallMethod::Winget => "winget upgrade M-Igashi.headroom",
-            InstallMethod::Cargo => "cargo install headroom",
+            InstallMethod::Homebrew => "brew upgrade baken",
+            InstallMethod::Winget => "winget upgrade M-Igashi.baken",
+            InstallMethod::Cargo => "cargo install baken",
         }
     }
 }

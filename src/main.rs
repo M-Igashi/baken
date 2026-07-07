@@ -1,5 +1,6 @@
 mod analyzer;
 mod args;
+mod cdjsafe;
 mod cli;
 mod processor;
 mod rbsort;

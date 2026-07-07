@@ -7,10 +7,14 @@ const LOSSLESS_EXTENSIONS: &[&str] = &["flac", "aiff", "aif", "wav"];
 const MP3_EXTENSIONS: &[&str] = &["mp3"];
 const AAC_EXTENSIONS: &[&str] = &["m4a", "aac", "mp4"];
 
-/// Marker file written into backup directories created by headroom.
+/// Marker file written into backup directories created by baken.
 /// Directories containing it are skipped during recursive scans so backup
 /// copies are never re-analyzed and re-adjusted (issue #45).
-pub const BACKUP_MARKER: &str = ".headroom-backup";
+pub const BACKUP_MARKER: &str = ".baken-backup";
+
+/// Marker written by headroom v1/v2 (pre-rebrand). Still honored so backups
+/// created before the rename keep being skipped.
+const LEGACY_BACKUP_MARKER: &str = ".headroom-backup";
 
 pub fn scan_audio_files(dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(dir)
@@ -25,7 +29,9 @@ pub fn scan_audio_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 fn is_backup_dir(entry: &DirEntry) -> bool {
-    entry.file_type().is_dir() && entry.path().join(BACKUP_MARKER).is_file()
+    entry.file_type().is_dir()
+        && (entry.path().join(BACKUP_MARKER).is_file()
+            || entry.path().join(LEGACY_BACKUP_MARKER).is_file())
 }
 
 /// Resolve a list of input strings (file paths, directories, globs) into a
