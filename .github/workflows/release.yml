@@ -39,9 +39,9 @@ jobs:
         run: |
           mkdir -p release
           lipo -create \
-            target/aarch64-apple-darwin/release/headroom \
-            target/x86_64-apple-darwin/release/headroom \
-            -output release/headroom
+            target/aarch64-apple-darwin/release/baken \
+            target/x86_64-apple-darwin/release/baken \
+            -output release/baken
 
       - name: Get version
         id: version
@@ -52,21 +52,21 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           cd release
-          tar -czvf headroom-${VERSION}-macos-universal.tar.gz headroom
+          tar -czvf baken-${VERSION}-macos-universal.tar.gz baken
 
       - name: Calculate SHA256
         id: sha256
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          SHA256=$(shasum -a 256 release/headroom-${VERSION}-macos-universal.tar.gz | awk '{print $1}')
+          SHA256=$(shasum -a 256 release/baken-${VERSION}-macos-universal.tar.gz | awk '{print $1}')
           echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-universal
-          path: release/headroom-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
+          path: release/baken-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
 
       - name: Save SHA256
         env:
@@ -102,23 +102,23 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           mkdir -p release
-          cp target/release/headroom release/
+          cp target/release/baken release/
           cd release
-          tar -czvf headroom-${VERSION}-linux-x86_64.tar.gz headroom
+          tar -czvf baken-${VERSION}-linux-x86_64.tar.gz baken
 
       - name: Calculate SHA256
         id: sha256
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          SHA256=$(sha256sum release/headroom-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')
+          SHA256=$(sha256sum release/baken-${VERSION}-linux-x86_64.tar.gz | awk '{print $1}')
           echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-x86_64
-          path: release/headroom-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
+          path: release/baken-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
 
       - name: Save SHA256
         env:
@@ -157,23 +157,23 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           mkdir -p release
-          cp target/aarch64-unknown-linux-gnu/release/headroom release/
+          cp target/aarch64-unknown-linux-gnu/release/baken release/
           cd release
-          tar -czvf headroom-${VERSION}-linux-aarch64.tar.gz headroom
+          tar -czvf baken-${VERSION}-linux-aarch64.tar.gz baken
 
       - name: Calculate SHA256
         id: sha256
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          SHA256=$(sha256sum release/headroom-${VERSION}-linux-aarch64.tar.gz | awk '{print $1}')
+          SHA256=$(sha256sum release/baken-${VERSION}-linux-aarch64.tar.gz | awk '{print $1}')
           echo "SHA256=$SHA256" >> $GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-aarch64
-          path: release/headroom-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
+          path: release/baken-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
 
       - name: Save SHA256
         env:
@@ -211,8 +211,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           New-Item -ItemType Directory -Force -Path release
-          Copy-Item target\release\headroom.exe release\
-          Compress-Archive -Path release\headroom.exe -DestinationPath release\headroom-${env:VERSION}-windows-x86_64.zip
+          Copy-Item target\release\baken.exe release\
+          Compress-Archive -Path release\baken.exe -DestinationPath release\baken-${env:VERSION}-windows-x86_64.zip
 
       - name: Calculate SHA256
         id: sha256
@@ -220,14 +220,14 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          $hash = (Get-FileHash release\headroom-${env:VERSION}-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
+          $hash = (Get-FileHash release\baken-${env:VERSION}-windows-x86_64.zip -Algorithm SHA256).Hash.ToLower()
           echo "SHA256=$hash" >> $env:GITHUB_OUTPUT
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-x86_64
-          path: release/headroom-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
+          path: release/baken-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
 
       - name: Save SHA256
         shell: bash
@@ -284,11 +284,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           cd release
-          cat ../artifacts/sha256-macos-universal/sha256-macos-universal.txt | while read hash; do echo "$hash  headroom-${VERSION}-macos-universal.tar.gz"; done > checksums.txt
-          cat ../artifacts/sha256-linux-x86_64/sha256-linux-x86_64.txt | while read hash; do echo "$hash  headroom-${VERSION}-linux-x86_64.tar.gz"; done >> checksums.txt
-          cat ../artifacts/sha256-linux-aarch64/sha256-linux-aarch64.txt | while read hash; do echo "$hash  headroom-${VERSION}-linux-aarch64.tar.gz"; done >> checksums.txt
-          cat ../artifacts/sha256-windows-x86_64/sha256-windows-x86_64.txt | while read hash; do echo "$hash  headroom-${VERSION}-windows-x86_64.zip"; done >> checksums.txt
-          mv checksums.txt headroom-${VERSION}-checksums.txt
+          cat ../artifacts/sha256-macos-universal/sha256-macos-universal.txt | while read hash; do echo "$hash  baken-${VERSION}-macos-universal.tar.gz"; done > checksums.txt
+          cat ../artifacts/sha256-linux-x86_64/sha256-linux-x86_64.txt | while read hash; do echo "$hash  baken-${VERSION}-linux-x86_64.tar.gz"; done >> checksums.txt
+          cat ../artifacts/sha256-linux-aarch64/sha256-linux-aarch64.txt | while read hash; do echo "$hash  baken-${VERSION}-linux-aarch64.tar.gz"; done >> checksums.txt
+          cat ../artifacts/sha256-windows-x86_64/sha256-windows-x86_64.txt | while read hash; do echo "$hash  baken-${VERSION}-windows-x86_64.zip"; done >> checksums.txt
+          mv checksums.txt baken-${VERSION}-checksums.txt
 
       - name: Get macOS SHA256
         id: macos_sha256
@@ -316,11 +316,11 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           files: |
-            release/headroom-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
-            release/headroom-${{ steps.version.outputs.VERSION }}-checksums.txt
+            release/baken-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
+            release/baken-${{ steps.version.outputs.VERSION }}-checksums.txt
           body_path: RELEASE_NOTES.md
           append_body: true
 
@@ -329,25 +329,25 @@ jobs:
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           files: |
-            release/headroom-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
-            release/headroom-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
-            release/headroom-${{ steps.version.outputs.VERSION }}-checksums.txt
+            release/baken-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-linux-x86_64.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-linux-aarch64.tar.gz
+            release/baken-${{ steps.version.outputs.VERSION }}-windows-x86_64.zip
+            release/baken-${{ steps.version.outputs.VERSION }}-checksums.txt
           generate_release_notes: true
           body: |
             ## Installation
 
             | Platform | Command |
             |----------|---------|
-            | **macOS (Homebrew)** | `brew install M-Igashi/tap/headroom` |
-            | **Windows (winget)** | `winget install M-Igashi.headroom` |
-            | **Cargo** | `cargo install headroom` (ffmpeg must be installed separately) |
+            | **macOS (Homebrew)** | `brew install M-Igashi/tap/baken` |
+            | **Windows (winget)** | `winget install M-Igashi.baken` |
+            | **Cargo** | `cargo install baken` (ffmpeg must be installed separately) |
 
             Package managers (Homebrew, winget) install ffmpeg automatically. mp3rgain is built-in — no separate installation needed.
 
             ## Checksums
-            See `headroom-${{ steps.version.outputs.VERSION }}-checksums.txt` for SHA256 checksums of all binaries.
+            See `baken-${{ steps.version.outputs.VERSION }}-checksums.txt` for SHA256 checksums of all binaries.
 
   # =============================================================================
   # Publish to Cargo (crates.io)
@@ -389,11 +389,11 @@ jobs:
           git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/M-Igashi/homebrew-tap.git
           cd homebrew-tap
 
-          cat > Formula/headroom.rb << 'FORMULA'
-          class Headroom < Formula
+          cat > Formula/baken.rb << 'FORMULA'
+          class Baken < Formula
             desc "Audio loudness analyzer and gain adjustment tool for mastering and DJ workflows"
-            homepage "https://github.com/M-Igashi/headroom"
-            url "https://github.com/M-Igashi/headroom/releases/download/VERSION_PLACEHOLDER/headroom-VERSION_PLACEHOLDER-macos-universal.tar.gz"
+            homepage "https://github.com/M-Igashi/baken"
+            url "https://github.com/M-Igashi/baken/releases/download/VERSION_PLACEHOLDER/baken-VERSION_PLACEHOLDER-macos-universal.tar.gz"
             sha256 "SHA256_PLACEHOLDER"
             version "VERSION_NUM_PLACEHOLDER"
             license "MIT"
@@ -401,7 +401,7 @@ jobs:
             depends_on "ffmpeg"
 
             def install
-              bin.install "headroom"
+              bin.install "baken"
             end
 
             def caveats
@@ -412,17 +412,17 @@ jobs:
             end
 
             test do
-              assert_match "headroom", shell_output("#{bin}/headroom --version")
+              assert_match "baken", shell_output("#{bin}/baken --version")
             end
           end
           FORMULA
 
-          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" Formula/headroom.rb
-          sed -i "s|SHA256_PLACEHOLDER|${SHA256}|g" Formula/headroom.rb
-          sed -i "s|VERSION_NUM_PLACEHOLDER|${VERSION_NUM}|g" Formula/headroom.rb
+          sed -i "s|VERSION_PLACEHOLDER|${VERSION}|g" Formula/baken.rb
+          sed -i "s|SHA256_PLACEHOLDER|${SHA256}|g" Formula/baken.rb
+          sed -i "s|VERSION_NUM_PLACEHOLDER|${VERSION_NUM}|g" Formula/baken.rb
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/headroom.rb
-          git commit -m "headroom ${VERSION_NUM}"
+          git add Formula/baken.rb
+          git commit -m "baken ${VERSION_NUM}"
           git push

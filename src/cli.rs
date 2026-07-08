@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 use crate::analyzer::{self, AudioAnalysis, TpTargetMode};
-use crate::args::{Cli, Command};
+use crate::args::{Cli, Command, HeadroomArgs};
 use crate::processor;
 use crate::rbsort;
 use crate::report::{self, AnalysisSummary};
@@ -17,23 +17,27 @@ use crate::updater;
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    if let Some(Command::Rbsort(args)) = &cli.command {
-        return rbsort::run(args);
+    match cli.command {
+        Command::Rbsort(args) => rbsort::run(&args),
+        Command::Cdjsafe(args) => crate::cdjsafe::run(&args),
+        Command::Headroom(args) => run_headroom(&args),
     }
+}
 
+fn run_headroom(args: &HeadroomArgs) -> Result<()> {
     print_banner();
 
     // Runs in the background during analysis; the notification is printed
     // last so the network call never delays startup (issue #46).
-    let update_check = (!cli.no_update_check).then(updater::spawn_check);
+    let update_check = (!args.no_update_check).then(updater::spawn_check);
 
     analyzer::check_ffmpeg()?;
 
-    let tp_mode = cli.tp_mode();
+    let tp_mode = args.tp_mode();
     print_tp_target_banner(tp_mode);
 
-    let result = if cli.is_non_interactive() {
-        run_scriptable(&cli, tp_mode)
+    let result = if args.is_non_interactive() {
+        run_scriptable(args, tp_mode)
     } else {
         run_interactive(tp_mode)
     };
@@ -162,7 +166,7 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     Ok(())
 }
 
-fn run_scriptable(cli: &Cli, tp_mode: TpTargetMode) -> Result<()> {
+fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
     let (files, base_dir) = if cli.paths.is_empty() {
         let cwd = std::env::current_dir().context("Failed to get current directory")?;
         (scanner::scan_audio_files(&cwd), cwd)
@@ -368,7 +372,7 @@ fn prompt_reencode_processing(summary: &AnalysisSummary) -> Result<bool> {
 
 fn print_banner() {
     let banner_style = Style::new().cyan().bold();
-    let title = format!("headroom v{}", env!("CARGO_PKG_VERSION"));
+    let title = format!("baken v{}", env!("CARGO_PKG_VERSION"));
     println!();
     println!(
         "{}",
@@ -377,7 +381,7 @@ fn print_banner() {
     println!("{}", banner_style.apply_to(format!("│{:^37}│", title)));
     println!(
         "{}",
-        banner_style.apply_to("│   Audio Loudness Analyzer & Gain    │")
+        banner_style.apply_to(format!("│{:^37}│", "Bake'n Deck — CDJ Prep Toolkit"))
     );
     println!(
         "{}",
@@ -386,7 +390,7 @@ fn print_banner() {
     println!();
 }
 
-fn make_progress_bar(len: usize, label: &str) -> ProgressBar {
+pub(crate) fn make_progress_bar(len: usize, label: &str) -> ProgressBar {
     let pb = ProgressBar::new(len as u64);
     pb.set_style(
         ProgressStyle::default_bar()

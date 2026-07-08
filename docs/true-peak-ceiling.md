@@ -1,19 +1,19 @@
 # True Peak Ceiling — Design Notes
 
-This document explains why headroom uses a **uniform -0.5 dBTP** delivery target by default, and what the `--tp-target` and `--tp-split-bitrate` flags do. The change landed in v1.10.0 in response to [issue #34](https://github.com/M-Igashi/headroom/issues/34).
+This document explains why baken uses a **uniform -0.5 dBTP** delivery target by default, and what the `--tp-target` and `--tp-split-bitrate` flags do. The change landed in v1.10.0 in response to [issue #34](https://github.com/M-Igashi/baken/issues/34).
 
 ## Background
 
-[AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) (*Recommendations for Loudness of Internet Audio Streaming and On-Demand Distribution*, v1.21-9, 2021-09-24) is the document headroom cites when computing its True Peak ceiling. TD1008 contains two related but distinct numbers:
+[AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) (*Recommendations for Loudness of Internet Audio Streaming and On-Demand Distribution*, v1.21-9, 2021-09-24) is the document baken cites when computing its True Peak ceiling. TD1008 contains two related but distinct numbers:
 
 1. **§4 Recommendations** — *"For all content, it is recommended that the Maximum True Peak level not exceed -1 dBTP **at the codec input** of lossy-encoded streams."*
 2. **§7B Sources of Peak Overshoot — Codecs** — *"High-rate (e.g., 256 kbps) coders may work satisfactorily with as little as **-0.5 dBTP for the limiting threshold**. Typically, peak overshoot increases as the bit rate decreases, so **the limiting threshold may need to be reduced below the recommended -1.0 dBTP**."*
 
 Both passages describe a **limiter that sits in front of the encoder**. The bitrate dependency is there because lossy encoding can push peaks up by a codec-specific amount; the cushion in front of the codec is meant to absorb that overshoot so the *decoded* peak still fits inside 0 dBTP.
 
-## Why headroom's old rule was wrong
+## Why the old rule was wrong
 
-Up to v1.9.x, headroom used a bitrate-split ceiling on the *output* file:
+Up to v1.9.x, headroom (as baken was then named) used a bitrate-split ceiling on the *output* file:
 
 | Class | Old delivery ceiling |
 |---|---|
@@ -34,9 +34,9 @@ Reading TD1008 §4 and §7B together confirms this: every passage that introduce
 Once the delivery / pre-encode confusion is removed, two single-target candidates are reasonable:
 
 - **-1.0 dBTP** — TD1008's general recommendation in §4, also the practical maximum True Peak target most major streaming services normalize to (Spotify, Apple Music, YouTube, Tidal). This is the conservative choice.
-- **-0.5 dBTP** — TD1008's §7B floor for high-rate codec inputs. Already used today for headroom's lossless and ≥256 kbps lossy classes; lossless files are *delivery files* with no codec stage, and the existing tool has shipped with -0.5 dBTP for those for a long time without reports of player-side trouble.
+- **-0.5 dBTP** — TD1008's §7B floor for high-rate codec inputs. Already used today for baken's lossless and ≥256 kbps lossy classes; lossless files are *delivery files* with no codec stage, and the existing tool has shipped with -0.5 dBTP for those for a long time without reports of player-side trouble.
 
-headroom is built around maximizing loudness without a limiter. Its users are DJs and producers who want every dB of headroom they're entitled to. **-0.5 dBTP is the most aggressive value TD1008 mentions anywhere**, and it is the value headroom already used for the loudness-sensitive bulk of its workload (lossless + high-rate lossy). Switching low-rate lossy to the same value buys those files +0.5 dB of loudness without going beyond anything TD1008 sanctions; high-rate / lossless behaviour is unchanged.
+baken is built around maximizing loudness without a limiter. Its users are DJs and producers who want every dB of headroom they're entitled to. **-0.5 dBTP is the most aggressive value TD1008 mentions anywhere**, and it is the value the tool already used for the loudness-sensitive bulk of its workload (lossless + high-rate lossy). Switching low-rate lossy to the same value buys those files +0.5 dB of loudness without going beyond anything TD1008 sanctions; high-rate / lossless behaviour is unchanged.
 
 For users who prefer the safer streaming-services number, `--tp-target -1.0` is one flag away.
 
@@ -81,4 +81,4 @@ The native-lossless threshold (the True Peak below which an MP3/AAC file qualifi
 - ITU-R BS.1770 — *Algorithms to measure audio Program Loudness and true-peak audio level* — <https://www.itu.int/rec/R-REC-BS.1770/en>
 - EBU R128 — *Loudness Normalisation and Permitted Maximum Level of Audio Signals* — <https://tech.ebu.ch/docs/r/r128.pdf>
 - Hydrogenaudio thread *Best way to mass normalize*
-- headroom issue #34 — <https://github.com/M-Igashi/headroom/issues/34>
+- baken issue #34 — <https://github.com/M-Igashi/baken/issues/34>

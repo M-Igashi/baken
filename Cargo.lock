@@ -86,6 +86,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "baken"
+version = "3.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "console",
+ "csv",
+ "dialoguer",
+ "glob",
+ "indicatif",
+ "mp3rgain",
+ "quick-xml",
+ "rayon",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "update-informer",
+ "walkdir",
+]
+
+[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -539,28 +561,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-
-[[package]]
-name = "headroom"
-version = "2.1.1"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "console",
- "csv",
- "dialoguer",
- "glob",
- "indicatif",
- "mp3rgain",
- "quick-xml",
- "rayon",
- "serde",
- "serde_json",
- "thiserror",
- "update-informer",
- "walkdir",
-]
 
 [[package]]
 name = "heck"

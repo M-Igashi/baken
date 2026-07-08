@@ -1,22 +1,19 @@
-# headroom
+# Bake'n Deck (`baken`)
 
 **Built for the Rekordbox → CDJ workflow.**
 
-Rekordbox's Auto Gain doesn't survive USB export, and Rekordbox has never offered compound Key+BPM sort (Serato had it for years — but never exported to CDJs). headroom bakes both into the files themselves, so what you prep is what plays on the deck.
+Rekordbox's Auto Gain doesn't survive USB export, and Rekordbox has never offered compound Key+BPM sort (Serato had it for years — but never exported to CDJs). Bake'n Deck bakes both into the files themselves, so what you prep is what plays on the deck.
 
-> [!IMPORTANT]
-> **headroom is being renamed to Bake'n Deck (`baken`) in August 2026.**
-> Starting with **v3.0.0**, the binary, crate, Homebrew formula, and repository become `baken`, and the site moves to `baken.ravers.workers.dev`. The v3.0.0 release also adds the `cdjsafe` transcoder subcommand.
->
-> This is a **hard cut** — `brew install M-Igashi/tap/headroom`, `cargo install headroom`, `winget install M-Igashi.headroom`, and `headroom-bin` (AUR) will **stop receiving updates**. Reinstall via the new `baken` packages once 3.0.0 ships. Details: [#60](https://github.com/M-Igashi/headroom/issues/60).
+> [!NOTE]
+> **headroom is now Bake'n Deck 3.0.** As announced in [#60](https://github.com/M-Igashi/baken/issues/60), the binary, crate, Homebrew formula, and repository were renamed from `headroom` to `baken` at v3.0.0, and the site moved to `baken.ravers.workers.dev`. This was a **hard cut** — the old `headroom` install channels (brew/winget/cargo/AUR) no longer receive updates; reinstall via the `baken` packages below. The loudness analyzer now lives under the `baken headroom` subcommand.
 
 ## What is this?
 
-**headroom** simulates the behavior of Rekordbox's Auto Gain feature, but with a key difference: it identifies files with available headroom (True Peak below the target ceiling) and applies gain adjustment **without using a limiter**.
+**Bake'n Deck** is a CLI toolkit with three subcommands:
 
-This tool is designed for DJs and producers who want to maximize loudness while preserving dynamics, ensuring tracks hit the optimal True Peak ceiling without clipping.
-
-**New in v2.0.0** — a companion `rbsort` subcommand sorts a Rekordbox playlist by **Camelot Key (1A→12B) then BPM ascending**, and appends the result as a new playlist to your `collection.xml`. Useful for harmonic mixing prep when the Rekordbox UI does not expose multi-column sort. See [Rekordbox Playlist Sorter](#rekordbox-playlist-sorter-rbsort).
+- **`baken headroom`** simulates the behavior of Rekordbox's Auto Gain feature, but with a key difference: it identifies files with available headroom (True Peak below the target ceiling) and applies gain adjustment **without using a limiter**. Designed for DJs and producers who want to maximize loudness while preserving dynamics, ensuring tracks hit the optimal True Peak ceiling without clipping.
+- **`baken rbsort`** sorts a Rekordbox playlist by **Camelot Key (1A→12B) then BPM ascending**, and appends the result as a new playlist to your `collection.xml`. Useful for harmonic mixing prep when the Rekordbox UI does not expose multi-column sort. See [Rekordbox Playlist Sorter](#rekordbox-playlist-sorter-baken-rbsort).
+- **`baken cdjsafe`** *(new in v3.0)* transcodes every track in a Rekordbox playlist to **CDJ-safe MP3s (320 kbps CBR @ 44.1 kHz)** and emits an updated XML in which the new tracks inherit the originals' **cue points and beatgrid** — for gigs on pre-NXS2 CDJs that won't play FLAC/ALAC/AIFF/AAC. See [CDJ-safe Transcoder](#cdj-safe-transcoder-baken-cdjsafe).
 
 ## Key Features
 
@@ -28,34 +25,45 @@ This tool is designed for DJs and producers who want to maximize loudness while 
 - **No limiter**: Pure gain adjustment only — dynamics are preserved
 - **Interactive CLI**: Guided step-by-step process with two-stage confirmation
 - **Scriptable CLI**: Non-interactive mode for pipelines and CI (paths, globs, and flags)
-- **Rekordbox playlist sorter** *(v2.0+)*: `headroom rbsort` produces a new playlist sorted by Camelot Key then BPM
+- **Rekordbox playlist sorter**: `baken rbsort` produces a new playlist sorted by Camelot Key then BPM
+- **CDJ-safe transcoder** *(v3.0+)*: `baken cdjsafe` normalizes a gig playlist to 320 kbps CBR MP3 with cues and beatgrid carried over via XML
 
 ## Installation
 
-headroom requires ffmpeg. Package managers install it automatically.
+baken requires ffmpeg. Package managers install it automatically.
 
 | Platform | Command |
 |----------|---------|
-| **macOS (Homebrew)** | `brew install M-Igashi/tap/headroom` |
-| **Windows (winget)** | `winget install M-Igashi.headroom` |
-| **Arch Linux (AUR)** | `yay -S headroom-bin` |
-| **Cargo** | `cargo install headroom` (ffmpeg must be installed separately) |
+| **macOS (Homebrew)** | `brew install M-Igashi/tap/baken` |
+| **Windows (winget)** | `winget install M-Igashi.baken` |
+| **Arch Linux (AUR)** | `yay -S baken-bin` |
+| **Cargo** | `cargo install baken` (ffmpeg must be installed separately) |
 
-Pre-built binaries are available on the [Releases](https://github.com/M-Igashi/headroom/releases) page (ffmpeg must be installed separately).
+Pre-built binaries are available on the [Releases](https://github.com/M-Igashi/baken/releases) page (ffmpeg must be installed separately).
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/M-Igashi/headroom.git
-cd headroom
+git clone https://github.com/M-Igashi/baken.git
+cd baken
 cargo build --release
 ```
 
-## Loudness Normalizer
+## Command Overview
+
+```bash
+baken headroom [PATHS] [FLAGS]   # loudness analyzer & gain adjustment
+baken rbsort --xml <collection.xml> [FLAGS]   # Key+BPM playlist sorter
+baken cdjsafe --xml <collection.xml> --playlist <name> --out-dir <dir>   # CDJ-safe MP3 transcoder
+```
+
+Run `baken --help` or `baken <subcommand> --help` for the full reference.
+
+## Loudness Normalizer (`baken headroom`)
 
 ### How It Works
 
-1. Scans the current directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A)
+1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A)
 2. Measures LUFS (Integrated Loudness) and True Peak using ffmpeg
 3. Categorizes files by processing method:
    - **Green**: Lossless files (ffmpeg)
@@ -71,11 +79,11 @@ cargo build --release
 
 ```
 $ cd ~/Music/DJ-Tracks
-$ headroom
+$ baken headroom
 
 ╭─────────────────────────────────────╮
-│          headroom v2.0.0            │
-│   Audio Loudness Analyzer & Gain    │
+│            baken v3.0.0             │
+│   Bake'n Deck — CDJ Prep Toolkit    │
 ╰─────────────────────────────────────╯
 
 ▸ Target directory: /Users/xxx/Music/DJ-Tracks
@@ -110,7 +118,7 @@ $ headroom
 
 ▸ TP target: -0.5 dBTP (uniform delivery ceiling, AES TD1008 §7B)
 
-✓ Report saved: ./headroom_report_20250109_123456.csv
+✓ Report saved: ./baken_report_20250109_123456.csv
 
 ? Apply lossless gain adjustment to 3 lossless + 2 MP3 (lossless gain) + 2 AAC/M4A (lossless gain) files? [y/N] y
 
@@ -134,11 +142,11 @@ $ headroom
 
 #### Interactive Mode
 
-Run without arguments to use the guided workflow in the current directory:
+Run `baken headroom` without further arguments to use the guided workflow in the current directory:
 
 ```bash
 cd ~/Music/DJ-Tracks
-headroom
+baken headroom
 ```
 
 The tool will guide you through:
@@ -154,25 +162,25 @@ Pass paths, globs, or flags to run non-interactively (useful for pipelines and s
 
 ```bash
 # Analyze a directory without modifying anything
-headroom --analyze-only ~/Music/DJ-Tracks
+baken headroom --analyze-only ~/Music/DJ-Tracks
 
 # Apply only lossless gain, with backup, save report to a specific path
-headroom --lossless --backup ./bak --report results.csv ./album/
+baken headroom --lossless --backup ./bak --report results.csv ./album/
 
 # Enable re-encoding as well
-headroom --lossless --reencode --backup ./bak ./album/
+baken headroom --lossless --reencode --backup ./bak ./album/
 
 # Operate on specific files
-headroom --lossless track1.mp3 track2.flac
+baken headroom --lossless track1.mp3 track2.flac
 
 # Glob patterns
-headroom --lossless --no-report "./music/**/*.mp3"
+baken headroom --lossless --no-report "./music/**/*.mp3"
 
 # Tighter ceiling for streaming-platform delivery (Spotify / Apple / YouTube max)
-headroom --lossless --tp-target -1.0 ./album/
+baken headroom --lossless --tp-target -1.0 ./album/
 
 # Restore the legacy bitrate-dependent split (pre-v1.10 behaviour)
-headroom --lossless --tp-split-bitrate ./album/
+baken headroom --lossless --tp-split-bitrate ./album/
 ```
 
 **Non-interactive defaults** (when any flag or path is provided):
@@ -182,11 +190,11 @@ headroom --lossless --tp-split-bitrate ./album/
 - CSV report is written unless `--no-report`; `--report PATH` sets a custom location
 - `--analyze-only` runs analysis + report only, skips processing
 
-Run `headroom --help` for the full flag reference.
+Run `baken headroom --help` for the full flag reference.
 
 ### Processing Methods
 
-headroom selects the optimal method for each file based on format and headroom:
+baken selects the optimal method for each file based on format and headroom:
 
 | Format | Method | Precision | Quality Loss |
 |--------|--------|-----------|--------------|
@@ -229,7 +237,7 @@ TD1008 has two related but distinct numbers:
 1. **Generic delivery recommendation (§4)** — "Maximum True Peak level not exceed -1 dBTP at the codec input of lossy-encoded streams." This is the *pre-encode* limiter threshold.
 2. **High-rate codec relaxation (§7B)** — "High-rate (e.g., 256 kbps) coders may work satisfactorily with as little as -0.5 dBTP" — also a *codec-input* threshold; "the limiting threshold may need to be reduced below the recommended -1.0 dBTP" for lower bit rates.
 
-Both bullets describe the *limiter that sits in front of the encoder*. headroom operates in the opposite position: on **already-encoded delivery files**. There is no further codec stage downstream to absorb additional overshoot, so the bitrate-dependent slack TD1008 grants the pre-encode limiter does not transfer to the end product. A single, codec-agnostic delivery ceiling is the correct interpretation. -0.5 dBTP is chosen because it is the most aggressive value TD1008 sanctions for any limiter in the chain; lossless and high-rate lossy files were already at -0.5, and low-rate files now stop giving up an unnecessary 0.5 dB of loudness.
+Both bullets describe the *limiter that sits in front of the encoder*. baken operates in the opposite position: on **already-encoded delivery files**. There is no further codec stage downstream to absorb additional overshoot, so the bitrate-dependent slack TD1008 grants the pre-encode limiter does not transfer to the end product. A single, codec-agnostic delivery ceiling is the correct interpretation. -0.5 dBTP is chosen because it is the most aggressive value TD1008 sanctions for any limiter in the chain; lossless and high-rate lossy files were already at -0.5, and low-rate files now stop giving up an unnecessary 0.5 dB of loudness.
 
 See [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) for a longer walk-through with citations.
 
@@ -242,7 +250,7 @@ See [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) for a longer walk-thr
 | Conservative master with extra player headroom | `--tp-target -2.0` | -2.0 dBTP for all files |
 | Mirror TD1008's pre-encode interpretation | `--tp-split-bitrate` | -0.5 dBTP ≥256 kbps, -1.0 dBTP <256 kbps |
 
-`--tp-target` and `--tp-split-bitrate` are mutually exclusive. `--tp-split-bitrate` reproduces headroom's pre-1.10 default exactly.
+`--tp-target` and `--tp-split-bitrate` are mutually exclusive. `--tp-split-bitrate` reproduces the pre-1.10 default exactly.
 
 The native-lossless threshold scales with the chosen ceiling: it is always `target − 1.5 dB` (e.g. `-0.5` → TP ≤ -2.0; `-1.0` → TP ≤ -2.5; `-2.0` → TP ≤ -3.5).
 
@@ -267,7 +275,7 @@ The native-lossless threshold scales with the chosen ceiling: it is always `targ
 ├── track08.m4a              ← Modified
 ├── subfolder/
 │   └── track06.mp3          ← Modified
-└── backup/                  ← Created by headroom
+└── backup/                  ← Created by baken
     ├── track01.flac         ← Original
     ├── track04.mp3          ← Original
     ├── track08.m4a          ← Original
@@ -287,7 +295,7 @@ The native-lossless threshold scales with the chosen ceiling: it is always `targ
 
 Both MP3 and AAC store a "global_gain" value as an integer. Each ±1 increment changes the gain by `2^(1/4)` = **±1.5 dB**. This is a format-level constraint, not a tool limitation.
 
-headroom uses the built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library to directly modify this field — no decoding or re-encoding involved.
+baken uses the built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library to directly modify this field — no decoding or re-encoding involved.
 
 #### Native Lossless Threshold
 
@@ -305,13 +313,11 @@ Example: 320 kbps file at -3.5 dBTP, default target → 2 steps (+3.0 dB) → -0
 
 At ≥256kbps, re-encoding introduces quantization noise below -90dB — far below audible threshold. Only gain is applied (no EQ, compression, or dynamics processing), and original bitrate is preserved.
 
-## Rekordbox Playlist Sorter (`rbsort`)
+## Rekordbox Playlist Sorter (`baken rbsort`)
 
-*Added in v2.0.0.*
+Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` reads your `collection.xml`, sorts each target playlist by **Camelot Key (1A → 12B) ascending** then **BPM ascending**, and emits the sorted copies into a new `Sorted (Key+BPM)/` folder appended to the same XML. Originals are left untouched. The layout mirrors the analyzer's `backup/` directory: one container folder, each item inside keeps its source name.
 
-Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `headroom rbsort` reads your `collection.xml`, sorts each target playlist by **Camelot Key (1A → 12B) ascending** then **BPM ascending**, and emits the sorted copies into a new `Sorted (Key+BPM)/` folder appended to the same XML. Originals are left untouched. The layout mirrors headroom's `backup/` directory: one container folder, each item inside keeps its source name.
-
-This is the same idea as headroom's analyzer applied to playlist order: Rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in Rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
+This is the same idea as `baken headroom` applied to playlist order: Rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in Rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
 
 ### Workflow
 
@@ -320,15 +326,15 @@ This is the same idea as headroom's analyzer applied to playlist order: Rekordbo
 3. **Run rbsort**:
    ```bash
    # Sort every TrackID-referenced playlist in the XML
-   headroom rbsort --xml ~/Music/rekordbox/collection.xml
+   baken rbsort --xml ~/Music/rekordbox/collection.xml
 
    # Or target one playlist (top-level: just the name)
-   headroom rbsort \
+   baken rbsort \
      --xml ~/Music/rekordbox/collection.xml \
      --playlist "Happy House and Trance"
 
    # Or target one nested under a folder
-   headroom rbsort \
+   baken rbsort \
      --xml ~/Music/rekordbox/collection.xml \
      --playlist "Sets/Friday"
    ```
@@ -362,8 +368,61 @@ See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-tra
 
 - Requires the `Tonality` field to be exported as 1A..12B (Rekordbox's "Alphanumeric" key display format). Non-matching values (e.g. `Am`, `C#`) are silently sorted last.
 - Only `KeyType="0"` (TrackID-referenced) playlists are supported. In all-playlists mode, non-`KeyType=0` playlists are silently skipped; for a single target, `rbsort` errors out.
-- `rbsort` does **not** require ffmpeg — only the analyzer subcommand does.
+- `baken rbsort` does **not** require ffmpeg — only the `headroom` and `cdjsafe` subcommands do.
 - A single `Sorted (Key+BPM)/` folder is appended inside the `<PLAYLISTS>` ROOT NODE, regardless of how many playlists were processed. The ROOT `Count` is bumped by 1.
+
+## CDJ-safe Transcoder (`baken cdjsafe`)
+
+*Added in v3.0.0. Design discussion: [#40](https://github.com/M-Igashi/baken/issues/40).*
+
+Pre-NXS2 CDJs (CDJ-2000NXS, CDJ-2000, CDJ-900NXS, CDJ-850, …) have inconsistent or absent support for anything that isn't MP3: FLAC needs an NXS2 (2016+), and ALAC/AIFF/WAV/AAC fail on specific firmware combinations — sometimes mid-set. `baken cdjsafe` is the emergency-backup path: it takes a gig playlist and produces a USB-ready set of files that **will play on any CDJ**, with your cues and beatgrid intact.
+
+```bash
+baken cdjsafe \
+  --xml ~/Music/rekordbox/collection.xml \
+  --playlist "Sets/Friday" \
+  --out-dir ~/Music/cdjsafe-friday
+```
+
+### What it does
+
+1. Reads the target playlist from your exported `collection.xml`.
+2. Converts **every** track to the CDJ-safe profile — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
+
+   | Source | Action |
+   |---|---|
+   | FLAC, WAV, AIFF, ALAC | Re-encode |
+   | AAC/M4A (any bitrate) | Re-encode |
+   | MP3 not exactly 320 kbps CBR @ 44.1 kHz | Re-encode (lossy→lossy, reported) |
+   | MP3 already 320 kbps CBR @ 44.1 kHz | **Byte-identical copy** (no generation loss, LAME header untouched) |
+
+3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**, grouped in a `CDJ-safe (MP3)/<playlist>` folder. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
+4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
+
+If any track fails to convert, **no XML is written** — a partial USB defeats the point.
+
+### Importing back into Rekordbox
+
+1. *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select the output XML, restart Rekordbox.
+2. Open the `rekordbox xml` sidebar tree → `CDJ-safe (MP3)/<playlist>`.
+3. Right-click the imported tracks → **Import to Collection**. Cues and beatgrid come with them — no re-analysis needed.
+4. Export the playlist to USB in EXPORT mode as usual.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--xml <PATH>` | Path to `collection.xml` (required) |
+| `--playlist <PATH>` | Playlist to convert (required). Top-level: just the name; nested: `Folder/Playlist` |
+| `--out-dir <DIR>` | Directory for the MP3 files (required; created if missing) |
+| `--output <PATH>` (`-o`) | Output XML path. Defaults to `<input-stem>-out.<ext>` next to the input |
+
+### Notes
+
+- The output profile is locked (320 kbps CBR / 44.1 kHz / ID3v2.3) — it's the only combination that plays reliably across the whole CDJ fleet, and CBR sidesteps Rekordbox's VBR cue-offset problem.
+- ffmpeg writes a valid Xing/LAME header, so Rekordbox compensates the LAME encoder delay and cues stay sample-aligned.
+- Filenames are FAT32/exFAT-sanitized; collisions get a numeric suffix.
+- Requires ffmpeg (with `libmp3lame`; `soxr` resampling is used when available).
 
 ## License
 

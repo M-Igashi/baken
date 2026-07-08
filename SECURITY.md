@@ -13,7 +13,7 @@ Only the latest release receives security fixes.
 If you discover a security vulnerability, please report it responsibly:
 
 1. **Do NOT open a public issue**
-2. Use [GitHub's private vulnerability reporting](https://github.com/M-Igashi/headroom/security/advisories/new)
+2. Use [GitHub's private vulnerability reporting](https://github.com/M-Igashi/baken/security/advisories/new)
 
 You should receive an initial response within 72 hours.
 

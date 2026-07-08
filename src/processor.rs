@@ -16,7 +16,7 @@ pub fn ensure_backup_dir(backup_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(backup_dir).context("Failed to create backup directory")?;
     let marker = backup_dir.join(crate::scanner::BACKUP_MARKER);
     if !marker.exists() {
-        fs::write(&marker, "Created by headroom; this directory is skipped when scanning.\n")
+        fs::write(&marker, "Created by baken; this directory is skipped when scanning.\n")
             .context("Failed to write backup marker file")?;
     }
     Ok(backup_dir.to_path_buf())

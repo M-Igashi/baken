@@ -80,9 +80,9 @@ Toggling between *Sort by Key* and *Sort by BPM* in the UI does not combine them
 
 Even when single-column sort is enough for browsing, CDJs play tracks in the playlist's **stored** order — they ignore any on-screen sort that was active in Rekordbox or on the deck's browser. Toggling *Sort by Key* on the desktop and then exporting to USB does not change the order the CDJ plays the tracks in.
 
-`rbsort` rewrites the playlist's stored order inside the exported `collection.xml`, so the compound sort survives the USB export and reaches the CDJ. The same reason the loudness side of headroom writes gain into the audio files rather than relying on Rekordbox's Auto Gain tags: anything that lives only in the laptop app does not follow the music onto the deck.
+`rbsort` rewrites the playlist's stored order inside the exported `collection.xml`, so the compound sort survives the USB export and reaches the CDJ. The same reason the loudness side of baken (`baken headroom`) writes gain into the audio files rather than relying on Rekordbox's Auto Gain tags: anything that lives only in the laptop app does not follow the music onto the deck.
 
 ## Related
 
-- [README — Rekordbox Playlist Sorter (rbsort)](../README.md#rekordbox-playlist-sorter-rbsort)
+- [README — Rekordbox Playlist Sorter (baken rbsort)](../README.md#rekordbox-playlist-sorter-baken-rbsort)
 - [docs/true-peak-ceiling.md](true-peak-ceiling.md) — the same kind of design note for the loudness side
