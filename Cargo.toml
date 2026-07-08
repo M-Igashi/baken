@@ -6,6 +6,7 @@ authors = ["Masanari Higashi"]
 description = "Bake'n Deck — Rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
 license = "MIT"
 repository = "https://github.com/M-Igashi/baken"
+homepage = "https://baken.ravers.workers.dev"
 keywords = ["audio", "loudness", "dj", "rekordbox", "cdj"]
 categories = ["command-line-utilities", "multimedia::audio"]
 exclude = ["web/"]
