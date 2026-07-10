@@ -959,9 +959,9 @@ dependencies = [
 
 [[package]]
 name = "mp3rgain"
-version = "2.9.4"
+version = "2.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "499546990c75a5fdc68e9777dab56426659ceec767c34c411327c0d7c97bf384"
+checksum = "eecb4b28921ef35bb7d7297d7b746e54c6edd0123d25ad4e68ae7184d8774279"
 dependencies = [
  "anyhow",
  "colored",
