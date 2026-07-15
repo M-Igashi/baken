@@ -82,7 +82,7 @@ $ cd ~/Music/DJ-Tracks
 $ baken headroom
 
 ╭─────────────────────────────────────╮
-│            baken v3.0.0             │
+│            baken v3.0.1             │
 │   Bake'n Deck — CDJ Prep Toolkit    │
 ╰─────────────────────────────────────╯
 

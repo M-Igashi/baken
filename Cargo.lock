@@ -87,7 +87,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "baken"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -959,9 +959,9 @@ dependencies = [
 
 [[package]]
 name = "mp3rgain"
-version = "2.9.6"
+version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eecb4b28921ef35bb7d7297d7b746e54c6edd0123d25ad4e68ae7184d8774279"
+checksum = "a50fe74d30f26a96a0c917058236bcafa151072ad2b85555c5795ac6fc987031"
 dependencies = [
  "anyhow",
  "colored",

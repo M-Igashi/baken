@@ -1,6 +1,6 @@
 [package]
 name = "baken"
-version = "3.0.0"
+version = "3.0.1"
 edition = "2021"
 authors = ["Masanari Higashi"]
 description = "Bake'n Deck — Rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
@@ -36,7 +36,7 @@ walkdir = "2.4"
 chrono = "0.4"
 
 # MP3/AAC lossless gain adjustment
-mp3rgain = { version = "2.7", default-features = false, features = ["aac"] }
+mp3rgain = { version = "2.10", default-features = false, features = ["aac"] }
 
 # XML parsing (rbsort subcommand)
 quick-xml = "0.41"
