@@ -69,6 +69,77 @@ fn print_tp_target_banner(tp_mode: TpTargetMode) {
     }
 }
 
+/// Shared pipeline head: empty-check → analyze → summary gate → report table.
+/// Returns None when there is nothing to process (message already printed).
+fn analyze_and_report(
+    files: &[PathBuf],
+    tp_mode: TpTargetMode,
+) -> Result<Option<(Vec<AudioAnalysis>, AnalysisSummary)>> {
+    if files.is_empty() {
+        println!("\n{} No audio files found", style("⚠").yellow());
+        println!(
+            "  Supported formats: {}",
+            scanner::get_supported_extensions().join(", ")
+        );
+        return Ok(None);
+    }
+
+    println!(
+        "\n{} Found {} audio files",
+        style("✓").green(),
+        style(files.len()).cyan()
+    );
+
+    let all_analyses = analyze_files(files, tp_mode)?;
+    let summary = AnalysisSummary::from_analyses(&all_analyses);
+
+    if !summary.has_processable() {
+        println!(
+            "\n{} No files with enough headroom found.",
+            style("ℹ").blue()
+        );
+        println!("  All files are already at or above the target ceiling.");
+        return Ok(None);
+    }
+
+    report::print_analysis_report(&all_analyses, tp_mode);
+    Ok(Some((all_analyses, summary)))
+}
+
+fn write_csv_report(
+    analyses: &[AudioAnalysis],
+    base_dir: &Path,
+    explicit_path: Option<&Path>,
+) -> Result<()> {
+    let processable: Vec<_> = analyses.iter().filter(|a| a.has_headroom()).collect();
+    let csv_path = report::generate_csv(&processable, base_dir, explicit_path)?;
+    println!(
+        "{} Report saved: {}",
+        style("✓").green(),
+        csv_path.display()
+    );
+    Ok(())
+}
+
+/// Filter analyses down to the files the enabled methods allow processing.
+fn select_files(
+    analyses: &[AudioAnalysis],
+    lossless_on: bool,
+    reencode_on: bool,
+) -> Vec<&AudioAnalysis> {
+    analyses
+        .iter()
+        .filter(|a| {
+            a.has_headroom()
+                && if a.requires_reencode() {
+                    reencode_on
+                } else {
+                    lossless_on
+                }
+        })
+        .collect()
+}
+
 fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     let target_dir = std::env::current_dir().context("Failed to get current directory")?;
 
@@ -79,62 +150,28 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     );
 
     let files = scanner::scan_audio_files(&target_dir);
-
-    if files.is_empty() {
-        println!("\n{} No audio files found", style("⚠").yellow());
-        println!(
-            "  Supported formats: {}",
-            scanner::get_supported_extensions().join(", ")
-        );
+    let Some((all_analyses, summary)) = analyze_and_report(&files, tp_mode)? else {
         return Ok(());
-    }
+    };
 
-    println!(
-        "\n{} Found {} audio files",
-        style("✓").green(),
-        style(files.len()).cyan()
-    );
+    write_csv_report(&all_analyses, &target_dir, None)?;
 
-    let all_analyses = analyze_files(&files, tp_mode)?;
-
-    let summary = AnalysisSummary::from_analyses(&all_analyses);
-
-    if !summary.has_processable() {
-        println!(
-            "\n{} No files with enough headroom found.",
-            style("ℹ").blue()
-        );
-        println!("  All files are already at or above the target ceiling.");
-        return Ok(());
-    }
-
-    report::print_analysis_report(&all_analyses, tp_mode);
-
-    let processable_analyses: Vec<_> = all_analyses
-        .iter()
-        .filter(|a| a.has_headroom())
-        .collect();
-
-    let csv_path = report::generate_csv(&processable_analyses, &target_dir, None)?;
-    println!(
-        "{} Report saved: {}",
-        style("✓").green(),
-        csv_path.display()
-    );
-
-    let has_lossless = summary.total_lossless() > 0;
-    let has_reencode = summary.total_reencode() > 0;
-
-    if has_lossless && !prompt_lossless_processing(&summary)? {
+    if summary.total_lossless() > 0 && !prompt_lossless_processing(&summary)? {
         println!("Done. No files were modified.");
         return Ok(());
     }
 
-    let allow_reencode = if has_reencode {
+    let allow_reencode = if summary.total_reencode() > 0 {
         prompt_reencode_processing(&summary)?
     } else {
         false
     };
+
+    let files_to_process = select_files(&all_analyses, true, allow_reencode);
+    if files_to_process.is_empty() {
+        println!("{} No files to process.", style("ℹ").blue());
+        return Ok(());
+    }
 
     let create_backup = Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Create backup before processing?")
@@ -149,20 +186,8 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
         None
     };
 
-    let files_to_process: Vec<_> = all_analyses
-        .iter()
-        .filter(|a| a.has_headroom() && (!a.requires_reencode() || allow_reencode))
-        .collect();
-
-    if files_to_process.is_empty() {
-        println!("No files to process.");
-        return Ok(());
-    }
-
     process_files(&files_to_process, &target_dir, backup_dir.as_deref())?;
-
     print_final_summary(&files_to_process);
-
     Ok(())
 }
 
@@ -178,51 +203,17 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
         (files, base)
     };
 
-    if files.is_empty() {
-        println!("{} No audio files matched.", style("⚠").yellow());
-        println!(
-            "  Supported formats: {}",
-            scanner::get_supported_extensions().join(", ")
-        );
+    let Some((all_analyses, _)) = analyze_and_report(&files, tp_mode)? else {
         return Ok(());
-    }
-
-    println!(
-        "{} Found {} audio files",
-        style("✓").green(),
-        style(files.len()).cyan()
-    );
-
-    let all_analyses = analyze_files(&files, tp_mode)?;
-
-    let summary = AnalysisSummary::from_analyses(&all_analyses);
-
-    if !summary.has_processable() {
-        println!(
-            "\n{} No files with enough headroom found.",
-            style("ℹ").blue()
-        );
-        return Ok(());
-    }
-
-    report::print_analysis_report(&all_analyses, tp_mode);
-
-    let processable_analyses: Vec<_> = all_analyses.iter().filter(|a| a.has_headroom()).collect();
+    };
 
     if cli.report_enabled() {
-        let explicit_path = cli.report.as_ref().and_then(|p| {
-            if p.as_os_str().is_empty() {
-                None
-            } else {
-                Some(p.as_path())
-            }
-        });
-        let csv_path = report::generate_csv(&processable_analyses, &base_dir, explicit_path)?;
-        println!(
-            "{} Report saved: {}",
-            style("✓").green(),
-            csv_path.display()
-        );
+        let explicit_path = cli
+            .report
+            .as_ref()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(PathBuf::as_path);
+        write_csv_report(&all_analyses, &base_dir, explicit_path)?;
     }
 
     if cli.analyze_only {
@@ -230,23 +221,7 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
         return Ok(());
     }
 
-    let lossless_on = cli.lossless_enabled();
-    let reencode_on = cli.reencode_enabled();
-
-    let files_to_process: Vec<_> = all_analyses
-        .iter()
-        .filter(|a| {
-            if !a.has_headroom() {
-                return false;
-            }
-            if a.requires_reencode() {
-                reencode_on
-            } else {
-                lossless_on
-            }
-        })
-        .collect();
-
+    let files_to_process = select_files(&all_analyses, cli.lossless_enabled(), cli.reencode_enabled());
     if files_to_process.is_empty() {
         println!("{} No files to process with current flags.", style("ℹ").blue());
         return Ok(());
@@ -265,9 +240,7 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
     };
 
     process_files(&files_to_process, &base_dir, backup_dir.as_deref())?;
-
     print_final_summary(&files_to_process);
-
     Ok(())
 }
 
