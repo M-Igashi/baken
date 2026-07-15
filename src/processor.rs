@@ -15,10 +15,9 @@ pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
 pub fn ensure_backup_dir(backup_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(backup_dir).context("Failed to create backup directory")?;
     let marker = backup_dir.join(crate::scanner::BACKUP_MARKER);
-    if !marker.exists() {
-        fs::write(&marker, "Created by baken; this directory is skipped when scanning.\n")
-            .context("Failed to write backup marker file")?;
-    }
+    // Fixed content, so an unconditional write is idempotent — no exists() check.
+    fs::write(&marker, "Created by baken; this directory is skipped when scanning.\n")
+        .context("Failed to write backup marker file")?;
     Ok(backup_dir.to_path_buf())
 }
 
@@ -45,10 +44,6 @@ fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<P
     Ok(backup_path)
 }
 
-fn path_str(path: &Path) -> Result<&str> {
-    path.to_str().ok_or_else(|| anyhow!("Invalid path: {}", path.display()))
-}
-
 /// Apply gain to lossless files using ffmpeg volume filter
 fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let extension = file_path
@@ -57,23 +52,23 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         .unwrap_or("wav");
     let temp_path = file_path.with_extension(format!("tmp.{}", extension));
 
-    let input = path_str(file_path)?;
-    let temp = path_str(&temp_path)?;
     let volume_arg = format!("volume={}dB", gain_db);
 
-    let mut args: Vec<&str> = vec!["-y", "-i", input, "-af", &volume_arg];
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-y", "-i"])
+        .arg(file_path)
+        .args(["-af", &volume_arg]);
     match extension.to_ascii_lowercase().as_str() {
-        "flac" => args.extend(["-c:a", "flac"]),
+        "flac" => cmd.args(["-c:a", "flac"]),
         // ffmpeg's AIFF muxer drops ID3v2 chunks unless -write_id3v2 is set.
-        "aiff" | "aif" => args.extend(["-c:a", "pcm_s24be", "-write_id3v2", "1"]),
+        "aiff" | "aif" => cmd.args(["-c:a", "pcm_s24be", "-write_id3v2", "1"]),
         // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
-        "wav" => args.extend(["-c:a", "pcm_s24le", "-write_bext", "1"]),
-        _ => {}
-    }
-    args.push(temp);
+        "wav" => cmd.args(["-c:a", "pcm_s24le", "-write_bext", "1"]),
+        _ => &mut cmd,
+    };
+    cmd.arg(&temp_path);
 
-    let output = Command::new("ffmpeg")
-        .args(&args)
+    let output = cmd
         .output()
         .context("Failed to execute ffmpeg for gain adjustment")?;
 
@@ -149,19 +144,15 @@ fn apply_gain_reencode(
         .map(|kbps| format!("{}k", kbps))
         .unwrap_or_else(|| format.default_bitrate().to_string());
     let volume_arg = format!("volume={}dB", gain_db);
-
-    let input = path_str(file_path)?;
-    let temp = path_str(&temp_path)?;
     let label = format.label();
 
     for encoder in format.encoders() {
         // CBR-only: adding -q:a would force libmp3lame to VBR and override -b:a.
-        let args = [
-            "-y", "-i", input, "-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate, temp,
-        ];
-
         let output = Command::new("ffmpeg")
-            .args(args)
+            .args(["-y", "-i"])
+            .arg(file_path)
+            .args(["-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate])
+            .arg(&temp_path)
             .output()
             .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
 

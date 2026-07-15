@@ -128,8 +128,9 @@ impl HeadroomArgs {
     }
 
     /// Whether re-encode processing is enabled in non-interactive mode (default: false).
+    /// clap's `conflicts_with` guarantees `--reencode` and `--no-reencode` are never both set.
     pub fn reencode_enabled(&self) -> bool {
-        self.reencode && !self.no_reencode
+        self.reencode
     }
 
     /// Whether CSV report should be generated in non-interactive mode (default: true).

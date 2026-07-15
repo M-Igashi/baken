@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use std::fmt::Write;
 use std::path::Path;
 
 /// Decode a Rekordbox `Location` attribute (`file://localhost/...`) into a
@@ -51,7 +52,7 @@ pub fn encode_location(path: &Path) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' | b':' => {
                 out.push(b as char)
             }
-            _ => out.push_str(&format!("%{:02X}", b)),
+            _ => write!(out, "%{:02X}", b).unwrap(),
         }
     }
     out

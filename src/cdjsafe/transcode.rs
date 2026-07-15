@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
@@ -66,6 +66,14 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
         .output()
         .context("Failed to execute ffprobe. Is ffmpeg installed?")?;
 
+    if !output.status.success() {
+        bail!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let probe: ProbeOutput = serde_json::from_str(&stdout)
         .with_context(|| format!("ffprobe returned no readable data for {}", path.display()))?;
@@ -131,15 +139,9 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
             return Ok(());
         }
         let _ = std::fs::remove_file(dst);
-        last_err = String::from_utf8_lossy(&output.stderr)
-            .lines()
-            .rev()
-            .take(4)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let lines: Vec<&str> = stderr.lines().collect();
+        last_err = lines[lines.len().saturating_sub(4)..].join("\n");
     }
 
     Err(anyhow!(

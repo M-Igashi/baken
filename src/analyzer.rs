@@ -132,14 +132,8 @@ fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
 
 fn get_bitrate(path: &Path) -> Option<u32> {
     let output = Command::new("ffprobe")
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            path.to_str()?,
-        ])
+        .args(["-v", "quiet", "-print_format", "json", "-show_format"])
+        .arg(path)
         .output()
         .ok()?;
 
@@ -251,18 +245,9 @@ fn extract_loudnorm_json(stderr: &str, path: &Path) -> Result<LoudnormOutput> {
 
 pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<AudioAnalysis> {
     let output = Command::new("ffmpeg")
-        .args([
-            "-nostdin",
-            "-i",
-            path.to_str().ok_or_else(|| anyhow!("Invalid path"))?,
-            "-map",
-            "0:a:0",
-            "-af",
-            "loudnorm=print_format=json",
-            "-f",
-            "null",
-            "-",
-        ])
+        .args(["-nostdin", "-i"])
+        .arg(path)
+        .args(["-map", "0:a:0", "-af", "loudnorm=print_format=json", "-f", "null", "-"])
         .output()
         .context("Failed to execute ffmpeg. Is ffmpeg installed?")?;
 

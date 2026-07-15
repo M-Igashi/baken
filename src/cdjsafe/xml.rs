@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use super::location::decode_location;
+use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, playlist_node_attrs};
 
 /// Name of the Type=0 folder NODE that holds the CDJ-safe playlist.
 pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
@@ -87,11 +88,9 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                     }
                 }
                 b"NODE" if in_playlists => {
-                    let name = get_attr(&e, b"Name")?.unwrap_or_default();
-                    let ty = get_attr(&e, b"Type")?.unwrap_or_default();
+                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
                     path_stack.push(name);
                     if ty == "1" && path_stack.len() > 1 && path_stack[1..] == target[..] {
-                        let key_type = get_attr(&e, b"KeyType")?.unwrap_or_default();
                         if key_type != "0" {
                             bail!(
                                 "Playlist '{}' is not a TrackID-referenced playlist (KeyType={}). \
@@ -245,17 +244,6 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
     })
 }
 
-fn get_attr(e: &BytesStart, name: &[u8]) -> Result<Option<String>> {
-    for attr in e.attributes() {
-        let attr = attr?;
-        if attr.key.as_ref() == name {
-            #[allow(deprecated)]
-            return Ok(Some(attr.unescape_value()?.into_owned()));
-        }
-    }
-    Ok(None)
-}
-
 /// Pass 3: stream-copy the source XML, appending the new `<TRACK>` entries to
 /// `<COLLECTION>` (bumping `Entries`) and a `CDJ-safe (MP3)` folder holding
 /// the new playlist under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
@@ -331,31 +319,6 @@ pub fn rewrite_xml(
     Ok(output)
 }
 
-/// Rewrite a start tag with one numeric attribute increased by `add`.
-fn bump_count_attr(e: &BytesStart, attr_name: &[u8], add: usize) -> Result<BytesStart<'static>> {
-    let name = String::from_utf8(e.name().as_ref().to_vec())?;
-    let mut new_start = BytesStart::new(name);
-    let mut seen = false;
-    for attr in e.attributes() {
-        let attr = attr?;
-        if attr.key.as_ref() == attr_name {
-            seen = true;
-            let val: usize = std::str::from_utf8(&attr.value)?.trim().parse().unwrap_or(0);
-            let new_val = (val + add).to_string();
-            new_start.push_attribute((
-                std::str::from_utf8(attr_name)?,
-                new_val.as_str(),
-            ));
-        } else {
-            new_start.push_attribute(attr.to_owned());
-        }
-    }
-    if !seen {
-        new_start.push_attribute((std::str::from_utf8(attr_name)?, add.to_string().as_str()));
-    }
-    Ok(new_start)
-}
-
 fn emit_track<W: std::io::Write>(
     writer: &mut Writer<W>,
     src: &SourceTrack,
@@ -410,7 +373,7 @@ fn emit_track<W: std::io::Write>(
     } else {
         writer.write_event(Event::Start(e))?;
         for child in &src.children {
-            writer.write_event(child.clone())?;
+            writer.write_event(child.borrow())?;
         }
         writer.write_event(Event::End(BytesEnd::new("TRACK")))?;
     }
@@ -437,22 +400,9 @@ fn emit_playlist_folder<W: std::io::Write>(
     folder.push_attribute(("Count", "1"));
     writer.write_event(Event::Start(folder))?;
 
-    let entries = new_tracks.len().to_string();
-    let mut node = BytesStart::new("NODE");
-    node.push_attribute(("Name", playlist_name));
-    node.push_attribute(("Type", "1"));
-    node.push_attribute(("KeyType", "0"));
-    node.push_attribute(("Entries", entries.as_str()));
-    writer.write_event(Event::Start(node))?;
+    let ids: Vec<String> = new_tracks.iter().map(|t| t.track_id.to_string()).collect();
+    emit_playlist(writer, playlist_name, &ids)?;
 
-    for t in new_tracks {
-        let id = t.track_id.to_string();
-        let mut track = BytesStart::new("TRACK");
-        track.push_attribute(("Key", id.as_str()));
-        writer.write_event(Event::Empty(track))?;
-    }
-
-    writer.write_event(Event::End(BytesEnd::new("NODE")))?;
     writer.write_event(Event::End(BytesEnd::new("NODE")))?;
     Ok(())
 }

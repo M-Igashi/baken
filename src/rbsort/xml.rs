@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::camelot::parse_camelot;
+use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, playlist_node_attrs};
 
 /// Name of the Type=0 folder NODE that holds all sorted playlists.
 pub const SORTED_FOLDER_NAME: &str = "Sorted (Key+BPM)";
@@ -112,7 +113,7 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 b"COLLECTION" => {
                     in_collection = true;
-                    if let Some(n) = get_attr(&e, "Entries")?.and_then(|v| v.parse().ok()) {
+                    if let Some(n) = get_attr(&e, b"Entries")?.and_then(|v| v.parse().ok()) {
                         collection.reserve(n);
                     }
                 }
@@ -139,7 +140,7 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
                 }
                 b"TRACK" => {
                     if let Some(cur) = current.as_mut() {
-                        if let Some(k) = get_attr(&e, "Key")? {
+                        if let Some(k) = get_attr(&e, b"Key")? {
                             cur.track_ids.push(k);
                         }
                     }
@@ -185,25 +186,6 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
     Ok((collection, playlists))
 }
 
-/// Extract `(Name, Type, KeyType)` from a playlist NODE in a single attribute scan.
-fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, String)> {
-    let mut name = String::new();
-    let mut ty = String::new();
-    let mut key_type = String::new();
-    for attr in e.attributes() {
-        let attr = attr?;
-        #[allow(deprecated)]
-        let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
-        match attr.key.as_ref() {
-            b"Name" => name = val()?,
-            b"Type" => ty = val()?,
-            b"KeyType" => key_type = val()?,
-            _ => {}
-        }
-    }
-    Ok((name, ty, key_type))
-}
-
 fn record_collection_track(
     e: &BytesStart,
     collection: &mut HashMap<String, TrackMeta>,
@@ -226,18 +208,6 @@ fn record_collection_track(
         collection.insert(id, TrackMeta { camelot, bpm });
     }
     Ok(())
-}
-
-fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
-    for attr in e.attributes() {
-        let attr = attr?;
-        if attr.key.as_ref() == name.as_bytes() {
-            #[allow(deprecated)]
-            let val = attr.unescape_value()?.into_owned();
-            return Ok(Some(val));
-        }
-    }
-    Ok(None)
 }
 
 /// Compare two `Option`s placing `None` after `Some`, using `cmp` on the inner values.
@@ -295,21 +265,7 @@ fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>>
                         playlists_depth += 1;
                         if playlists_depth == 1 {
                             // ROOT NODE — bump Count by 1 (we insert one folder).
-                            let mut new_start = BytesStart::new("NODE");
-                            for attr in e.attributes() {
-                                let attr = attr?;
-                                if attr.key.as_ref() == b"Count" {
-                                    let val: usize = std::str::from_utf8(&attr.value)?
-                                        .trim()
-                                        .parse()
-                                        .unwrap_or(0);
-                                    let new_val = (val + 1).to_string();
-                                    new_start.push_attribute(("Count", new_val.as_str()));
-                                } else {
-                                    new_start.push_attribute(attr);
-                                }
-                            }
-                            writer.write_event(Event::Start(new_start))?;
+                            writer.write_event(Event::Start(bump_count_attr(&e, b"Count", 1)?))?;
                         } else {
                             writer.write_event(Event::Start(e))?;
                         }
@@ -353,29 +309,6 @@ fn emit_sorted_folder<W: std::io::Write>(
 
     for p in playlists {
         emit_playlist(writer, &p.name, &p.track_ids)?;
-    }
-
-    writer.write_event(Event::End(BytesEnd::new("NODE")))?;
-    Ok(())
-}
-
-fn emit_playlist<W: std::io::Write>(
-    writer: &mut Writer<W>,
-    name: &str,
-    track_ids: &[String],
-) -> Result<()> {
-    let entries = track_ids.len().to_string();
-    let mut node = BytesStart::new("NODE");
-    node.push_attribute(("Name", name));
-    node.push_attribute(("Type", "1"));
-    node.push_attribute(("KeyType", "0"));
-    node.push_attribute(("Entries", entries.as_str()));
-    writer.write_event(Event::Start(node))?;
-
-    for tid in track_ids {
-        let mut track = BytesStart::new("TRACK");
-        track.push_attribute(("Key", tid.as_str()));
-        writer.write_event(Event::Empty(track))?;
     }
 
     writer.write_event(Event::End(BytesEnd::new("NODE")))?;

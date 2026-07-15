@@ -7,6 +7,7 @@ mod rbsort;
 mod report;
 mod scanner;
 mod updater;
+mod xmlutil;
 
 use anyhow::Result;
 

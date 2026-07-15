@@ -4,7 +4,8 @@
 /// Returns `None` for empty input or non-Camelot notation.
 pub fn parse_camelot(s: &str) -> Option<u8> {
     let s = s.trim();
-    if s.len() < 2 || s.len() > 3 {
+    // Byte-indexed split below: non-ASCII input would panic mid-character.
+    if !s.is_ascii() || s.len() < 2 || s.len() > 3 {
         return None;
     }
     let (num_part, letter_part) = s.split_at(s.len() - 1);
@@ -42,6 +43,8 @@ mod tests {
         assert_eq!(parse_camelot("1C"), None);
         assert_eq!(parse_camelot("Am"), None);
         assert_eq!(parse_camelot("C#"), None);
+        assert_eq!(parse_camelot("1Ä"), None); // non-ASCII must not panic
+        assert_eq!(parse_camelot("é"), None);
         assert_eq!(parse_camelot("100A"), None);
     }
 
