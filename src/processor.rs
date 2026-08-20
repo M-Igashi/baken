@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -44,6 +45,136 @@ fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<P
     Ok(backup_path)
 }
 
+/// PCM codecs each container's muxer accepts. A source codec outside its
+/// container's list (a compressed payload in a WAV/AIFF wrapper) falls back to
+/// the 24-bit default, which is what every file got before issue #74.
+const AIFF_PCM: &[&str] = &[
+    "pcm_s8",
+    "pcm_u8",
+    "pcm_s16le",
+    "pcm_s16be",
+    "pcm_s24be",
+    "pcm_s32be",
+    "pcm_f32be",
+    "pcm_f64be",
+];
+const WAV_PCM: &[&str] = &[
+    "pcm_u8",
+    "pcm_s16le",
+    "pcm_s24le",
+    "pcm_s32le",
+    "pcm_f32le",
+    "pcm_f64le",
+];
+
+#[derive(Debug, Deserialize)]
+struct ProbeStream {
+    codec_name: Option<String>,
+    // ffprobe types these inconsistently (number for bits_per_sample, string
+    // for bits_per_raw_sample), so both are read untyped.
+    bits_per_sample: Option<serde_json::Value>,
+    bits_per_raw_sample: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProbeOutput {
+    streams: Vec<ProbeStream>,
+}
+
+/// Source sample format, used to write a gain-adjusted lossless file back at
+/// its original bit depth instead of promoting everything to 24-bit (issue #74).
+#[derive(Debug, Clone)]
+struct SourceFormat {
+    codec: String,
+    /// Meaningful bit depth, or None when ffprobe reports it as 0 / N/A.
+    bits: Option<u32>,
+}
+
+fn parse_bits(value: &Option<serde_json::Value>) -> Option<u32> {
+    let bits = match value.as_ref()? {
+        serde_json::Value::Number(n) => n.as_u64()? as u32,
+        serde_json::Value::String(s) => s.parse().ok()?,
+        _ => return None,
+    };
+    // 0 is ffprobe's "not applicable" for bit-packed codecs like FLAC.
+    (bits > 0).then_some(bits)
+}
+
+fn probe_source_format(path: &Path) -> Option<SourceFormat> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-select_streams",
+            "a:0",
+        ])
+        .arg(path)
+        .output()
+        .ok()?;
+
+    let probe: ProbeOutput = serde_json::from_slice(&output.stdout).ok()?;
+    let stream = probe.streams.into_iter().next()?;
+
+    Some(SourceFormat {
+        // bits_per_raw_sample is the meaningful depth for FLAC, where
+        // bits_per_sample is always 0.
+        bits: parse_bits(&stream.bits_per_raw_sample)
+            .or_else(|| parse_bits(&stream.bits_per_sample)),
+        codec: stream.codec_name?,
+    })
+}
+
+/// ffmpeg output arguments for a lossless container, preserving the source's
+/// bit depth where the muxer allows it.
+///
+/// `extension` must already be lowercased. `source` is None when ffprobe could
+/// not be read, in which case the pre-#74 defaults apply.
+fn output_args(extension: &str, source: Option<&SourceFormat>) -> Vec<String> {
+    let pcm_codec = |allowed: &[&str], fallback: &str| {
+        source
+            .map(|s| s.codec.as_str())
+            .filter(|codec| allowed.contains(codec))
+            .unwrap_or(fallback)
+            .to_string()
+    };
+
+    match extension {
+        // The volume filter emits float, so without an explicit -sample_fmt
+        // ffmpeg negotiates s32 and writes 24-bit even for a 16-bit source.
+        // Its FLAC encoder only accepts s16/s32, so 17..24-bit all map to s32.
+        "flac" => {
+            let sample_fmt = match source.and_then(|s| s.bits) {
+                Some(bits) if bits <= 16 => "s16",
+                _ => "s32",
+            };
+            vec![
+                "-c:a".into(),
+                "flac".into(),
+                "-sample_fmt".into(),
+                sample_fmt.into(),
+            ]
+        }
+        // ffmpeg's AIFF muxer drops ID3v2 chunks unless -write_id3v2 is set.
+        "aiff" | "aif" => vec![
+            "-c:a".into(),
+            pcm_codec(AIFF_PCM, "pcm_s24be"),
+            "-write_id3v2".into(),
+            "1".into(),
+        ],
+        // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
+        "wav" => vec![
+            "-c:a".into(),
+            pcm_codec(WAV_PCM, "pcm_s24le"),
+            "-write_bext".into(),
+            "1".into(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Apply gain to lossless files using ffmpeg volume filter
 fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let extension = file_path
@@ -53,20 +184,17 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let temp_path = file_path.with_extension(format!("tmp.{}", extension));
 
     let volume_arg = format!("volume={}dB", gain_db);
+    let source = probe_source_format(file_path);
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-y", "-i"])
         .arg(file_path)
-        .args(["-af", &volume_arg]);
-    match extension.to_ascii_lowercase().as_str() {
-        "flac" => cmd.args(["-c:a", "flac"]),
-        // ffmpeg's AIFF muxer drops ID3v2 chunks unless -write_id3v2 is set.
-        "aiff" | "aif" => cmd.args(["-c:a", "pcm_s24be", "-write_id3v2", "1"]),
-        // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
-        "wav" => cmd.args(["-c:a", "pcm_s24le", "-write_bext", "1"]),
-        _ => &mut cmd,
-    };
-    cmd.arg(&temp_path);
+        .args(["-af", &volume_arg])
+        .args(output_args(
+            &extension.to_ascii_lowercase(),
+            source.as_ref(),
+        ))
+        .arg(&temp_path);
 
     let output = cmd
         .output()
@@ -206,5 +334,99 @@ pub fn process_file(
             LossyFormat::Aac,
         ),
         GainMethod::None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(codec: &str, bits: Option<u32>) -> SourceFormat {
+        SourceFormat {
+            codec: codec.to_string(),
+            bits,
+        }
+    }
+
+    fn codec_of(args: &[String]) -> &str {
+        &args[args.iter().position(|a| a == "-c:a").unwrap() + 1]
+    }
+
+    fn value_of(args: &[String], flag: &str) -> Option<String> {
+        args.iter()
+            .position(|a| a == flag)
+            .map(|i| args[i + 1].clone())
+    }
+
+    /// Issue #74: a 16-bit source must not come back as 24-bit.
+    #[test]
+    fn preserves_source_bit_depth() {
+        let aiff = output_args("aiff", Some(&source("pcm_s16be", Some(16))));
+        assert_eq!(codec_of(&aiff), "pcm_s16be");
+
+        let wav = output_args("wav", Some(&source("pcm_s16le", Some(16))));
+        assert_eq!(codec_of(&wav), "pcm_s16le");
+
+        let flac = output_args("flac", Some(&source("flac", Some(16))));
+        assert_eq!(value_of(&flac, "-sample_fmt").as_deref(), Some("s16"));
+    }
+
+    /// 32-bit float masters were silently truncated to 24-bit integer.
+    #[test]
+    fn preserves_float_sources() {
+        let aiff = output_args("aiff", Some(&source("pcm_f32be", Some(32))));
+        assert_eq!(codec_of(&aiff), "pcm_f32be");
+
+        let wav = output_args("wav", Some(&source("pcm_f32le", Some(32))));
+        assert_eq!(codec_of(&wav), "pcm_f32le");
+    }
+
+    #[test]
+    fn keeps_24_bit_sources_at_24_bit() {
+        assert_eq!(
+            codec_of(&output_args("aiff", Some(&source("pcm_s24be", Some(24))))),
+            "pcm_s24be"
+        );
+        let flac = output_args("flac", Some(&source("flac", Some(24))));
+        assert_eq!(value_of(&flac, "-sample_fmt").as_deref(), Some("s32"));
+    }
+
+    /// A codec the container's muxer can't write, and an unreadable probe, both
+    /// fall back to the pre-#74 24-bit output rather than failing the run.
+    #[test]
+    fn falls_back_when_codec_not_writable() {
+        // Byte order is container-specific: LE flavours can't go into AIFF.
+        assert_eq!(
+            codec_of(&output_args("aiff", Some(&source("pcm_s24le", Some(24))))),
+            "pcm_s24be"
+        );
+        assert_eq!(
+            codec_of(&output_args("wav", Some(&source("pcm_s16be", Some(16))))),
+            "pcm_s24le"
+        );
+        assert_eq!(codec_of(&output_args("aiff", None)), "pcm_s24be");
+        assert_eq!(codec_of(&output_args("wav", None)), "pcm_s24le");
+        let flac = output_args("flac", None);
+        assert_eq!(value_of(&flac, "-sample_fmt").as_deref(), Some("s32"));
+    }
+
+    #[test]
+    fn metadata_flags_are_kept() {
+        let aiff = output_args("aif", Some(&source("pcm_s16be", Some(16))));
+        assert_eq!(value_of(&aiff, "-write_id3v2").as_deref(), Some("1"));
+        let wav = output_args("wav", Some(&source("pcm_s16le", Some(16))));
+        assert_eq!(value_of(&wav, "-write_bext").as_deref(), Some("1"));
+        assert!(output_args("m4a", None).is_empty());
+    }
+
+    /// ffprobe reports bits_per_sample as a number, bits_per_raw_sample as a
+    /// string, and 0 for bit-packed codecs like FLAC.
+    #[test]
+    fn parses_ffprobe_bit_fields() {
+        assert_eq!(parse_bits(&Some(serde_json::json!(16))), Some(16));
+        assert_eq!(parse_bits(&Some(serde_json::json!("24"))), Some(24));
+        assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
+        assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
+        assert_eq!(parse_bits(&None), None);
     }
 }

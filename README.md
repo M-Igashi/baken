@@ -200,6 +200,8 @@ baken selects the optimal method for each file based on format and headroom:
 | MP3, AAC/M4A | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
 | MP3, AAC/M4A | ffmpeg re-encode | Arbitrary | Inaudible at ≥256kbps |
 
+Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
+
 #### Three-Tier Approach for Lossy Formats (MP3/AAC)
 
 Each MP3 and AAC/M4A file is categorized into one of three tiers:
