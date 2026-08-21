@@ -1,6 +1,6 @@
 [package]
 name = "baken"
-version = "3.0.2"
+version = "3.0.3"
 edition = "2021"
 authors = ["Masanari Higashi"]
 description = "Bake'n Deck — Rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
