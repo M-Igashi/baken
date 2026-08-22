@@ -190,6 +190,9 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     cmd.args(["-y", "-i"])
         .arg(file_path)
         .args(["-af", &volume_arg])
+        // Stream-copy embedded artwork. Without this, muxer defaults re-encode
+        // a JPEG cover to PNG and inflate the file (issue #77).
+        .args(["-c:v", "copy"])
         .args(output_args(
             &extension.to_ascii_lowercase(),
             source.as_ref(),
@@ -276,10 +279,13 @@ fn apply_gain_reencode(
 
     for encoder in format.encoders() {
         // CBR-only: adding -q:a would force libmp3lame to VBR and override -b:a.
+        // -c:v copy keeps the original cover art bytes; the muxer defaults would
+        // re-encode it to PNG (MP3) or fail outright on h264 (M4A) — issue #77.
         let output = Command::new("ffmpeg")
             .args(["-y", "-i"])
             .arg(file_path)
             .args(["-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate])
+            .args(["-c:v", "copy"])
             .arg(&temp_path)
             .output()
             .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
