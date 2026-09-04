@@ -26,7 +26,12 @@ pub enum Command {
     /// folder as an argument). Provide paths or any flag to run in
     /// non-interactive (scriptable) mode.
     Headroom(HeadroomArgs),
-    /// Sort a Rekordbox playlist by Camelot Key then BPM, output as a new XML playlist.
+    /// Sort Rekordbox playlists by Camelot Key then BPM, in place in the exported XML.
+    ///
+    /// Every playlist keeps its name and folder position; only the track order
+    /// inside each one changes. Point Rekordbox's "rekordbox xml" Imported
+    /// Library at the file once, then re-export and re-run whenever your
+    /// playlists change.
     Rbsort(RbsortArgs),
     /// Transcode a Rekordbox playlist to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
     /// with cues and beatgrid carried over via a new XML playlist.
@@ -46,7 +51,12 @@ pub struct HeadroomArgs {
     pub paths: Vec<String>,
 
     /// Delivery True Peak ceiling in dBTP (default: -0.5). Negative values only.
-    #[arg(long, value_name = "DB", allow_hyphen_values = true, conflicts_with = "tp_split_bitrate")]
+    #[arg(
+        long,
+        value_name = "DB",
+        allow_hyphen_values = true,
+        conflicts_with = "tp_split_bitrate"
+    )]
     pub tp_target: Option<f64>,
 
     /// Restore the legacy bitrate-dependent ceiling (-0.5 dBTP for ≥256 kbps,
@@ -141,8 +151,8 @@ impl HeadroomArgs {
 
 #[derive(Args, Debug)]
 pub struct CdjsafeArgs {
-    /// Path to rekordbox collection.xml (File > Export Collection in xml format)
-    #[arg(long, value_name = "PATH")]
+    /// Exported rekordbox XML (File > Export Collection in xml format)
+    #[arg(value_name = "XML")]
     pub xml: PathBuf,
 
     /// Playlist to convert. Top-level playlists: just the name; nested:
@@ -162,25 +172,19 @@ pub struct CdjsafeArgs {
 
 #[derive(Args, Debug)]
 pub struct RbsortArgs {
-    /// Path to rekordbox collection.xml (File > Export Collection in xml format)
-    #[arg(long, value_name = "PATH")]
+    /// Exported rekordbox XML (File > Export Collection in xml format).
+    /// Sorted in place unless --output is given.
+    #[arg(value_name = "XML")]
     pub xml: PathBuf,
 
-    /// Source playlist under the Rekordbox `Playlists` root. Optional — if
-    /// omitted, every TrackID-referenced playlist in the XML is sorted. For a
-    /// single target, use the playlist name as-is for top-level playlists
-    /// (e.g. "MyPlaylist"), or '/'-separate folder/playlist names for nested
-    /// ones (e.g. "Folder/SubFolder/MyPlaylist").
+    /// Sort only this playlist. Top-level playlists: just the name
+    /// (e.g. "MyPlaylist"); nested: '/'-separate folder/playlist names
+    /// (e.g. "Folder/SubFolder/MyPlaylist"). Omitted: every TrackID-referenced
+    /// playlist in the XML is sorted.
     #[arg(long, value_name = "PATH")]
     pub playlist: Option<String>,
 
-    /// Output XML path. Optional — defaults to the input filename with "-out"
-    /// appended to the stem, in the same directory (e.g. collection.xml -> collection-out.xml).
+    /// Write the result here instead of overwriting the input XML.
     #[arg(long, short, value_name = "PATH")]
     pub output: Option<PathBuf>,
-
-    /// Override the new playlist's name. Only valid together with `--playlist`.
-    /// When sorting all playlists, each sorted copy reuses its source name.
-    #[arg(long, value_name = "NAME")]
-    pub name: Option<String>,
 }

@@ -16,7 +16,7 @@ pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
 /// Marker appended to the `Comments` attribute of every emitted track so the
 /// MP3 duplicates are distinguishable from the originals after
 /// "Import to Collection".
-const COMMENT_MARKER: &[u8] = b"[cdjsafe]";
+const COMMENT_MARKER: &str = "[cdjsafe]";
 
 /// A source `<TRACK>` captured verbatim from `<COLLECTION>`: raw (still
 /// escaped) attributes plus all child events (`<TEMPO>`, `<POSITION_MARK>`)
@@ -26,7 +26,7 @@ pub struct SourceTrack {
     pub name: String,
     pub location: String,
     pub has_total_time: bool,
-    attrs: Vec<(Vec<u8>, Vec<u8>)>,
+    attrs: Vec<(String, String)>,
     children: Vec<Event<'static>>,
 }
 
@@ -53,14 +53,14 @@ impl SourceTrack {
 }
 
 /// Attributes recomputed for the new MP3 rather than inherited.
-const RECOMPUTED: &[&[u8]] = &[
-    b"TrackID",
-    b"Location",
-    b"Kind",
-    b"Size",
-    b"BitRate",
-    b"SampleRate",
-    b"Comments",
+const RECOMPUTED: &[&str] = &[
+    "TrackID",
+    "Location",
+    "Kind",
+    "Size",
+    "BitRate",
+    "SampleRate",
+    "Comments",
 ];
 
 /// Pass 1: find the target playlist (path under ROOT), return its TrackID
@@ -80,14 +80,14 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
         match reader.read_event() {
             Ok(Event::Eof) => break,
             Ok(Event::Start(e)) => match e.name().as_ref() {
-                b"COLLECTION" => in_collection = true,
-                b"PLAYLISTS" => in_playlists = true,
-                b"TRACK" if in_collection => {
-                    if let Some(id) = get_attr(&e, b"TrackID")? {
+                "COLLECTION" => in_collection = true,
+                "PLAYLISTS" => in_playlists = true,
+                "TRACK" if in_collection => {
+                    if let Some(id) = get_attr(&e, "TrackID")? {
                         max_id = max_id.max(id.parse().unwrap_or(0));
                     }
                 }
-                b"NODE" if in_playlists => {
+                "NODE" if in_playlists => {
                     let (name, ty, key_type) = playlist_node_attrs(&e)?;
                     path_stack.push(name);
                     if ty == "1" && path_stack.len() > 1 && path_stack[1..] == target[..] {
@@ -105,23 +105,23 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                 _ => {}
             },
             Ok(Event::Empty(e)) => match e.name().as_ref() {
-                b"TRACK" if in_collection => {
-                    if let Some(id) = get_attr(&e, b"TrackID")? {
+                "TRACK" if in_collection => {
+                    if let Some(id) = get_attr(&e, "TrackID")? {
                         max_id = max_id.max(id.parse().unwrap_or(0));
                     }
                 }
-                b"TRACK" if capture.is_some() => {
-                    if let Some(k) = get_attr(&e, b"Key")? {
+                "TRACK" if capture.is_some() => {
+                    if let Some(k) = get_attr(&e, "Key")? {
                         capture.as_mut().unwrap().push(k);
                     }
                 }
-                b"NODE" if in_playlists => {} // self-closing NODE: nothing to match
+                "NODE" if in_playlists => {} // self-closing NODE: nothing to match
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
-                b"COLLECTION" => in_collection = false,
-                b"PLAYLISTS" => in_playlists = false,
-                b"NODE" if in_playlists => {
+                "COLLECTION" => in_collection = false,
+                "PLAYLISTS" => in_playlists = false,
+                "NODE" if in_playlists => {
                     if capture.is_some() && path_stack.len() > 1 && path_stack[1..] == target[..] {
                         found = capture.take();
                     }
@@ -129,7 +129,11 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                 }
                 _ => {}
             },
-            Err(e) => bail!("XML parse error at byte {}: {}", reader.buffer_position(), e),
+            Err(e) => bail!(
+                "XML parse error at byte {}: {}",
+                reader.buffer_position(),
+                e
+            ),
             _ => {}
         }
     }
@@ -153,10 +157,10 @@ pub fn collect_tracks(xml_data: &[u8], track_ids: &[String]) -> Result<Vec<Sourc
     loop {
         match reader.read_event() {
             Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) if e.name().as_ref() == b"COLLECTION" => in_collection = true,
-            Ok(Event::End(e)) if e.name().as_ref() == b"COLLECTION" => in_collection = false,
-            Ok(Event::Start(e)) if in_collection && e.name().as_ref() == b"TRACK" => {
-                let id = get_attr(&e, b"TrackID")?.unwrap_or_default();
+            Ok(Event::Start(e)) if e.name().as_ref() == "COLLECTION" => in_collection = true,
+            Ok(Event::End(e)) if e.name().as_ref() == "COLLECTION" => in_collection = false,
+            Ok(Event::Start(e)) if in_collection && e.name().as_ref() == "TRACK" => {
+                let id = get_attr(&e, "TrackID")?.unwrap_or_default();
                 if wanted.contains(id.as_str()) {
                     let mut track = source_track_from(&e, id.clone())?;
                     // Consume children verbatim until the matching </TRACK>.
@@ -168,7 +172,7 @@ pub fn collect_tracks(xml_data: &[u8], track_ids: &[String]) -> Result<Vec<Sourc
                                 track.children.push(Event::Start(c).into_owned());
                             }
                             Ok(Event::End(c)) => {
-                                if depth == 0 && c.name().as_ref() == b"TRACK" {
+                                if depth == 0 && c.name().as_ref() == "TRACK" {
                                     break;
                                 }
                                 depth -= 1;
@@ -185,14 +189,18 @@ pub fn collect_tracks(xml_data: &[u8], track_ids: &[String]) -> Result<Vec<Sourc
                     reader.read_to_end(e.name())?;
                 }
             }
-            Ok(Event::Empty(e)) if in_collection && e.name().as_ref() == b"TRACK" => {
-                let id = get_attr(&e, b"TrackID")?.unwrap_or_default();
+            Ok(Event::Empty(e)) if in_collection && e.name().as_ref() == "TRACK" => {
+                let id = get_attr(&e, "TrackID")?.unwrap_or_default();
                 if wanted.contains(id.as_str()) {
                     let track = source_track_from(&e, id.clone())?;
                     by_id.insert(id, track);
                 }
             }
-            Err(e) => bail!("XML parse error at byte {}: {}", reader.buffer_position(), e),
+            Err(e) => bail!(
+                "XML parse error at byte {}: {}",
+                reader.buffer_position(),
+                e
+            ),
             _ => {}
         }
     }
@@ -201,7 +209,10 @@ pub fn collect_tracks(xml_data: &[u8], track_ids: &[String]) -> Result<Vec<Sourc
     for id in track_ids {
         match by_id.remove(id) {
             Some(t) => out.push(t),
-            None => bail!("Playlist references TrackID {} not present in <COLLECTION>", id),
+            None => bail!(
+                "Playlist references TrackID {} not present in <COLLECTION>",
+                id
+            ),
         }
     }
     Ok(out)
@@ -215,22 +226,22 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
     for attr in e.attributes() {
         let attr = attr?;
         match attr.key.as_ref() {
-            b"Name" => {
+            "Name" => {
                 #[allow(deprecated)]
                 {
                     name = attr.unescape_value()?.into_owned();
                 }
             }
-            b"Location" => {
+            "Location" => {
                 #[allow(deprecated)]
                 {
                     location_raw = attr.unescape_value()?.into_owned();
                 }
             }
-            b"TotalTime" => has_total_time = true,
+            "TotalTime" => has_total_time = true,
             _ => {}
         }
-        attrs.push((attr.key.as_ref().to_vec(), attr.value.into_owned()));
+        attrs.push((attr.key.as_ref().to_string(), attr.value.into_owned()));
     }
     let location = decode_location(&location_raw)
         .with_context(|| format!("Track '{}' (TrackID {})", name, id))?;
@@ -268,23 +279,23 @@ pub fn rewrite_xml(
             match reader.read_event() {
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(e)) => match e.name().as_ref() {
-                    b"COLLECTION" => {
+                    "COLLECTION" => {
                         writer.write_event(Event::Start(bump_count_attr(
                             &e,
-                            b"Entries",
+                            "Entries",
                             new_tracks.len(),
                         )?))?;
                     }
-                    b"PLAYLISTS" => {
+                    "PLAYLISTS" => {
                         in_playlists = true;
                         playlists_depth = 0;
                         writer.write_event(Event::Start(e))?;
                     }
-                    b"NODE" if in_playlists => {
+                    "NODE" if in_playlists => {
                         playlists_depth += 1;
                         if playlists_depth == 1 {
                             // ROOT NODE — bump Count by 1 (we insert one folder).
-                            writer.write_event(Event::Start(bump_count_attr(&e, b"Count", 1)?))?;
+                            writer.write_event(Event::Start(bump_count_attr(&e, "Count", 1)?))?;
                         } else {
                             writer.write_event(Event::Start(e))?;
                         }
@@ -292,20 +303,20 @@ pub fn rewrite_xml(
                     _ => writer.write_event(Event::Start(e))?,
                 },
                 Ok(Event::End(e)) => match e.name().as_ref() {
-                    b"COLLECTION" => {
+                    "COLLECTION" => {
                         for (src, new) in sources.iter().zip(new_tracks) {
                             emit_track(&mut writer, src, new)?;
                         }
                         writer.write_event(Event::End(e))?;
                     }
-                    b"NODE" if in_playlists => {
+                    "NODE" if in_playlists => {
                         if playlists_depth == 1 {
                             emit_playlist_folder(&mut writer, playlist_name, new_tracks)?;
                         }
                         playlists_depth -= 1;
                         writer.write_event(Event::End(e))?;
                     }
-                    b"PLAYLISTS" => {
+                    "PLAYLISTS" => {
                         in_playlists = false;
                         writer.write_event(Event::End(e))?;
                     }
@@ -330,40 +341,38 @@ fn emit_track<W: std::io::Write>(
     let mut e = BytesStart::new("TRACK");
     let mut comments_done = false;
     for (key, raw_value) in &src.attrs {
-        match key.as_slice() {
-            b"TrackID" => e.push_attribute(("TrackID", track_id.as_str())),
-            b"Location" => e.push_attribute(("Location", new.location_url.as_str())),
-            b"Kind" => e.push_attribute(("Kind", "MP3 File")),
-            b"Size" => e.push_attribute(("Size", size.as_str())),
-            b"BitRate" => e.push_attribute(("BitRate", "320")),
-            b"SampleRate" => e.push_attribute(("SampleRate", "44100")),
-            b"Comments" => {
+        match key.as_str() {
+            "TrackID" => e.push_attribute(("TrackID", track_id.as_str())),
+            "Location" => e.push_attribute(("Location", new.location_url.as_str())),
+            "Kind" => e.push_attribute(("Kind", "MP3 File")),
+            "Size" => e.push_attribute(("Size", size.as_str())),
+            "BitRate" => e.push_attribute(("BitRate", "320")),
+            "SampleRate" => e.push_attribute(("SampleRate", "44100")),
+            "Comments" => {
                 // Append the marker to the raw (already escaped) source value.
                 let mut v = raw_value.clone();
                 if !v.is_empty() {
-                    v.push(b' ');
+                    v.push(' ');
                 }
-                v.extend_from_slice(COMMENT_MARKER);
-                push_raw_attr(&mut e, b"Comments", &v);
+                v.push_str(COMMENT_MARKER);
+                push_raw_attr(&mut e, "Comments", &v);
                 comments_done = true;
             }
             _ => push_raw_attr(&mut e, key, raw_value),
         }
     }
     // Add any recomputed attribute the source lacked.
-    let present: HashSet<&[u8]> = src.attrs.iter().map(|(k, _)| k.as_slice()).collect();
+    let present: HashSet<&str> = src.attrs.iter().map(|(k, _)| k.as_str()).collect();
     for missing in RECOMPUTED {
         if present.contains(missing) {
             continue;
         }
         match *missing {
-            b"Kind" => e.push_attribute(("Kind", "MP3 File")),
-            b"Size" => e.push_attribute(("Size", size.as_str())),
-            b"BitRate" => e.push_attribute(("BitRate", "320")),
-            b"SampleRate" => e.push_attribute(("SampleRate", "44100")),
-            b"Comments" if !comments_done => {
-                push_raw_attr(&mut e, b"Comments", COMMENT_MARKER)
-            }
+            "Kind" => e.push_attribute(("Kind", "MP3 File")),
+            "Size" => e.push_attribute(("Size", size.as_str())),
+            "BitRate" => e.push_attribute(("BitRate", "320")),
+            "SampleRate" => e.push_attribute(("SampleRate", "44100")),
+            "Comments" if !comments_done => push_raw_attr(&mut e, "Comments", COMMENT_MARKER),
             _ => {}
         }
     }
@@ -382,7 +391,7 @@ fn emit_track<W: std::io::Write>(
 
 /// Push an attribute whose value bytes are already XML-escaped (taken
 /// verbatim from the source document) without re-escaping.
-fn push_raw_attr(e: &mut BytesStart, key: &[u8], value: &[u8]) {
+fn push_raw_attr(e: &mut BytesStart, key: &str, value: &str) {
     e.push_attribute(Attribute {
         key: QName(key),
         value: Cow::Borrowed(value),
@@ -497,7 +506,9 @@ mod tests {
         assert!(out_str.contains(r#"BitRate="320""#));
         assert!(out_str.contains(r#"SampleRate="44100""#));
         assert!(out_str.contains(r#"Comments="great tune [cdjsafe]""#));
-        assert!(out_str.contains(r#"Location="file://localhost/Users/dj/cdjsafe/alpha%20beta.mp3""#));
+        assert!(
+            out_str.contains(r#"Location="file://localhost/Users/dj/cdjsafe/alpha%20beta.mp3""#)
+        );
         // Cue/grid children duplicated into the new track (source had one set)
         assert_eq!(out_str.matches(r#"Start="30.5""#).count(), 2);
         assert_eq!(out_str.matches("<TEMPO ").count(), 2);

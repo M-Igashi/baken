@@ -12,7 +12,7 @@ Rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | Subcommand | The gap it fills | What it does |
 |---|---|---|
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
-| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in Rekordbox | Sorts playlists by **Camelot Key (1A→12B) then BPM** and writes the order into `collection.xml` — CDJs play it in that exact order |
+| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in Rekordbox | Sorts every playlist by **Camelot Key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes a whole playlist to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
 
 🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
@@ -34,8 +34,8 @@ Pre-built binaries are available on the [Releases](https://github.com/M-Igashi/b
 
 ```bash
 baken headroom ~/Music/DJ-Tracks                # analyze & bake loudness gain (interactive)
-baken rbsort --xml collection.xml               # sort every playlist by Key+BPM
-baken cdjsafe --xml collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe
+baken rbsort collection.xml                     # sort every playlist by Key+BPM, in place
+baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe
 ```
 
 Run `baken --help` or `baken <subcommand> --help` for the full reference.
@@ -48,7 +48,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 - **Single binary** — [mp3rgain](https://github.com/M-Igashi/mp3rgain) built in; only ffmpeg required (and `rbsort` doesn't even need that)
 - **Truly lossless MP3/AAC gain** — global_gain header modification in 1.5 dB steps, no re-encode
 - **Uniform True Peak ceiling** — -0.5 dBTP by default (AES TD1008 §7B), tunable via `--tp-target`
-- **Non-destructive** — automatic backups; `rbsort`/`cdjsafe` never modify your original `collection.xml`
+- **Non-destructive** — automatic backups; `rbsort`/`cdjsafe` only ever touch an exported XML, never your Rekordbox library
 - **Metadata preserved** — files overwritten in place, so Rekordbox cues, hot cues, and beatgrids stay linked
 - **Interactive or scriptable** — guided two-stage confirmation, or flags/globs for pipelines and CI
 
@@ -315,46 +315,43 @@ At ≥256kbps, re-encoding introduces quantization noise below -90dB — far bel
 
 ## Rekordbox Playlist Sorter (`baken rbsort`)
 
-Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` reads your `collection.xml`, sorts each target playlist by **Camelot Key (1A → 12B) ascending** then **BPM ascending**, and emits the sorted copies into a new `Sorted (Key+BPM)/` folder appended to the same XML. Originals are left untouched. The layout mirrors the analyzer's `backup/` directory: one container folder, each item inside keeps its source name.
+Rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported Rekordbox XML and rewrites every playlist in it so its tracks run **Camelot Key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. Rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
 
 This is the same idea as `baken headroom` applied to playlist order: Rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in Rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
 
 ### Workflow
 
 1. **Set key display to Alphanumeric (1A..12B notation)** in Rekordbox: *Preferences > View > Key display format > Alphanumeric*.
-2. **Export**: *File > Export Collection in xml format* → e.g. `~/Music/rekordbox/collection.xml`.
-3. **Run rbsort**:
+2. **Export**: *File > Export Collection in xml format*. Always save to the same path, e.g. `~/Music/rekordbox/collection.xml`.
+3. **Run rbsort** on that file. It is sorted in place:
    ```bash
-   # Sort every TrackID-referenced playlist in the XML
-   baken rbsort --xml ~/Music/rekordbox/collection.xml
+   baken rbsort ~/Music/rekordbox/collection.xml
 
-   # Or target one playlist (top-level: just the name)
-   baken rbsort \
-     --xml ~/Music/rekordbox/collection.xml \
-     --playlist "Happy House and Trance"
+   # Only one playlist (top-level: just the name; nested: "Folder/Playlist")
+   baken rbsort ~/Music/rekordbox/collection.xml --playlist "Sets/Friday"
 
-   # Or target one nested under a folder
-   baken rbsort \
-     --xml ~/Music/rekordbox/collection.xml \
-     --playlist "Sets/Friday"
+   # Keep the export untouched and write elsewhere
+   baken rbsort ~/Music/rekordbox/collection.xml -o ~/Music/rekordbox/sorted.xml
    ```
-   Output defaults to `collection-out.xml` next to the input. Pass `--output <PATH>` to override.
-4. **Point Rekordbox at the output XML**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select `collection-out.xml`, then **restart Rekordbox** (Rekordbox only re-reads the XML on startup).
-5. **Open the `rekordbox xml` tree** in the left sidebar. It is a *separate* tree from your main library — switch to it from the **sidebar icon column** on the far left (the icon labeled `rekordbox xml`). Inside you'll find a new folder `Sorted (Key+BPM)/` containing each sorted playlist under its original name.
-6. **Verify the sort** by clicking any playlist inside `Sorted (Key+BPM)/` — tracks should run `1A` (lowest BPM) → `1B` → `2A` → … → `12B` (highest BPM).
-7. **Drag** the playlists you want from `Sorted (Key+BPM)/` into your main `Playlists` collection. Your original playlists (still in `Playlists`) are unchanged.
-8. **Export to USB for CDJ**: switch Rekordbox to *EXPORT* mode (top-left dropdown), plug in your USB / SD, then **right-click the playlist → Export Playlist**. CDJs read tracks in playlist order by default — your Key+BPM sort plays back on the deck in that exact order.
+4. **One-time setup**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select that same file.
+5. **Restart Rekordbox** (it only re-reads the XML on startup) and open the **`rekordbox xml` tree** in the left sidebar. It is a *separate* tree from your main library — switch to it from the sidebar icon column on the far left. It mirrors your `Playlists` folder structure, every playlist already in Key+BPM order: `1A` (lowest BPM) → `1B` → `2A` → … → `12B` (highest BPM).
+6. **Use it**: drag any playlist from the `rekordbox xml` tree into your main `Playlists` (it lands as a new playlist; your original is unchanged), switch to *EXPORT* mode, plug in your USB / SD, then **right-click the playlist → Export Playlist**. CDJs read tracks in playlist order by default — your Key+BPM sort plays back on the deck in that exact order.
 
-> The sorted results live **only** inside the `rekordbox xml > Sorted (Key+BPM)/` folder, not in your main `Playlists`. If you only see the originals, you're looking at the local library — switch sidebar trees.
+**Keeping it in sync**: whenever your playlists change, repeat steps 2, 3 and the restart. The file path never changes, so the Imported Library setting keeps pointing at the freshly sorted export and the `rekordbox xml` tree stays an always-sorted copy of your library.
 
-### Flags
+> The sorted playlists live **only** in the `rekordbox xml` tree, not in your main `Playlists`. If you only see unsorted originals, you're looking at the local library — switch sidebar trees.
 
-| Flag | Description |
+### Usage
+
+```
+baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
+```
+
+| Argument / Flag | Description |
 |------|-------------|
-| `--xml <PATH>` | Path to `collection.xml` (required) |
-| `--playlist <PATH>` | Source playlist under the Rekordbox `Playlists` root. **Optional** — if omitted, every TrackID-referenced playlist in the XML is sorted. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`) |
-| `--output <PATH>` (`-o`) | Output XML path. Optional — defaults to `<input-stem>-out.<ext>` next to the input |
-| `--name <NAME>` | Override the sorted playlist's name. Only valid with `--playlist`. When sorting all playlists, each sorted copy reuses its source name |
+| `<XML>` | Exported Rekordbox XML (required). Sorted in place unless `--output` is given |
+| `--playlist <PATH>` | Sort only this playlist. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`). Omitted: every TrackID-referenced playlist is sorted |
+| `--output <PATH>` (`-o`) | Write the result here instead of overwriting the input XML |
 
 ### Sort Rules
 
@@ -367,9 +364,9 @@ See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-tra
 ### Notes
 
 - Requires the `Tonality` field to be exported as 1A..12B (Rekordbox's "Alphanumeric" key display format). Non-matching values (e.g. `Am`, `C#`) are silently sorted last.
-- Only `KeyType="0"` (TrackID-referenced) playlists are supported. In all-playlists mode, non-`KeyType=0` playlists are silently skipped; for a single target, `rbsort` errors out.
+- Only `KeyType="0"` (TrackID-referenced) playlists are sorted. In all-playlists mode, other playlists pass through unchanged; for a single target, `rbsort` errors out.
+- Only the order of `<TRACK Key="…"/>` references changes. Playlist names, folder structure, `Count`/`Entries` attributes, whitespace and everything else in the XML are preserved byte-for-byte, so running `rbsort` twice on the same file is a no-op.
 - `baken rbsort` does **not** require ffmpeg — only the `headroom` and `cdjsafe` subcommands do.
-- A single `Sorted (Key+BPM)/` folder is appended inside the `<PLAYLISTS>` ROOT NODE, regardless of how many playlists were processed. The ROOT `Count` is bumped by 1.
 
 ## CDJ-safe Transcoder (`baken cdjsafe`)
 
@@ -378,8 +375,7 @@ See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-tra
 Pre-NXS2 CDJs (CDJ-2000NXS, CDJ-2000, CDJ-900NXS, CDJ-850, …) have inconsistent or absent support for anything that isn't MP3: FLAC needs an NXS2 (2016+), and ALAC/AIFF/WAV/AAC fail on specific firmware combinations — sometimes mid-set. `baken cdjsafe` is the emergency-backup path: it takes a gig playlist and produces a USB-ready set of files that **will play on any CDJ**, with your cues and beatgrid intact.
 
 ```bash
-baken cdjsafe \
-  --xml ~/Music/rekordbox/collection.xml \
+baken cdjsafe ~/Music/rekordbox/collection.xml \
   --playlist "Sets/Friday" \
   --out-dir ~/Music/cdjsafe-friday
 ```
@@ -408,11 +404,15 @@ If any track fails to convert, **no XML is written** — a partial USB defeats t
 3. Right-click the imported tracks → **Import to Collection**. Cues and beatgrid come with them — no re-analysis needed.
 4. Export the playlist to USB in EXPORT mode as usual.
 
-### Flags
+### Usage
 
-| Flag | Description |
+```
+baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
+```
+
+| Argument / Flag | Description |
 |------|-------------|
-| `--xml <PATH>` | Path to `collection.xml` (required) |
+| `<XML>` | Exported Rekordbox XML (required) |
 | `--playlist <PATH>` | Playlist to convert (required). Top-level: just the name; nested: `Folder/Playlist` |
 | `--out-dir <DIR>` | Directory for the MP3 files (required; created if missing) |
 | `--output <PATH>` (`-o`) | Output XML path. Defaults to `<input-stem>-out.<ext>` next to the input |

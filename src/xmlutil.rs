@@ -5,7 +5,7 @@ use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::writer::Writer;
 
 /// Read one attribute's unescaped value from a start tag.
-pub(crate) fn get_attr(e: &BytesStart, name: &[u8]) -> Result<Option<String>> {
+pub(crate) fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
     for attr in e.attributes() {
         let attr = attr?;
         if attr.key.as_ref() == name {
@@ -26,9 +26,9 @@ pub(crate) fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, Str
         #[allow(deprecated)]
         let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
         match attr.key.as_ref() {
-            b"Name" => name = val()?,
-            b"Type" => ty = val()?,
-            b"KeyType" => key_type = val()?,
+            "Name" => name = val()?,
+            "Type" => ty = val()?,
+            "KeyType" => key_type = val()?,
             _ => {}
         }
     }
@@ -38,25 +38,25 @@ pub(crate) fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, Str
 /// Rewrite a start tag with one numeric attribute increased by `add`.
 pub(crate) fn bump_count_attr(
     e: &BytesStart,
-    attr_name: &[u8],
+    attr_name: &str,
     add: usize,
 ) -> Result<BytesStart<'static>> {
-    let name = String::from_utf8(e.name().as_ref().to_vec())?;
+    let name = e.name().as_ref().to_string();
     let mut new_start = BytesStart::new(name);
     let mut seen = false;
     for attr in e.attributes() {
         let attr = attr?;
         if attr.key.as_ref() == attr_name {
             seen = true;
-            let val: usize = std::str::from_utf8(&attr.value)?.trim().parse().unwrap_or(0);
+            let val: usize = attr.value.trim().parse().unwrap_or(0);
             let new_val = (val + add).to_string();
-            new_start.push_attribute((std::str::from_utf8(attr_name)?, new_val.as_str()));
+            new_start.push_attribute((attr_name, new_val.as_str()));
         } else {
             new_start.push_attribute(attr.to_owned());
         }
     }
     if !seen {
-        new_start.push_attribute((std::str::from_utf8(attr_name)?, add.to_string().as_str()));
+        new_start.push_attribute((attr_name, add.to_string().as_str()));
     }
     Ok(new_start)
 }
