@@ -1,23 +1,11 @@
-# Bake'n Deck 3.1.0 - rbsort in-place sorting and a simpler CLI
+# Bake'n Deck 3.2.0 - baken-core library split
 
 ## Highlights
 
-- **`rbsort` now sorts playlists in place, with no wrapper folder.** Previously every sorted playlist was written into a new `Sorted (Key+BPM)/` folder, so the output XML held both an unsorted original and a sorted copy of each playlist. That copy was redundant: the file you feed `rbsort` is a throwaway export, and Rekordbox loads the result as the separate `rekordbox xml` tree, so your real library is never at risk. Each playlist is now re-sorted inside its own node instead. Names, folder structure, `Count` and `Entries` attributes, and even whitespace are preserved byte-for-byte, so the `rekordbox xml` tree becomes a Key+BPM-sorted mirror of your `Playlists`, and running `rbsort` twice on the same file is a no-op.
-- **The XML path is now a positional argument for both `rbsort` and `cdjsafe`.** `--xml` carried no information when the XML is the one thing every invocation must name, so `baken rbsort --xml collection.xml` is now `baken rbsort collection.xml`, and `baken cdjsafe --xml collection.xml --playlist … --out-dir …` is now `baken cdjsafe collection.xml --playlist … --out-dir …`. `rbsort` also defaults to sorting the input file in place, with `-o` available when you want the export left untouched. Its `--name` flag is gone, since in-place sorting never creates a playlist to name.
-- **A repeatable sync loop.** Export your collection to a fixed path, run `rbsort` on it, and point *Preferences > Advanced > Database > rekordbox xml > Imported Library* at that same file once. From then on, re-exporting to the same path, re-running `rbsort`, and restarting Rekordbox keeps the `rekordbox xml` tree in sync with your library, always sorted.
-
-## Breaking Changes
-
-- `baken rbsort --xml <PATH>` → `baken rbsort <PATH>`
-- `baken cdjsafe --xml <PATH>` → `baken cdjsafe <PATH>`
-- `baken rbsort` writes to its input file by default instead of `<stem>-out.xml`. Pass `-o <PATH>` for the old behavior. `cdjsafe` still defaults to `<stem>-out.xml`.
-- `baken rbsort --name <NAME>` has been removed.
-- The `Sorted (Key+BPM)/` folder is no longer produced. Sorted playlists appear in the `rekordbox xml` tree under their original names and folders.
+- **The processing engine is now a separate library crate, [`baken-core`](https://crates.io/crates/baken-core).** Loudness analysis and gain application, the Key+BPM playlist sorter, and the CDJ-safe transcoder live in `crates/baken-core`; the `baken` binary in `crates/baken` is a thin terminal front-end over it. The library carries no terminal UI dependencies and never prints, so other front-ends can embed it. It exposes a `Progress` callback and a `CancelToken` for long-running operations, a `set_tools` call to point at bundled `ffmpeg` and `ffprobe` binaries instead of `PATH`, and a typed `Error` enum at the public boundary. `cdjsafe` is split into `plan` (read and validate the playlist without touching disk) and `convert`. This is groundwork for a native Mac app (#96); the CLI's flags, prompts and output are unchanged (#84, #97).
 
 ## Other Changes
 
-- **Fixed the build against quick-xml 0.42** (#80), which moved element and attribute names from bytes to `&str`. The dependency bump had landed without a compile check, since no CI job builds on pushes to `main`.
-- Refreshed the lockfile off a yanked `chacha20` 0.10.1 (a transitive dependency) onto 0.10.2.
-- Updated the built-in mp3rgain library from 3.4.0 to 3.6.0. Gain application is unchanged; verified that MP3, AAC/M4A, and FLAC gain still land on target with the MP3 file staying byte-identical in size.
-
-**Full Changelog**: https://github.com/M-Igashi/baken/compare/v3.0.4...v3.1.0
+- **Fixed `--backup` and `--report` without a value.** `baken headroom <paths> --backup` failed with "a value is required" even though the directory is documented as optional, because clap's built-in path parser rejects the empty sentinel used to mean "flag given, use the default". Both flags now accept the bare form again and fall back to `<target>/backup` and `<target>/baken_report_<timestamp>.csv` (#98).
+- Per-file failures during analysis and processing are printed after the progress bar finishes instead of interleaved with it.
+- The release workflow publishes `baken-core` to crates.io before `baken`.
