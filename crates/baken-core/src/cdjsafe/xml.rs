@@ -21,6 +21,7 @@ const COMMENT_MARKER: &str = "[cdjsafe]";
 /// A source `<TRACK>` captured verbatim from `<COLLECTION>`: raw (still
 /// escaped) attributes plus all child events (`<TEMPO>`, `<POSITION_MARK>`)
 /// so cues and beatgrid carry over untouched.
+#[derive(Debug)]
 pub struct SourceTrack {
     pub id: String,
     pub name: String,

@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::path::Path;
-use std::process::Command;
 
-use crate::scanner;
+use super::scanner;
 
 /// Default delivery True Peak ceiling for all formats (dBTP).
 ///
@@ -131,7 +130,7 @@ fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
 }
 
 fn get_bitrate(path: &Path) -> Option<u32> {
-    let output = Command::new("ffprobe")
+    let output = crate::tools::ffprobe()
         .args(["-v", "quiet", "-print_format", "json", "-show_format"])
         .arg(path)
         .output()
@@ -244,10 +243,18 @@ fn extract_loudnorm_json(stderr: &str, path: &Path) -> Result<LoudnormOutput> {
 }
 
 pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<AudioAnalysis> {
-    let output = Command::new("ffmpeg")
+    let output = crate::tools::ffmpeg()
         .args(["-nostdin", "-i"])
         .arg(path)
-        .args(["-map", "0:a:0", "-af", "loudnorm=print_format=json", "-f", "null", "-"])
+        .args([
+            "-map",
+            "0:a:0",
+            "-af",
+            "loudnorm=print_format=json",
+            "-f",
+            "null",
+            "-",
+        ])
         .output()
         .context("Failed to execute ffmpeg. Is ffmpeg installed?")?;
 
@@ -328,14 +335,6 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
         effective_gain,
         lossless_gain_steps,
     })
-}
-
-pub fn check_ffmpeg() -> Result<()> {
-    Command::new("ffmpeg")
-        .arg("-version")
-        .output()
-        .context("ffmpeg not found. Please install ffmpeg first.")?;
-    Ok(())
 }
 
 #[cfg(test)]

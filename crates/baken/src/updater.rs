@@ -44,7 +44,11 @@ fn check() -> Option<String> {
         .interval(CHECK_INTERVAL)
         .timeout(REQUEST_TIMEOUT);
 
-    informer.check_version().ok().flatten().map(|v| v.to_string())
+    informer
+        .check_version()
+        .ok()
+        .flatten()
+        .map(|v| v.to_string())
 }
 
 fn update_commands() -> Vec<String> {

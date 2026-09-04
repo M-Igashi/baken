@@ -1,25 +1,12 @@
-mod camelot;
-mod xml;
-
-use anyhow::{bail, Result};
+use anyhow::Result;
 use console::style;
 
 use crate::args::RbsortArgs;
 
 pub fn run(args: &RbsortArgs) -> Result<()> {
-    let target_path: Option<Vec<String>> = match &args.playlist {
-        Some(s) => {
-            let parts = split_playlist_path(s);
-            if parts.is_empty() {
-                bail!("--playlist must not be empty");
-            }
-            Some(parts)
-        }
-        None => None,
-    };
-
     let output = args.output.as_ref().unwrap_or(&args.xml);
-    let sorted = xml::sort_and_write(&args.xml, output, target_path.as_deref())?;
+    let sorted =
+        baken_core::rbsort::sort_file(&args.xml, args.output.as_deref(), args.playlist.as_deref())?;
     let total_tracks: usize = sorted.iter().map(|p| p.track_ids.len()).sum();
 
     if let [only] = sorted.as_slice() {
@@ -48,11 +35,4 @@ pub fn run(args: &RbsortArgs) -> Result<()> {
         style("ℹ").blue()
     );
     Ok(())
-}
-
-pub(crate) fn split_playlist_path(s: &str) -> Vec<String> {
-    s.split('/')
-        .map(|p| p.trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect()
 }

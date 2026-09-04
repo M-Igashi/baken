@@ -1,24 +1,21 @@
 use anyhow::{Context, Result};
+use baken_core::headroom::{self, AnalysisSummary, AudioAnalysis, TpTargetMode};
+use baken_core::CancelToken;
 use clap::Parser;
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm};
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
-use crate::analyzer::{self, AudioAnalysis, TpTargetMode};
 use crate::args::{Cli, Command, HeadroomArgs};
-use crate::processor;
-use crate::rbsort;
-use crate::report::{self, AnalysisSummary};
-use crate::scanner;
+use crate::progress::{make_progress_bar, BarProgress};
+use crate::report;
 use crate::updater;
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Rbsort(args) => rbsort::run(&args),
+        Command::Rbsort(args) => crate::rbsort::run(&args),
         Command::Cdjsafe(args) => crate::cdjsafe::run(&args),
         Command::Headroom(args) => run_headroom(&args),
     }
@@ -31,7 +28,7 @@ fn run_headroom(args: &HeadroomArgs) -> Result<()> {
     // last so the network call never delays startup (issue #46).
     let update_check = (!args.no_update_check).then(updater::spawn_check);
 
-    analyzer::check_ffmpeg()?;
+    baken_core::check_ffmpeg()?;
 
     let tp_mode = args.tp_mode();
     print_tp_target_banner(tp_mode);
@@ -79,7 +76,7 @@ fn analyze_and_report(
         println!("\n{} No audio files found", style("⚠").yellow());
         println!(
             "  Supported formats: {}",
-            scanner::get_supported_extensions().join(", ")
+            headroom::supported_extensions().join(", ")
         );
         return Ok(None);
     }
@@ -112,32 +109,13 @@ fn write_csv_report(
     explicit_path: Option<&Path>,
 ) -> Result<()> {
     let processable: Vec<_> = analyses.iter().filter(|a| a.has_headroom()).collect();
-    let csv_path = report::generate_csv(&processable, base_dir, explicit_path)?;
+    let csv_path = headroom::generate_csv(&processable, base_dir, explicit_path)?;
     println!(
         "{} Report saved: {}",
         style("✓").green(),
         csv_path.display()
     );
     Ok(())
-}
-
-/// Filter analyses down to the files the enabled methods allow processing.
-fn select_files(
-    analyses: &[AudioAnalysis],
-    lossless_on: bool,
-    reencode_on: bool,
-) -> Vec<&AudioAnalysis> {
-    analyses
-        .iter()
-        .filter(|a| {
-            a.has_headroom()
-                && if a.requires_reencode() {
-                    reencode_on
-                } else {
-                    lossless_on
-                }
-        })
-        .collect()
 }
 
 fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
@@ -149,7 +127,7 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
         style(target_dir.display()).bold()
     );
 
-    let files = scanner::scan_audio_files(&target_dir);
+    let files = headroom::scan_audio_files(&target_dir);
     let Some((all_analyses, summary)) = analyze_and_report(&files, tp_mode)? else {
         return Ok(());
     };
@@ -167,7 +145,7 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
         false
     };
 
-    let files_to_process = select_files(&all_analyses, true, allow_reencode);
+    let files_to_process = headroom::select_processable(&all_analyses, true, allow_reencode);
     if files_to_process.is_empty() {
         println!("{} No files to process.", style("ℹ").blue());
         return Ok(());
@@ -179,14 +157,14 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
         .interact()?;
 
     let backup_dir = if create_backup {
-        let dir = processor::create_backup_dir(&target_dir)?;
+        let dir = headroom::create_backup_dir(&target_dir)?;
         println!("{} Backup directory: {}", style("✓").green(), dir.display());
         Some(dir)
     } else {
         None
     };
 
-    process_files(&files_to_process, &target_dir, backup_dir.as_deref())?;
+    process_files(&files_to_process, &target_dir, backup_dir.as_deref());
     print_final_summary(&files_to_process);
     Ok(())
 }
@@ -194,10 +172,10 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
 fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
     let (files, base_dir) = if cli.paths.is_empty() {
         let cwd = std::env::current_dir().context("Failed to get current directory")?;
-        (scanner::scan_audio_files(&cwd), cwd)
+        (headroom::scan_audio_files(&cwd), cwd)
     } else {
-        let files = scanner::resolve_inputs(&cli.paths)?;
-        let base = common_base_dir(&files)
+        let files = headroom::resolve_inputs(&cli.paths)?;
+        let base = headroom::common_base_dir(&files)
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         (files, base)
@@ -217,21 +195,31 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
     }
 
     if cli.analyze_only {
-        println!("{} Analyze-only mode; no files modified.", style("ℹ").blue());
+        println!(
+            "{} Analyze-only mode; no files modified.",
+            style("ℹ").blue()
+        );
         return Ok(());
     }
 
-    let files_to_process = select_files(&all_analyses, cli.lossless_enabled(), cli.reencode_enabled());
+    let files_to_process = headroom::select_processable(
+        &all_analyses,
+        cli.lossless_enabled(),
+        cli.reencode_enabled(),
+    );
     if files_to_process.is_empty() {
-        println!("{} No files to process with current flags.", style("ℹ").blue());
+        println!(
+            "{} No files to process with current flags.",
+            style("ℹ").blue()
+        );
         return Ok(());
     }
 
     let backup_dir = if let Some(path) = &cli.backup {
         let dir = if path.as_os_str().is_empty() {
-            processor::create_backup_dir(&base_dir)?
+            headroom::create_backup_dir(&base_dir)?
         } else {
-            processor::ensure_backup_dir(path)?
+            headroom::ensure_backup_dir(path)?
         };
         println!("{} Backup directory: {}", style("✓").green(), dir.display());
         Some(dir)
@@ -239,43 +227,27 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
         None
     };
 
-    process_files(&files_to_process, &base_dir, backup_dir.as_deref())?;
+    process_files(&files_to_process, &base_dir, backup_dir.as_deref());
     print_final_summary(&files_to_process);
     Ok(())
 }
 
-fn common_base_dir(files: &[PathBuf]) -> Option<PathBuf> {
-    let mut iter = files.iter().filter_map(|f| f.parent().map(Path::to_path_buf));
-    let first = iter.next()?;
-    let base = iter.fold(first, |acc, p| common_prefix(&acc, &p));
-    Some(base)
-}
-
-fn common_prefix(a: &Path, b: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for (x, y) in a.components().zip(b.components()) {
-        if x == y {
-            out.push(x);
-        } else {
-            break;
-        }
-    }
-    out
-}
-
-fn print_final_summary(files_to_process: &[&AudioAnalysis]) {
+fn print_final_summary(files_to_process: &[AudioAnalysis]) {
     println!(
         "\n{} Done! {} files processed.",
         style("✓").green().bold(),
         files_to_process.len()
     );
 
-    let summary = AnalysisSummary::from_iter(files_to_process.iter().copied());
+    let summary = AnalysisSummary::from_analyses(files_to_process);
 
     for (count, label) in [
         (summary.lossless_count, "lossless files (ffmpeg)"),
         (summary.mp3_lossless_count, "MP3 files (native, lossless)"),
-        (summary.aac_lossless_count, "AAC/M4A files (native, lossless)"),
+        (
+            summary.aac_lossless_count,
+            "AAC/M4A files (native, lossless)",
+        ),
         (summary.mp3_reencode_count, "MP3 files (re-encoded)"),
         (summary.aac_reencode_count, "AAC/M4A files (re-encoded)"),
     ] {
@@ -363,75 +335,51 @@ fn print_banner() {
     println!();
 }
 
-pub(crate) fn make_progress_bar(len: usize, label: &str) -> ProgressBar {
-    let pb = ProgressBar::new(len as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(&format!(
-                "{{spinner:.green}} {} [{{bar:40.cyan/blue}}] {{pos}}/{{len}}",
-                label
-            ))
-            .unwrap()
-            .progress_chars("█▓░"),
-    );
-    pb
-}
-
 fn analyze_files(files: &[PathBuf], tp_mode: TpTargetMode) -> Result<Vec<AudioAnalysis>> {
     let pb = make_progress_bar(files.len(), "Analyzing...");
-
-    // par_iter preserves input order in the collected Vec, so indexing is unnecessary.
-    let results: Vec<Result<AudioAnalysis, (PathBuf, anyhow::Error)>> = files
-        .par_iter()
-        .map(|file| {
-            let result = analyzer::analyze_file_with_target(file, tp_mode)
-                .map_err(|e| (file.clone(), e));
-            pb.inc(1);
-            result
-        })
-        .collect();
-
+    let outcome = headroom::analyze(
+        files,
+        tp_mode,
+        &BarProgress(pb.clone()),
+        &CancelToken::new(),
+    );
     pb.finish_and_clear();
+    let outcome = outcome?;
 
-    let mut analyses = Vec::with_capacity(results.len());
-    for result in results {
-        match result {
-            Ok(a) => analyses.push(a),
-            Err((path, e)) => println!(
-                "{} Failed to analyze {}: {}",
-                style("⚠").yellow(),
-                path.display(),
-                e
-            ),
-        }
+    for (path, e) in &outcome.failures {
+        println!(
+            "{} Failed to analyze {}: {}",
+            style("⚠").yellow(),
+            path.display(),
+            e
+        );
     }
 
-    println!("{} Analyzed {} files", style("✓").green(), analyses.len());
+    println!(
+        "{} Analyzed {} files",
+        style("✓").green(),
+        outcome.analyses.len()
+    );
 
-    Ok(analyses)
+    Ok(outcome.analyses)
 }
 
-fn process_files(
-    analyses: &[&AudioAnalysis],
-    base_dir: &std::path::Path,
-    backup_dir: Option<&std::path::Path>,
-) -> Result<()> {
+fn process_files(analyses: &[AudioAnalysis], base_dir: &Path, backup_dir: Option<&Path>) {
     let pb = make_progress_bar(analyses.len(), "Processing...");
-
-    // Each file is processed independently; ProgressBar is thread-safe.
-    analyses.par_iter().for_each(|analysis| {
-        if let Err(e) = processor::process_file(analysis, base_dir, backup_dir) {
-            pb.println(format!(
-                "{} {}: {}",
-                style("⚠").yellow(),
-                analysis.filename,
-                e
-            ));
-        }
-        pb.inc(1);
-    });
-
+    let outcome = headroom::apply(
+        analyses,
+        base_dir,
+        backup_dir,
+        &BarProgress(pb.clone()),
+        &CancelToken::new(),
+    );
     pb.finish_and_clear();
 
-    Ok(())
+    for (path, e) in &outcome.failures {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
+        println!("{} {}: {}", style("⚠").yellow(), name, e);
+    }
 }

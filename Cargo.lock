@@ -90,20 +90,29 @@ name = "baken"
 version = "3.1.0"
 dependencies = [
  "anyhow",
- "chrono",
+ "baken-core",
  "clap",
  "console",
- "csv",
  "dialoguer",
- "glob",
  "indicatif",
+ "rayon",
+ "update-informer",
+]
+
+[[package]]
+name = "baken-core"
+version = "3.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "csv",
+ "glob",
  "mp3rgain",
  "quick-xml",
  "rayon",
  "serde",
  "serde_json",
  "thiserror",
- "update-informer",
  "walkdir",
 ]
 

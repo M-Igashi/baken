@@ -1,0 +1,26 @@
+[package]
+name = "baken"
+description = "Bake'n Deck — Rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
+keywords = ["audio", "loudness", "dj", "rekordbox", "cdj"]
+categories = ["command-line-utilities", "multimedia::audio"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "baken"
+path = "src/main.rs"
+
+[dependencies]
+baken-core.workspace = true
+anyhow.workspace = true
+rayon.workspace = true
+clap = { version = "4.5", features = ["derive"] }
+dialoguer = "0.12"
+console = "0.16"
+indicatif = "0.18"
+update-informer = { version = "1.2", default-features = false, features = ["github", "ureq", "rustls-tls"] }
