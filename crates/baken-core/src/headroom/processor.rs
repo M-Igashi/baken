@@ -2,9 +2,8 @@ use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use crate::analyzer::{AudioAnalysis, GainMethod};
+use super::analyzer::{AudioAnalysis, GainMethod};
 
 pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
     ensure_backup_dir(&base_dir.join("backup"))
@@ -15,10 +14,13 @@ pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
 /// on magic directory names.
 pub fn ensure_backup_dir(backup_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(backup_dir).context("Failed to create backup directory")?;
-    let marker = backup_dir.join(crate::scanner::BACKUP_MARKER);
+    let marker = backup_dir.join(super::scanner::BACKUP_MARKER);
     // Fixed content, so an unconditional write is idempotent — no exists() check.
-    fs::write(&marker, "Created by baken; this directory is skipped when scanning.\n")
-        .context("Failed to write backup marker file")?;
+    fs::write(
+        &marker,
+        "Created by baken; this directory is skipped when scanning.\n",
+    )
+    .context("Failed to write backup marker file")?;
     Ok(backup_dir.to_path_buf())
 }
 
@@ -101,7 +103,7 @@ fn parse_bits(value: &Option<serde_json::Value>) -> Option<u32> {
 }
 
 fn probe_source_format(path: &Path) -> Option<SourceFormat> {
-    let output = Command::new("ffprobe")
+    let output = crate::tools::ffprobe()
         .args([
             "-v",
             "quiet",
@@ -186,7 +188,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let volume_arg = format!("volume={}dB", gain_db);
     let source = probe_source_format(file_path);
 
-    let mut cmd = Command::new("ffmpeg");
+    let mut cmd = crate::tools::ffmpeg();
     cmd.args(["-y", "-i"])
         .arg(file_path)
         .args(["-af", &volume_arg])
@@ -281,7 +283,7 @@ fn apply_gain_reencode(
         // CBR-only: adding -q:a would force libmp3lame to VBR and override -b:a.
         // -c:v copy keeps the original cover art bytes; the muxer defaults would
         // re-encode it to PNG (MP3) or fail outright on h264 (M4A) — issue #77.
-        let output = Command::new("ffmpeg")
+        let output = crate::tools::ffmpeg()
             .args(["-y", "-i"])
             .arg(file_path)
             .args(["-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate])
@@ -291,8 +293,7 @@ fn apply_gain_reencode(
             .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
 
         if output.status.success() {
-            return fs::rename(&temp_path, file_path)
-                .context("Failed to rename processed file");
+            return fs::rename(&temp_path, file_path).context("Failed to rename processed file");
         }
 
         let _ = fs::remove_file(&temp_path);

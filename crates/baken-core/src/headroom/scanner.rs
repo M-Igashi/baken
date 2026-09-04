@@ -58,8 +58,8 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
 
         // Treat as glob pattern (supports e.g. "*.mp3", "music/**/*.flac")
         let mut matched_any = false;
-        for entry in glob::glob(input)
-            .map_err(|e| anyhow!("Invalid glob pattern '{}': {}", input, e))?
+        for entry in
+            glob::glob(input).map_err(|e| anyhow!("Invalid glob pattern '{}': {}", input, e))?
         {
             let p = entry.map_err(|e| anyhow!("Glob error for '{}': {}", input, e))?;
             if p.is_dir() {
@@ -74,10 +74,7 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
         }
 
         if !matched_any {
-            return Err(anyhow!(
-                "No matching audio files for input: '{}'",
-                input
-            ));
+            return Err(anyhow!("No matching audio files for input: '{}'", input));
         }
     }
 
@@ -98,7 +95,7 @@ fn is_supported_audio_file(path: &Path) -> bool {
         || has_extension(path, AAC_EXTENSIONS)
 }
 
-pub fn get_supported_extensions() -> Vec<&'static str> {
+pub fn supported_extensions() -> Vec<&'static str> {
     let mut exts: Vec<&str> = LOSSLESS_EXTENSIONS.to_vec();
     exts.extend(MP3_EXTENSIONS);
     exts.extend(AAC_EXTENSIONS);

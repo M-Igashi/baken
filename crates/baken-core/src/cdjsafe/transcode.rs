@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::Path;
-use std::process::Command;
 
 /// The CDJ-safe output profile (locked in issue #40): 320 kbps CBR MP3 @ 44.1 kHz,
 /// ID3v2.3, soxr very-high resampling, channels preserved.
@@ -51,7 +50,7 @@ struct ProbeOutput {
 }
 
 pub fn probe(path: &Path) -> Result<SourceInfo> {
-    let output = Command::new("ffprobe")
+    let output = crate::tools::ffprobe()
         .args([
             "-v",
             "quiet",
@@ -109,14 +108,11 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
 pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
     // Preferred: soxr very-high resampling. Not every ffmpeg build has
     // libsoxr, so fall back to the default swresample on failure.
-    let attempts: [&[&str]; 2] = [
-        &["-af", "aresample=resampler=soxr:precision=28"],
-        &[],
-    ];
+    let attempts: [&[&str]; 2] = [&["-af", "aresample=resampler=soxr:precision=28"], &[]];
 
     let mut last_err = String::new();
     for resample_args in attempts {
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = crate::tools::ffmpeg();
         cmd.args(["-y", "-nostdin", "-i"])
             .arg(src)
             .args(["-map", "0:a:0", "-map", "0:v:0?"])

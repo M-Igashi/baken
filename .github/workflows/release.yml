@@ -368,7 +368,9 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --token $CARGO_REGISTRY_TOKEN
+        run: |
+          cargo publish -p baken-core --token "$CARGO_REGISTRY_TOKEN"
+          cargo publish -p baken --token "$CARGO_REGISTRY_TOKEN"
 
   # =============================================================================
   # Update Homebrew (macOS)

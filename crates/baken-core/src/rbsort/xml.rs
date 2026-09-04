@@ -1,4 +1,6 @@
 use anyhow::{bail, Context, Result};
+
+use crate::Error;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use quick_xml::writer::Writer;
@@ -37,7 +39,7 @@ pub fn sort_and_write(
     input: &Path,
     output: &Path,
     target: Option<&[String]>,
-) -> Result<Vec<SortedPlaylist>> {
+) -> crate::Result<Vec<SortedPlaylist>> {
     let xml_data =
         std::fs::read(input).with_context(|| format!("Failed to read {}", input.display()))?;
 
@@ -52,7 +54,7 @@ pub fn sort_and_write(
         .collect();
 
     if sorted.is_empty() {
-        bail!("No TrackID-referenced playlists found to sort");
+        return Err(Error::NoSortablePlaylists);
     }
 
     let output_bytes = rewrite_xml(&xml_data, &sorted)?;
@@ -65,19 +67,17 @@ pub fn sort_and_write(
 fn select_targets(
     all: Vec<CollectedPlaylist>,
     target: Option<&[String]>,
-) -> Result<Vec<CollectedPlaylist>> {
+) -> crate::Result<Vec<CollectedPlaylist>> {
     match target {
         None => Ok(all.into_iter().filter(|p| p.key_type == "0").collect()),
         Some(path) => {
             let matched = all.into_iter().find(|p| p.path == path);
             match matched {
-                None => bail!("Playlist not found: {}", path.join("/")),
-                Some(p) if p.key_type != "0" => bail!(
-                    "Playlist '{}' is not a TrackID-referenced playlist (KeyType={}). \
-                     Only KeyType=\"0\" playlists are supported.",
-                    p.path.join("/"),
-                    p.key_type
-                ),
+                None => Err(Error::PlaylistNotFound(path.join("/"))),
+                Some(p) if p.key_type != "0" => Err(Error::UnsupportedPlaylistType {
+                    path: p.path.join("/"),
+                    key_type: p.key_type,
+                }),
                 Some(p) => Ok(vec![p]),
             }
         }

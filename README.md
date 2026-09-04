@@ -30,6 +30,8 @@ baken requires ffmpeg. Package managers install it automatically.
 
 Pre-built binaries are available on the [Releases](https://github.com/M-Igashi/baken/releases) page (ffmpeg must be installed separately). To build from source: `git clone https://github.com/M-Igashi/baken.git && cd baken && cargo build --release`.
 
+The processing logic is a separate library crate, [`baken-core`](https://crates.io/crates/baken-core), so other front-ends can embed it without the terminal UI.
+
 ## Quick Start
 
 ```bash

@@ -86,7 +86,10 @@ mod tests {
     #[test]
     fn decode_rekordbox_location() {
         let loc = "file://localhost/Users/dj/M%C3%BCsic/track%20one.flac";
-        assert_eq!(decode_location(loc).unwrap(), "/Users/dj/Müsic/track one.flac");
+        assert_eq!(
+            decode_location(loc).unwrap(),
+            "/Users/dj/Müsic/track one.flac"
+        );
     }
 
     #[test]
@@ -106,7 +109,10 @@ mod tests {
         let p = PathBuf::from("/Users/dj/Müsic/track one.mp3");
         let loc = encode_location(&p);
         assert_eq!(loc, "file://localhost/Users/dj/M%C3%BCsic/track%20one.mp3");
-        assert_eq!(decode_location(&loc).unwrap(), "/Users/dj/Müsic/track one.mp3");
+        assert_eq!(
+            decode_location(&loc).unwrap(),
+            "/Users/dj/Müsic/track one.mp3"
+        );
     }
 
     #[test]
