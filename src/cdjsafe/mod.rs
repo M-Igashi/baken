@@ -2,17 +2,18 @@ mod location;
 mod transcode;
 mod xml;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use console::style;
 use rayon::prelude::*;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::analyzer;
 use crate::args::CdjsafeArgs;
 use crate::cli::make_progress_bar;
-use crate::rbsort::{default_output_path, split_playlist_path};
+use crate::rbsort::split_playlist_path;
 
 use location::{encode_location, sanitize_filename};
 use transcode::SourceInfo;
@@ -36,8 +37,8 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
         bail!("--playlist must not be empty");
     }
 
-    let xml_data = fs::read(&args.xml)
-        .with_context(|| format!("Failed to read {}", args.xml.display()))?;
+    let xml_data =
+        fs::read(&args.xml).with_context(|| format!("Failed to read {}", args.xml.display()))?;
 
     let (track_ids, max_track_id) = xml::find_playlist(&xml_data, &target)?;
     if track_ids.is_empty() {
@@ -190,12 +191,7 @@ fn build_new_tracks(
         .collect()
 }
 
-fn print_report(
-    sources: &[SourceTrack],
-    actions: &[Action],
-    playlist_name: &str,
-    output: &Path,
-) {
+fn print_report(sources: &[SourceTrack], actions: &[Action], playlist_name: &str, output: &Path) {
     let count = |a: Action| actions.iter().filter(|&&x| x == a).count();
     let (copied, lossless, lossy) = (
         count(Action::Copy),
@@ -251,9 +247,42 @@ fn print_report(
     );
 }
 
+/// Derive default output path: same directory as input, filename stem with
+/// "-out" appended, extension preserved. e.g. `/a/b/c.xml` -> `/a/b/c-out.xml`.
+fn default_output_path(input: &Path) -> Result<PathBuf> {
+    let stem = input
+        .file_stem()
+        .ok_or_else(|| anyhow!("XML path has no filename: {}", input.display()))?;
+    let mut name = OsString::from(stem);
+    name.push("-out");
+    if let Some(ext) = input.extension() {
+        name.push(".");
+        name.push(ext);
+    }
+    Ok(input.with_file_name(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_output_appends_out_to_stem() {
+        let p = default_output_path(Path::new("/a/b/c.xml")).unwrap();
+        assert_eq!(p, PathBuf::from("/a/b/c-out.xml"));
+    }
+
+    #[test]
+    fn default_output_for_bare_filename() {
+        let p = default_output_path(Path::new("coll.xml")).unwrap();
+        assert_eq!(p, PathBuf::from("coll-out.xml"));
+    }
+
+    #[test]
+    fn default_output_without_extension() {
+        let p = default_output_path(Path::new("/a/b/c")).unwrap();
+        assert_eq!(p, PathBuf::from("/a/b/c-out"));
+    }
 
     fn src(location: &str) -> SourceTrack {
         SourceTrack::test_stub(location)
