@@ -81,11 +81,11 @@ pub struct HeadroomArgs {
     pub no_reencode: bool,
 
     /// Create backup before processing (optional DIR; default: <target>/backup)
-    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "")]
+    #[arg(long, value_name = "DIR", num_args = 0..=1, default_missing_value = "", value_parser = optional_path)]
     pub backup: Option<PathBuf>,
 
     /// Generate CSV report at PATH (default: <target>/baken_report_<timestamp>.csv)
-    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "no_report")]
+    #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "", conflicts_with = "no_report", value_parser = optional_path)]
     pub report: Option<PathBuf>,
 
     /// Skip CSV report
@@ -99,6 +99,13 @@ pub struct HeadroomArgs {
     /// Skip checking for new versions on startup
     #[arg(long)]
     pub no_update_check: bool,
+}
+
+/// clap's built-in PathBuf parser rejects empty input, which made the bare
+/// `--backup` / `--report` forms fail even though `default_missing_value = ""`
+/// is what marks "flag given, no value". An empty PathBuf means "use the default".
+fn optional_path(s: &str) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(s))
 }
 
 impl HeadroomArgs {
