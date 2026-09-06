@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/baken-core", "crates/baken"]
 
 [workspace.package]
-version = "3.2.0"
+version = "3.2.1"
 edition = "2021"
 authors = ["Masanari Higashi"]
 license = "MIT"
@@ -12,7 +12,7 @@ homepage = "https://baken.ravers.workers.dev"
 
 [workspace.dependencies]
 # Keep in sync with workspace.package.version on every release.
-baken-core = { path = "crates/baken-core", version = "3.2.0" }
+baken-core = { path = "crates/baken-core", version = "3.2.1" }
 anyhow = "1.0"
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
