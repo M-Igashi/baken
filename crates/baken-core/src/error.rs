@@ -7,6 +7,9 @@ pub enum Error {
     #[error("ffmpeg not found. Please install ffmpeg first.")]
     FfmpegNotFound,
 
+    #[error("ffmpeg was found but failed to run: {0}")]
+    FfmpegFailed(String),
+
     #[error("operation cancelled")]
     Cancelled,
 
