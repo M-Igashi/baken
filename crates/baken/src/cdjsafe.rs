@@ -10,6 +10,14 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
     baken_core::check_ffmpeg()?;
 
     let plan = cdjsafe::plan(&args.xml, &args.playlist)?;
+    for skipped in plan.skipped() {
+        println!(
+            "{} '{}' not found on disk — skipped: {}",
+            style("⚠").yellow(),
+            skipped.name,
+            skipped.location
+        );
+    }
     for name in plan.missing_total_time() {
         println!(
             "{} '{}' has no TotalTime attribute — Rekordbox will silently skip its cues on import",
@@ -18,11 +26,16 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
         );
     }
 
+    let skipped_note = match plan.skipped().len() {
+        0 => String::new(),
+        n => format!(" ({n} skipped)"),
+    };
     println!(
-        "{} Converting {} tracks from '{}' → {}",
+        "{} Converting {} tracks from '{}'{} → {}",
         style("▸").cyan(),
         style(plan.len()).cyan(),
         style(&args.playlist).bold(),
+        skipped_note,
         args.out_dir.display()
     );
 
@@ -82,6 +95,16 @@ fn print_report(report: &Report) {
             if *action == Action::ReencodeLossy {
                 println!("  {} {}", style("•").dim(), name);
             }
+        }
+    }
+
+    if !report.skipped.is_empty() {
+        println!(
+            "\n{} Skipped (file not found on disk) — not on the stick, not in the new playlist:",
+            style("⚠").yellow()
+        );
+        for name in &report.skipped {
+            println!("  {} {}", style("•").dim(), name);
         }
     }
 
