@@ -28,6 +28,9 @@ pub enum Error {
     #[error("Playlist '{0}' has no tracks")]
     EmptyPlaylist(String),
 
+    #[error("None of the {count} tracks in playlist '{playlist}' were found on disk")]
+    AllSourcesMissing { playlist: String, count: usize },
+
     #[error("Source file not found for '{name}' (TrackID {track_id}): {location}")]
     SourceNotFound {
         name: String,

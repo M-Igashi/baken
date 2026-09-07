@@ -385,7 +385,7 @@ baken cdjsafe ~/Music/rekordbox/collection.xml \
 ### What it does
 
 1. Reads the target playlist from your exported `collection.xml`.
-2. Converts **every** track to the CDJ-safe profile — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
+2. Converts every track whose file exists to the CDJ-safe profile. Tracks whose files are missing on disk are listed as skipped and left out (the emergency stick still gets everything that is there); only a playlist with no file present at all is an error. Profile: — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
 
    | Source | Action |
    |---|---|
@@ -394,7 +394,7 @@ baken cdjsafe ~/Music/rekordbox/collection.xml \
    | MP3 not exactly 320 kbps CBR @ 44.1 kHz | Re-encode (lossy→lossy, reported) |
    | MP3 already 320 kbps CBR @ 44.1 kHz | **Byte-identical copy** (no generation loss, LAME header untouched) |
 
-3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**, grouped in a `CDJ-safe (MP3)/<playlist>` folder. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
+3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**, grouped in a `CDJ-safe (MP3)/<playlist>-CDJ-safe` folder. The `-CDJ-safe` suffix keeps the imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
 4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
 
 If any track fails to convert, **no XML is written** — a partial USB defeats the point.
@@ -402,7 +402,7 @@ If any track fails to convert, **no XML is written** — a partial USB defeats t
 ### Importing back into Rekordbox
 
 1. *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select the output XML, restart Rekordbox.
-2. Open the `rekordbox xml` sidebar tree → `CDJ-safe (MP3)/<playlist>`.
+2. Open the `rekordbox xml` sidebar tree → `CDJ-safe (MP3)/<playlist>-CDJ-safe`.
 3. Right-click the imported tracks → **Import to Collection**. Cues and beatgrid come with them — no re-analysis needed.
 4. Export the playlist to USB in EXPORT mode as usual.
 

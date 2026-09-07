@@ -34,6 +34,15 @@ pub enum Action {
     ReencodeLossy,
 }
 
+/// A playlist entry whose file is not on disk. Skipped rather than fatal:
+/// this is the emergency stick, so everything that exists still gets written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedTrack {
+    pub name: String,
+    pub track_id: String,
+    pub location: String,
+}
+
 /// A validated playlist ready to convert. Nothing on disk has been touched yet.
 #[derive(Debug)]
 pub struct Plan {
@@ -41,6 +50,7 @@ pub struct Plan {
     xml_data: Vec<u8>,
     target: Vec<String>,
     sources: Vec<SourceTrack>,
+    skipped: Vec<SkippedTrack>,
     max_track_id: u64,
 }
 
@@ -56,6 +66,19 @@ impl Plan {
     /// Last segment of the playlist path.
     pub fn playlist_name(&self) -> &str {
         self.target.last().map(String::as_str).unwrap_or_default()
+    }
+
+    /// Name of the playlist [`convert`] adds to the XML: the source name with
+    /// `-CDJ-safe` appended, so importing it into rekordbox never collides
+    /// with the original playlist.
+    pub fn output_playlist_name(&self) -> String {
+        format!("{}-CDJ-safe", self.playlist_name())
+    }
+
+    /// Playlist entries whose files were not found on disk; they are left out
+    /// of the conversion and of the new playlist.
+    pub fn skipped(&self) -> &[SkippedTrack] {
+        &self.skipped
     }
 
     /// Track names in playlist order.
@@ -79,7 +102,10 @@ impl Plan {
 pub struct Report {
     pub tracks: Vec<(String, Action)>,
     pub output_xml: PathBuf,
+    /// Name of the playlist written to the XML (`<source>-CDJ-safe`).
     pub playlist_name: String,
+    /// Names of tracks skipped because their files were missing.
+    pub skipped: Vec<String>,
 }
 
 impl Report {
@@ -88,7 +114,9 @@ impl Report {
     }
 }
 
-/// Read `xml`, locate `playlist` (`Folder/Name`), and verify every source file exists.
+/// Read `xml`, locate `playlist` (`Folder/Name`), and check which source files
+/// exist. Missing files are recorded in [`Plan::skipped`] and left out; only a
+/// playlist with no file present at all is an error.
 pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
     let target = split_playlist_path(playlist);
     if target.is_empty() {
@@ -101,16 +129,24 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
     if track_ids.is_empty() {
         return Err(Error::EmptyPlaylist(playlist.to_string()));
     }
-    let sources = xml::collect_tracks(&xml_data, &track_ids)?;
+    let all = xml::collect_tracks(&xml_data, &track_ids)?;
 
-    for src in &sources {
-        if !Path::new(&src.location).is_file() {
-            return Err(Error::SourceNotFound {
-                name: src.name.clone(),
-                track_id: src.id.clone(),
-                location: src.location.clone(),
-            });
-        }
+    let (sources, missing): (Vec<_>, Vec<_>) = all
+        .into_iter()
+        .partition(|src| Path::new(&src.location).is_file());
+    let skipped: Vec<SkippedTrack> = missing
+        .into_iter()
+        .map(|src| SkippedTrack {
+            name: src.name,
+            track_id: src.id,
+            location: src.location,
+        })
+        .collect();
+    if sources.is_empty() {
+        return Err(Error::AllSourcesMissing {
+            playlist: playlist.to_string(),
+            count: skipped.len(),
+        });
     }
 
     Ok(Plan {
@@ -118,14 +154,16 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
         xml_data,
         target,
         sources,
+        skipped,
         max_track_id,
     })
 }
 
-/// Transcode every track in `plan` into `out_dir` (created if missing) and
-/// write the updated XML to `output_xml`, or next to the input as
-/// `<stem>-out.xml`. Any conversion failure or cancellation aborts before
-/// the XML is written; a partial USB defeats the purpose.
+/// Transcode every present track in `plan` into `out_dir` (created if
+/// missing) and write the updated XML to `output_xml`, or next to the input as
+/// `<stem>-out.xml`. The new playlist is named `<playlist>-CDJ-safe`. Any
+/// conversion failure or cancellation aborts before the XML is written; a
+/// partial USB defeats the purpose.
 pub fn convert(
     plan: &Plan,
     out_dir: &Path,
@@ -175,7 +213,7 @@ pub fn convert(
 
     let new_tracks = build_new_tracks(&plan.sources, &dest_paths, plan.max_track_id)?;
 
-    let playlist_name = plan.playlist_name().to_string();
+    let playlist_name = plan.output_playlist_name();
     let output = match output_xml {
         Some(p) => p.to_path_buf(),
         None => default_output_path(&plan.xml_path)?,
@@ -194,6 +232,7 @@ pub fn convert(
             .collect(),
         output_xml: output,
         playlist_name,
+        skipped: plan.skipped.iter().map(|s| s.name.clone()).collect(),
     })
 }
 
@@ -299,6 +338,63 @@ mod tests {
 
     fn src(location: &str) -> SourceTrack {
         SourceTrack::test_stub(location)
+    }
+
+    fn write_collection(dir: &Path, locations: &[(&str, &str)]) -> PathBuf {
+        let mut tracks = String::new();
+        let mut keys = String::new();
+        for (i, (name, location)) in locations.iter().enumerate() {
+            tracks.push_str(&format!(
+                r#"<TRACK TrackID="{id}" Name="{name}" TotalTime="100" Location="file://localhost{location}"/>"#,
+                id = i + 1
+            ));
+            keys.push_str(&format!(r#"<TRACK Key="{}"/>"#, i + 1));
+        }
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="{n}">{tracks}</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="1"><NODE Name="Set" Type="1" KeyType="0" Entries="{n}">{keys}</NODE></NODE></PLAYLISTS></DJ_PLAYLISTS>"#,
+            n = locations.len()
+        );
+        let path = dir.join("collection.xml");
+        fs::write(&path, xml).unwrap();
+        path
+    }
+
+    #[test]
+    fn plan_skips_missing_files_and_renames_output_playlist() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("present.wav");
+        fs::write(&present, b"").unwrap();
+        let xml = write_collection(
+            &dir,
+            &[
+                ("Present", present.to_str().unwrap()),
+                ("Gone", dir.join("gone.wav").to_str().unwrap()),
+            ],
+        );
+
+        let plan = plan(&xml, "Set").unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan.skipped().len(), 1);
+        assert_eq!(plan.skipped()[0].name, "Gone");
+        assert_eq!(plan.output_playlist_name(), "Set-CDJ-safe");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_fails_when_every_file_is_missing() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-none-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let xml = write_collection(&dir, &[("Gone", dir.join("gone.wav").to_str().unwrap())]);
+
+        let err = plan(&xml, "Set").unwrap_err();
+        assert!(
+            matches!(err, Error::AllSourcesMissing { count: 1, .. }),
+            "{err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
