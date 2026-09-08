@@ -1,6 +1,6 @@
 [package]
 name = "baken"
-description = "Bake'n Deck — Rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
+description = "Bake'n Deck — rekordbox → CDJ prep toolkit: loudness gain, Key+BPM playlist sort, and CDJ-safe MP3 transcode baked into your files"
 keywords = ["audio", "loudness", "dj", "rekordbox", "cdj"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "../../README.md"

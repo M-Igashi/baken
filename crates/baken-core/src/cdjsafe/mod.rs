@@ -1,4 +1,4 @@
-//! CDJ-safe MP3 transcode of one Rekordbox playlist (`baken cdjsafe`).
+//! CDJ-safe MP3 transcode of one rekordbox playlist (`baken cdjsafe`).
 //!
 //! Two phases: [`plan`] reads the XML and validates sources without touching
 //! any file; [`convert`] transcodes and writes the new XML.
@@ -86,7 +86,7 @@ impl Plan {
         self.sources.iter().map(|s| s.name.as_str())
     }
 
-    /// Tracks whose `<TRACK>` lacks `TotalTime`; Rekordbox silently skips
+    /// Tracks whose `<TRACK>` lacks `TotalTime`; rekordbox silently skips
     /// cue import for those.
     pub fn missing_total_time(&self) -> Vec<&str> {
         self.sources
