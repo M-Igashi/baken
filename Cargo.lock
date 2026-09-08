@@ -87,7 +87,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "baken"
-version = "3.2.2"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "baken-core",
@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "baken-core"
-version = "3.2.2"
+version = "3.3.0"
 dependencies = [
  "anyhow",
  "chrono",
