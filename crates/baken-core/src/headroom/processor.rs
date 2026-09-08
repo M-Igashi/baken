@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -166,6 +166,20 @@ fn output_args(extension: &str, source: Option<&SourceFormat>) -> Vec<String> {
             "-write_id3v2".into(),
             "1".into(),
         ],
+        // Apple Lossless in an MP4 container. ffmpeg's alac encoder takes
+        // s16p or s32p; s32p is written as 24-bit.
+        "m4a" | "mp4" => {
+            let sample_fmt = match source.and_then(|s| s.bits) {
+                Some(bits) if bits <= 16 => "s16p",
+                _ => "s32p",
+            };
+            vec![
+                "-c:a".into(),
+                "alac".into(),
+                "-sample_fmt".into(),
+                sample_fmt.into(),
+            ]
+        }
         // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
         "wav" => vec![
             "-c:a".into(),
@@ -187,6 +201,17 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
 
     let volume_arg = format!("volume={}dB", gain_db);
     let source = probe_source_format(file_path);
+    // The lossless path only handles .m4a/.mp4 when the payload is ALAC;
+    // anything else in that container would be silently re-encoded as AAC.
+    if matches!(extension.to_ascii_lowercase().as_str(), "m4a" | "mp4")
+        && source.as_ref().map(|s| s.codec.as_str()) != Some("alac")
+    {
+        bail!(
+            "{} is not Apple Lossless (codec {}); lossless gain applies to ALAC only",
+            file_path.display(),
+            source.map(|s| s.codec).unwrap_or_else(|| "unknown".into())
+        );
+    }
 
     let mut cmd = crate::tools::ffmpeg();
     cmd.args(["-y", "-i"])
@@ -401,6 +426,16 @@ mod tests {
     /// A codec the container's muxer can't write, and an unreadable probe, both
     /// fall back to the pre-#74 24-bit output rather than failing the run.
     #[test]
+    fn alac_keeps_its_container_and_bit_depth() {
+        let m4a16 = output_args("m4a", Some(&source("alac", Some(16))));
+        assert_eq!(codec_of(&m4a16), "alac");
+        assert!(m4a16.contains(&"s16p".to_string()));
+        let m4a24 = output_args("m4a", Some(&source("alac", Some(24))));
+        assert!(m4a24.contains(&"s32p".to_string()));
+        assert_eq!(codec_of(&output_args("mp4", None)), "alac");
+    }
+
+    #[test]
     fn falls_back_when_codec_not_writable() {
         // Byte order is container-specific: LE flavours can't go into AIFF.
         assert_eq!(
@@ -423,7 +458,7 @@ mod tests {
         assert_eq!(value_of(&aiff, "-write_id3v2").as_deref(), Some("1"));
         let wav = output_args("wav", Some(&source("pcm_s16le", Some(16))));
         assert_eq!(value_of(&wav, "-write_bext").as_deref(), Some("1"));
-        assert!(output_args("m4a", None).is_empty());
+        assert!(output_args("ogg", None).is_empty());
     }
 
     /// ffprobe reports bits_per_sample as a number, bits_per_raw_sample as a
