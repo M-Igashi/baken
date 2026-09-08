@@ -66,7 +66,7 @@ A -0.5 dBTP delivery target leaves ~0.5 dB of margin against 0 dBTP, which cover
 
 Since v3.3.0 the ceiling is a target, not just a cap: files whose True Peak already exceeds it are lowered to it (lossless files exactly, MP3/AAC in whole 1.5 dB global_gain steps rounded up so the result never sits above the ceiling). This is what makes a loudness-war master and a dynamic master end up at the same True Peak on the USB stick. `--boost-only` restores the raise-only behaviour.
 
-The native-lossless raise threshold (the True Peak below which an MP3/AAC file qualifies for in-place global_gain modification rather than re-encoding) is always `target − 1.5 dB`, since global_gain only works in 1.5 dB steps. Lowering never re-encodes.
+The native-lossless raise threshold (the True Peak below which an MP3/AAC file qualifies for in-place global_gain modification rather than re-encoding) is always `target − 1.5 dB`, since global_gain only works in 1.5 dB steps. Between `target − 1.5 dB` and `target − 1.0 dB` the file can only be raised by re-encoding, which is offered as an opt-in; closer than 1.0 dB to the ceiling (where every file lands after a native step) it is left alone, since v3.3.1. Lowering never re-encodes.
 
 ## Preset crib sheet
 

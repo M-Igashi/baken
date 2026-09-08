@@ -225,13 +225,13 @@ Each MP3 and AAC/M4A file is categorized into one of three tiers:
    - Raising rounds down to whole steps (never overshoots the ceiling); lowering rounds up (the result never exceeds the ceiling, e.g. TP +0.3 dBTP → -1.5 dB → -1.2 dBTP)
    - Applied automatically (no user confirmation needed)
 
-2. **Re-encode** — the file needs raising by less than 1.5 dB
+2. **Re-encode** — the file needs raising by 1.0 to 1.5 dB (less than one native step, but enough to be worth a lossy pass)
    - Uses ffmpeg for arbitrary precision gain
    - MP3: `libmp3lame` / AAC: `libfdk_aac` (falls back to built-in `aac`)
    - Preserves original bitrate; requires explicit user confirmation
    - Lowering never re-encodes: a lossy pass just to make a file quieter is not worth it, so small overshoots take one full native step instead
 
-3. **Skip** — True Peak already within 0.05 dB of the ceiling, or above it with `--boost-only`
+3. **Skip** — True Peak within 0.05 dB of the ceiling; a lossy file less than 1.0 dB below it (a re-encode for that little is not worth the generation loss, and this is exactly where every file lands after a native step); or above the ceiling with `--boost-only`
 
 ### True Peak Ceiling
 
@@ -279,7 +279,7 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 | track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 |
 | track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | re-encode | +1.0 |
 | track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 |
-| track10.m4a | AAC | 256 | -12.5 | -1.8 | -0.5 | +0.7 | re-encode | +0.7 |
+| track10.m4a | AAC | 256 | -12.5 | -1.2 | -0.5 | +0.7 | none | 0.0 |
 
 #### Backup Structure
 

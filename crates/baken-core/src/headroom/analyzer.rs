@@ -31,6 +31,13 @@ pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
 /// Files whose True Peak is within this distance of the target are left alone
 const MIN_EFFECTIVE_GAIN: f64 = 0.05;
 
+/// Smallest raise worth a lossy re-encode. Below one native step the only way
+/// to raise an MP3/AAC file is to re-encode it, and a generation of loss for
+/// less than 1 dB is not a trade anyone wants; after a native step the
+/// leftover is by construction under 1.5 dB, so without this floor every
+/// stepped file came back asking for a re-encode on the next analysis.
+pub const MIN_REENCODE_GAIN: f64 = 1.0;
+
 /// Processing method for the file
 #[derive(Debug, Clone, PartialEq)]
 pub enum GainMethod {
@@ -282,10 +289,14 @@ fn decide_gain(
         // the ceiling. A re-encode just to make a file quieter is never worth it.
         return native(-((-headroom / GAIN_STEP).ceil() as i32));
     }
-    // Raising: whole steps natively, otherwise re-encode for the exact gain.
+    // Raising: whole steps natively. Under one step, re-encode for the exact
+    // gain only when it buys at least MIN_REENCODE_GAIN; otherwise the file is
+    // close enough to the ceiling and is left alone.
     let steps = (headroom / GAIN_STEP).floor() as i32;
     if steps >= 1 {
         native(steps)
+    } else if headroom < MIN_REENCODE_GAIN {
+        (GainMethod::None, 0.0, 0)
     } else if is_aac {
         (GainMethod::AacReencode, headroom, 0)
     } else {
@@ -514,8 +525,8 @@ mod tests {
     fn boost_only_skips_loud_files_and_keeps_raising_logic() {
         assert_eq!(steps(-0.8, GainMode::BoostOnly).0, GainMethod::None);
         assert_eq!(
-            steps(0.7, GainMode::BoostOnly),
-            (GainMethod::Mp3Reencode, 0.7, 0)
+            steps(1.2, GainMode::BoostOnly),
+            (GainMethod::Mp3Reencode, 1.2, 0)
         );
         assert_eq!(
             steps(3.2, GainMode::BoostOnly),
@@ -526,5 +537,23 @@ mod tests {
             (GainMethod::Mp3Lossless, 2.0 * GAIN_STEP, 2)
         );
         assert_eq!(steps(0.02, GainMode::Normalize).0, GainMethod::None);
+    }
+
+    #[test]
+    fn small_raises_of_lossy_files_are_left_alone_instead_of_reencoded() {
+        // The leftover after a native step (always under 1.5 dB) must not turn
+        // into a re-encode proposal on the next analysis.
+        assert_eq!(steps(0.16, GainMode::Normalize), (GainMethod::None, 0.0, 0));
+        assert_eq!(steps(0.99, GainMode::Normalize).0, GainMethod::None);
+        assert_eq!(steps(1.0, GainMode::Normalize).0, GainMethod::Mp3Reencode);
+        assert_eq!(
+            decide_gain(1.2, true, true, GainMode::Normalize),
+            (GainMethod::AacReencode, 1.2, 0)
+        );
+        // Lossless files are still raised exactly, however small the gain.
+        assert_eq!(
+            decide_gain(0.16, false, false, GainMode::Normalize),
+            (GainMethod::FfmpegLossless, 0.16, 0)
+        );
     }
 }
