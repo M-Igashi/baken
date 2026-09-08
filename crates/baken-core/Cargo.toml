@@ -1,6 +1,6 @@
 [package]
 name = "baken-core"
-description = "Bake'n Deck core library: loudness gain analysis, Rekordbox playlist Key+BPM sort, and CDJ-safe MP3 transcode (ffmpeg-backed)"
+description = "Bake'n Deck core library: loudness gain analysis, rekordbox playlist Key+BPM sort, and CDJ-safe MP3 transcode (ffmpeg-backed)"
 keywords = ["audio", "loudness", "dj", "rekordbox", "cdj"]
 categories = ["multimedia::audio"]
 readme = "README.md"

@@ -411,7 +411,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // Real Rekordbox exports wrap each COLLECTION <TRACK> with child elements
+    // Real rekordbox exports wrap each COLLECTION <TRACK> with child elements
     // (TEMPO, POSITION_MARK). quick-xml then yields Event::Start, not
     // Event::Empty — so the scanner must read attributes from both.
     const NESTED_TRACK_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

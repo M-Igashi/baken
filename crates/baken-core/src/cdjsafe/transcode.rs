@@ -103,7 +103,7 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
 /// Re-encode `src` to the CDJ-safe profile at `dst`. Metadata is carried over
 /// by ffmpeg (`-map_metadata 0`) and written as ID3v2.3; front-cover artwork
 /// is kept, re-encoded to JPEG and capped at 500×500. ffmpeg's libmp3lame
-/// writes a valid Xing/LAME header by default, so Rekordbox skips the encoder
+/// writes a valid Xing/LAME header by default, so rekordbox skips the encoder
 /// priming delay and cues stay aligned (issue #40 pitfall table).
 pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
     // Preferred: soxr very-high resampling. Not every ffmpeg build has

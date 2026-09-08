@@ -20,7 +20,7 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
     }
     for name in plan.missing_total_time() {
         println!(
-            "{} '{}' has no TotalTime attribute — Rekordbox will silently skip its cues on import",
+            "{} '{}' has no TotalTime attribute — rekordbox will silently skip its cues on import",
             style("⚠").yellow(),
             name
         );
@@ -116,7 +116,7 @@ fn print_report(report: &Report) {
         style(&report.playlist_name).bold()
     );
     println!(
-        "  {} Rekordbox: Preferences > Advanced > Database > rekordbox xml → load the XML, restart Rekordbox",
+        "  {} rekordbox: Preferences > Advanced > Database > rekordbox xml → load the XML, restart rekordbox",
         style("ℹ").blue()
     );
     println!(

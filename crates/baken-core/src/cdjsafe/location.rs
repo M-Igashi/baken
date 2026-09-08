@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use std::fmt::Write;
 use std::path::Path;
 
-/// Decode a Rekordbox `Location` attribute (`file://localhost/...`) into a
+/// Decode a rekordbox `Location` attribute (`file://localhost/...`) into a
 /// filesystem path string.
 pub fn decode_location(location: &str) -> Result<String> {
     let rest = location
@@ -35,9 +35,9 @@ pub fn decode_location(location: &str) -> Result<String> {
     }
 }
 
-/// Encode a filesystem path as a Rekordbox-canonical `Location` URL:
+/// Encode a filesystem path as a rekordbox-canonical `Location` URL:
 /// `file://localhost/` + POSIX forward slashes + RFC 3986 percent-encoding
-/// with `/` and `:` left as-is (matches Rekordbox's own exports; the Rust
+/// with `/` and `:` left as-is (matches rekordbox's own exports; the Rust
 /// `url` crate would emit the non-canonical `file:///` form instead).
 pub fn encode_location(path: &Path) -> String {
     let mut posix = path.to_string_lossy().replace('\\', "/");

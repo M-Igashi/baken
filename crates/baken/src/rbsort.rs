@@ -27,11 +27,11 @@ pub fn run(args: &RbsortArgs) -> Result<()> {
         );
     }
     println!(
-        "  {} Rekordbox: Preferences > Advanced > Database > rekordbox xml > Imported Library → this file (one-time setup)",
+        "  {} rekordbox: Preferences > Advanced > Database > rekordbox xml > Imported Library → this file (one-time setup)",
         style("ℹ").blue()
     );
     println!(
-        "  {} Restart Rekordbox; the sorted playlists appear under the 'rekordbox xml' tree in the left sidebar",
+        "  {} Restart rekordbox; the sorted playlists appear under the 'rekordbox xml' tree in the left sidebar",
         style("ℹ").blue()
     );
     Ok(())

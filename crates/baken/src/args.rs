@@ -6,11 +6,11 @@ use baken_core::headroom::{
     SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 
-/// Bake'n Deck — Rekordbox → CDJ prep toolkit.
+/// Bake'n Deck — rekordbox → CDJ prep toolkit.
 ///
 /// What you prep is what plays on the deck: bakes loudness gain into audio
 /// files (headroom) and Key+BPM sort order into playlists (rbsort), so
-/// Rekordbox software-only features survive the USB export to CDJs.
+/// rekordbox software-only features survive the USB export to CDJs.
 #[derive(Parser, Debug)]
 #[command(name = "baken", version, about, long_about = None, arg_required_else_help = true)]
 pub struct Cli {
@@ -27,14 +27,14 @@ pub enum Command {
     /// folder as an argument). Provide paths or any flag to run in
     /// non-interactive (scriptable) mode.
     Headroom(HeadroomArgs),
-    /// Sort Rekordbox playlists by Camelot Key then BPM, in place in the exported XML.
+    /// Sort rekordbox playlists by Camelot Key then BPM, in place in the exported XML.
     ///
     /// Every playlist keeps its name and folder position; only the track order
-    /// inside each one changes. Point Rekordbox's "rekordbox xml" Imported
+    /// inside each one changes. Point rekordbox's "rekordbox xml" Imported
     /// Library at the file once, then re-export and re-run whenever your
     /// playlists change.
     Rbsort(RbsortArgs),
-    /// Transcode a Rekordbox playlist to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
+    /// Transcode a rekordbox playlist to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
     /// with cues and beatgrid carried over via a new XML playlist.
     ///
     /// Pre-NXS2 CDJs only play MP3 reliably. cdjsafe re-encodes every track in
@@ -42,7 +42,7 @@ pub enum Command {
     /// matching that profile are copied byte-identically), and emits an updated
     /// XML where each new track is a fresh entry that inherits the source's
     /// beatgrid (TEMPO) and cue points (POSITION_MARK) verbatim. Import the XML
-    /// in Rekordbox and use "Import to Collection" — no re-analysis needed.
+    /// in rekordbox and use "Import to Collection" — no re-analysis needed.
     Cdjsafe(CdjsafeArgs),
 }
 
