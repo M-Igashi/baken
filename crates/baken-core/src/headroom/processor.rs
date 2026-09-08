@@ -310,7 +310,7 @@ pub fn process_file(
     base_dir: &Path,
     backup_dir: Option<&Path>,
 ) -> Result<()> {
-    if !analysis.has_headroom() {
+    if !analysis.needs_gain() {
         return Ok(());
     }
 

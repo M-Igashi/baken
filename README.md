@@ -49,7 +49,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 
 - **Single binary** — [mp3rgain](https://github.com/M-Igashi/mp3rgain) built in; only ffmpeg required (and `rbsort` doesn't even need that)
 - **Truly lossless MP3/AAC gain** — global_gain header modification in 1.5 dB steps, no re-encode
-- **Uniform True Peak ceiling** — -0.5 dBTP by default (AES TD1008 §7B), tunable via `--tp-target`
+- **Uniform True Peak ceiling** — every track lands at -0.5 dBTP by default (AES TD1008 §7B): quiet tracks are raised, loud ones lowered. Tunable via `--tp-target`, or `--boost-only` to never turn anything down
 - **Non-destructive** — automatic backups; `rbsort`/`cdjsafe` only ever touch an exported XML, never your Rekordbox library
 - **Metadata preserved** — files overwritten in place, so Rekordbox cues, hot cues, and beatgrids stay linked
 - **Interactive or scriptable** — guided two-stage confirmation, or flags/globs for pipelines and CI
@@ -60,15 +60,16 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 
 1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A)
 2. Measures LUFS (Integrated Loudness) and True Peak using ffmpeg
-3. Categorizes files by processing method:
+3. Computes the gain that puts each file's True Peak at the ceiling (-0.5 dBTP by default). Quiet files get a positive gain, loud files a negative one; `--boost-only` restricts this to positive gains.
+4. Categorizes files by processing method:
    - **Green**: Lossless files (ffmpeg)
    - **Yellow**: MP3/AAC files with enough headroom for native lossless gain
    - **Magenta**: MP3/AAC files requiring re-encode
-4. Displays categorized report
-5. Two-stage confirmation:
+5. Displays categorized report
+6. Two-stage confirmation:
    - First: "Apply lossless gain adjustment?" (lossless + native MP3/AAC)
    - Second: "Also process files with re-encoding?" (MP3/AAC requiring re-encode)
-6. Creates backups and processes files
+7. Creates backups and processes files
 
 #### Example
 
@@ -95,12 +96,13 @@ $ baken headroom
   track02.aif    -14.1    -4.5 dBTP   -0.5 dBTP   +4.0 dB
   track03.wav    -12.5    -2.8 dBTP   -0.5 dBTP   +2.3 dB
 
-● 2 MP3 files (native lossless, 1.5 dB steps, requires TP ≤ -2.0 dBTP)
+● 3 MP3 files (native lossless, 1.5 dB steps)
   Filename        LUFS    True Peak    Target        Gain
   track04.mp3    -14.0    -5.5 dBTP   -0.5 dBTP   +4.5 dB
   track05.mp3    -13.5    -6.0 dBTP   -0.5 dBTP   +4.5 dB
+  track11.mp3     -6.8     0.3 dBTP   -0.5 dBTP   -1.5 dB
 
-● 2 AAC/M4A files (native lossless, 1.5 dB steps, requires TP ≤ -2.0 dBTP)
+● 2 AAC/M4A files (native lossless, 1.5 dB steps)
   Filename        LUFS    True Peak    Target        Gain
   track08.m4a    -13.0    -4.0 dBTP   -0.5 dBTP   +3.0 dB
   track09.m4a    -12.5    -4.5 dBTP   -0.5 dBTP   +3.0 dB
@@ -115,12 +117,13 @@ $ baken headroom
   track10.m4a    -12.5    -1.8 dBTP   -0.5 dBTP   +1.3 dB
 
 ▸ TP target: -0.5 dBTP (uniform delivery ceiling, AES TD1008 §7B)
+▸ Gain mode: normalize (raise quiet files, lower loud ones)
 
 ✓ Report saved: ./baken_report_20250109_123456.csv
 
-? Apply lossless gain adjustment to 3 lossless + 2 MP3 (lossless gain) + 2 AAC/M4A (lossless gain) files? [y/N] y
+? Apply lossless gain adjustment to 3 lossless + 3 MP3 (lossless gain) + 2 AAC/M4A (lossless gain) files? [y/N] y
 
-ℹ 2 MP3 + 1 AAC/M4A files have headroom but require re-encoding for precise gain.
+ℹ 2 MP3 + 1 AAC/M4A files need a gain change that requires re-encoding for precise gain.
   • Re-encoding causes minor quality loss (inaudible at 256kbps+)
   • Original bitrate will be preserved
 ? Also process these files with re-encoding? [y/N] y
@@ -181,6 +184,9 @@ baken headroom --lossless --tp-target -1.0 ./album/
 
 # Restore the legacy bitrate-dependent split (pre-v1.10 behaviour)
 baken headroom --lossless --tp-split-bitrate ./album/
+
+# Only raise quiet tracks, never lower loud ones (pre-v3.3 behaviour)
+baken headroom --lossless --boost-only ./album/
 ```
 
 **Non-interactive defaults** (when any flag or path is provided):
@@ -189,6 +195,7 @@ baken headroom --lossless --tp-split-bitrate ./album/
 - `--backup` is **off** unless provided; bare `--backup` uses `<target>/backup`
 - CSV report is written unless `--no-report`; `--report PATH` sets a custom location
 - `--analyze-only` runs analysis + report only, skips processing
+- `--boost-only` skips files above the ceiling instead of lowering them
 
 Run `baken headroom --help` for the full flag reference.
 
@@ -204,21 +211,27 @@ baken selects the optimal method for each file based on format and headroom:
 
 Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
 
+#### Raising and Lowering
+
+The gain for each file is `ceiling − measured True Peak`. Files below the ceiling get a positive gain, files above it (loudness-war masters, inter-sample overs from lossy encoding) get a negative one, so every track ends up at the same True Peak with no limiter involved. Pass `--boost-only` to keep the pre-v3.3 behaviour of raising quiet files only and leaving loud files untouched.
+
 #### Three-Tier Approach for Lossy Formats (MP3/AAC)
 
 Each MP3 and AAC/M4A file is categorized into one of three tiers:
 
-1. **Native Lossless** — ≥1.5 dB headroom to the configured ceiling
+1. **Native Lossless** — the gain is at least one 1.5 dB step in either direction
    - Truly lossless global_gain header modification in 1.5dB steps
    - Uses built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library
+   - Raising rounds down to whole steps (never overshoots the ceiling); lowering rounds up (the result never exceeds the ceiling, e.g. TP +0.3 dBTP → -1.5 dB → -1.2 dBTP)
    - Applied automatically (no user confirmation needed)
 
-2. **Re-encode** — headroom exists but <1.5 dB to ceiling
+2. **Re-encode** — the file needs raising by less than 1.5 dB
    - Uses ffmpeg for arbitrary precision gain
-   - MP3: `libmp3lame` with `-q:a 0` / AAC: `libfdk_aac` (falls back to built-in `aac`)
+   - MP3: `libmp3lame` / AAC: `libfdk_aac` (falls back to built-in `aac`)
    - Preserves original bitrate; requires explicit user confirmation
+   - Lowering never re-encodes: a lossy pass just to make a file quieter is not worth it, so small overshoots take one full native step instead
 
-3. **Skip** — no headroom available
+3. **Skip** — True Peak already within 0.05 dB of the ceiling, or above it with `--boost-only`
 
 ### True Peak Ceiling
 
@@ -226,11 +239,11 @@ Each MP3 and AAC/M4A file is categorized into one of three tiers:
 
 Every file targets **-0.5 dBTP** by default. This is the maximum-aggression value that [AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) §7B describes for high-rate codec inputs ("may work satisfactorily with as little as -0.5 dBTP for the limiting threshold").
 
-| File class | Ceiling | Native lossless requires |
+| File class | Ceiling | Native lossless raise requires |
 |---|---|---|
 | Lossless (FLAC, AIFF, WAV) | **-0.5 dBTP** | — |
-| MP3 (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP |
-| AAC/M4A (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP |
+| MP3 (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP (any TP above the ceiling is lowered natively) |
+| AAC/M4A (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP (any TP above the ceiling is lowered natively) |
 
 #### Why a single ceiling — pre-encode vs delivery
 
@@ -254,7 +267,7 @@ See [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) for a longer walk-thr
 
 `--tp-target` and `--tp-split-bitrate` are mutually exclusive. `--tp-split-bitrate` reproduces the pre-1.10 default exactly.
 
-The native-lossless threshold scales with the chosen ceiling: it is always `target − 1.5 dB` (e.g. `-0.5` → TP ≤ -2.0; `-1.0` → TP ≤ -2.5; `-2.0` → TP ≤ -3.5).
+The native-lossless raise threshold scales with the chosen ceiling: it is always `target − 1.5 dB` (e.g. `-0.5` → TP ≤ -2.0; `-1.0` → TP ≤ -2.5; `-2.0` → TP ≤ -3.5). Files above the ceiling are always lowered natively.
 
 ### Output
 
@@ -288,8 +301,8 @@ The native-lossless threshold scales with the chosen ceiling: it is always `targ
 ### Notes & Technical Details
 
 - **Files are overwritten in place** after backup — Rekordbox metadata remains linked
-- Only files with **positive effective gain** are shown and processed
-- MP3/AAC native lossless requires at least **1.5dB headroom** to be processed
+- Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
+- MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
 - MP3/AAC re-encoding is **opt-in** and requires explicit confirmation
 - macOS resource fork files (`._*`) are automatically ignored
 
@@ -301,7 +314,7 @@ baken uses the built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library
 
 #### Native Lossless Threshold
 
-Since native lossless gain only works in 1.5 dB steps, at least 1.5 dB of headroom to the configured target ceiling is required. The threshold scales automatically:
+Since native lossless gain only works in 1.5 dB steps, raising a file requires at least 1.5 dB of headroom to the configured target ceiling. The threshold scales automatically:
 
 | Target | Requires TP ≤ |
 |---|---|
@@ -310,6 +323,8 @@ Since native lossless gain only works in 1.5 dB steps, at least 1.5 dB of headro
 | -2.0 dBTP (`--tp-target -2.0`) | -3.5 dBTP |
 
 Example: 320 kbps file at -3.5 dBTP, default target → 2 steps (+3.0 dB) → -0.5 dBTP (optimal).
+
+Lowering has no such threshold: a file at +0.3 dBTP takes one step down (-1.5 dB) and lands at -1.2 dBTP, slightly under the ceiling rather than re-encoded to hit it exactly.
 
 #### Re-encode Quality
 

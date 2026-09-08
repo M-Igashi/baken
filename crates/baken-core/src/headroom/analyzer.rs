@@ -28,7 +28,7 @@ pub const HIGH_BITRATE_THRESHOLD: u32 = 256;
 pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
 
 /// Minimum effective gain threshold (dB)
-/// Files with less headroom than this are skipped
+/// Files whose True Peak is within this distance of the target are left alone
 const MIN_EFFECTIVE_GAIN: f64 = 0.05;
 
 /// Processing method for the file
@@ -44,8 +44,21 @@ pub enum GainMethod {
     AacLossless,
     /// AAC/M4A files requiring re-encode for precise gain
     AacReencode,
-    /// No processing needed (no headroom)
+    /// No processing needed (already at the target)
     None,
+}
+
+/// Direction of the gain adjustment.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum GainMode {
+    /// Move every file to the ceiling: raise quiet files, lower loud ones.
+    /// Lossy files are lowered natively in 1.5 dB steps, rounded up so the
+    /// result never exceeds the ceiling; lowering never re-encodes.
+    #[default]
+    Normalize,
+    /// Only raise files that sit below the ceiling; files above it are skipped
+    /// (the pre-3.3 behaviour).
+    BoostOnly,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +84,7 @@ impl AudioAnalysis {
         )
     }
 
-    pub fn has_headroom(&self) -> bool {
+    pub fn needs_gain(&self) -> bool {
         !matches!(self.gain_method, GainMethod::None)
     }
 }
@@ -242,7 +255,49 @@ fn extract_loudnorm_json(stderr: &str, path: &Path) -> Result<LoudnormOutput> {
     ))
 }
 
-pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<AudioAnalysis> {
+/// Pick the method, effective gain and native step count for a measured
+/// `headroom` (target minus input True Peak; negative means the file is too loud).
+fn decide_gain(
+    headroom: f64,
+    is_lossy: bool,
+    is_aac: bool,
+    mode: GainMode,
+) -> (GainMethod, f64, i32) {
+    if headroom.abs() < MIN_EFFECTIVE_GAIN || (headroom < 0.0 && mode == GainMode::BoostOnly) {
+        return (GainMethod::None, 0.0, 0);
+    }
+    if !is_lossy {
+        return (GainMethod::FfmpegLossless, headroom, 0);
+    }
+    let native = |steps: i32| {
+        let method = if is_aac {
+            GainMethod::AacLossless
+        } else {
+            GainMethod::Mp3Lossless
+        };
+        (method, steps as f64 * GAIN_STEP, steps)
+    };
+    if headroom < 0.0 {
+        // Lowering: round up to the next full step so the result never exceeds
+        // the ceiling. A re-encode just to make a file quieter is never worth it.
+        return native(-((-headroom / GAIN_STEP).ceil() as i32));
+    }
+    // Raising: whole steps natively, otherwise re-encode for the exact gain.
+    let steps = (headroom / GAIN_STEP).floor() as i32;
+    if steps >= 1 {
+        native(steps)
+    } else if is_aac {
+        (GainMethod::AacReencode, headroom, 0)
+    } else {
+        (GainMethod::Mp3Reencode, headroom, 0)
+    }
+}
+
+pub fn analyze_file_with_target(
+    path: &Path,
+    tp_mode: TpTargetMode,
+    gain_mode: GainMode,
+) -> Result<AudioAnalysis> {
     let output = crate::tools::ffmpeg()
         .args(["-nostdin", "-i"])
         .arg(path)
@@ -296,26 +351,8 @@ pub fn analyze_file_with_target(path: &Path, tp_mode: TpTargetMode) -> Result<Au
     let target_tp = tp_mode.target_for(is_lossy, bitrate_kbps);
     let headroom = target_tp - input_tp;
 
-    let (gain_method, effective_gain, lossless_gain_steps) = if headroom < MIN_EFFECTIVE_GAIN {
-        (GainMethod::None, 0.0, 0)
-    } else if !is_lossy {
-        (GainMethod::FfmpegLossless, headroom, 0)
-    } else {
-        // MP3/AAC: try lossless gain in 1.5dB steps, fall back to re-encode
-        let lossless_steps = (headroom / GAIN_STEP).floor() as i32;
-        if lossless_steps >= 1 {
-            let effective = lossless_steps as f64 * GAIN_STEP;
-            if is_aac {
-                (GainMethod::AacLossless, effective, lossless_steps)
-            } else {
-                (GainMethod::Mp3Lossless, effective, lossless_steps)
-            }
-        } else if is_aac {
-            (GainMethod::AacReencode, headroom, 0)
-        } else {
-            (GainMethod::Mp3Reencode, headroom, 0)
-        }
-    };
+    let (gain_method, effective_gain, lossless_gain_steps) =
+        decide_gain(headroom, is_lossy, is_aac, gain_mode);
 
     let filename = path
         .file_name()
@@ -439,5 +476,55 @@ mod tests {
         let loudnorm = result.unwrap();
         assert_eq!(loudnorm.input_i, "-10.00");
         assert_eq!(loudnorm.input_tp, "0.50");
+    }
+
+    fn steps(headroom: f64, mode: GainMode) -> (GainMethod, f64, i32) {
+        decide_gain(headroom, true, false, mode)
+    }
+
+    #[test]
+    fn normalize_lowers_lossy_files_in_whole_steps_rounded_up() {
+        // TP +0.3 dBTP against -0.5: needs -0.8 dB, gets one full step down.
+        assert_eq!(
+            steps(-0.8, GainMode::Normalize),
+            (GainMethod::Mp3Lossless, -GAIN_STEP, -1)
+        );
+        // Exactly one step stays one step.
+        assert_eq!(steps(-1.5, GainMode::Normalize).2, -1);
+        assert_eq!(steps(-1.6, GainMode::Normalize).2, -2);
+        // A tiny overshoot under the tolerance is left alone.
+        assert_eq!(steps(-0.04, GainMode::Normalize).0, GainMethod::None);
+        // Lowering never re-encodes.
+        assert_eq!(steps(-0.2, GainMode::Normalize).0, GainMethod::Mp3Lossless);
+    }
+
+    #[test]
+    fn normalize_lowers_lossless_files_precisely() {
+        assert_eq!(
+            decide_gain(-0.8, false, false, GainMode::Normalize),
+            (GainMethod::FfmpegLossless, -0.8, 0)
+        );
+        assert_eq!(
+            decide_gain(-0.8, true, true, GainMode::Normalize),
+            (GainMethod::AacLossless, -GAIN_STEP, -1)
+        );
+    }
+
+    #[test]
+    fn boost_only_skips_loud_files_and_keeps_raising_logic() {
+        assert_eq!(steps(-0.8, GainMode::BoostOnly).0, GainMethod::None);
+        assert_eq!(
+            steps(0.7, GainMode::BoostOnly),
+            (GainMethod::Mp3Reencode, 0.7, 0)
+        );
+        assert_eq!(
+            steps(3.2, GainMode::BoostOnly),
+            (GainMethod::Mp3Lossless, 2.0 * GAIN_STEP, 2)
+        );
+        assert_eq!(
+            steps(3.2, GainMode::Normalize),
+            (GainMethod::Mp3Lossless, 2.0 * GAIN_STEP, 2)
+        );
+        assert_eq!(steps(0.02, GainMode::Normalize).0, GainMethod::None);
     }
 }

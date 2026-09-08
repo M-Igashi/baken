@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use baken_core::headroom::{self, AnalysisSummary, AudioAnalysis, TpTargetMode};
+use baken_core::headroom::{self, AnalysisSummary, AudioAnalysis, GainMode, TpTargetMode};
 use baken_core::CancelToken;
 use clap::Parser;
 use console::{style, Style};
@@ -31,12 +31,13 @@ fn run_headroom(args: &HeadroomArgs) -> Result<()> {
     baken_core::check_ffmpeg()?;
 
     let tp_mode = args.tp_mode();
-    print_tp_target_banner(tp_mode);
+    let gain_mode = args.gain_mode();
+    print_tp_target_banner(tp_mode, gain_mode);
 
     let result = if args.is_non_interactive() {
-        run_scriptable(args, tp_mode)
+        run_scriptable(args, tp_mode, gain_mode)
     } else {
-        run_interactive(tp_mode)
+        run_interactive(tp_mode, gain_mode)
     };
 
     if let Some(handle) = update_check {
@@ -46,7 +47,7 @@ fn run_headroom(args: &HeadroomArgs) -> Result<()> {
     result
 }
 
-fn print_tp_target_banner(tp_mode: TpTargetMode) {
+fn print_tp_target_banner(tp_mode: TpTargetMode, gain_mode: GainMode) {
     match tp_mode {
         TpTargetMode::Uniform(t) => {
             println!(
@@ -64,6 +65,11 @@ fn print_tp_target_banner(tp_mode: TpTargetMode) {
             );
         }
     }
+    let mode_text = match gain_mode {
+        GainMode::Normalize => "normalize (raise quiet files, lower loud ones)",
+        GainMode::BoostOnly => "boost only (files above the ceiling are skipped)",
+    };
+    println!("{} Gain mode: {}", style("▸").cyan(), mode_text);
 }
 
 /// Shared pipeline head: empty-check → analyze → summary gate → report table.
@@ -71,6 +77,7 @@ fn print_tp_target_banner(tp_mode: TpTargetMode) {
 fn analyze_and_report(
     files: &[PathBuf],
     tp_mode: TpTargetMode,
+    gain_mode: GainMode,
 ) -> Result<Option<(Vec<AudioAnalysis>, AnalysisSummary)>> {
     if files.is_empty() {
         println!("\n{} No audio files found", style("⚠").yellow());
@@ -87,19 +94,20 @@ fn analyze_and_report(
         style(files.len()).cyan()
     );
 
-    let all_analyses = analyze_files(files, tp_mode)?;
+    let all_analyses = analyze_files(files, tp_mode, gain_mode)?;
     let summary = AnalysisSummary::from_analyses(&all_analyses);
 
     if !summary.has_processable() {
-        println!(
-            "\n{} No files with enough headroom found.",
-            style("ℹ").blue()
-        );
-        println!("  All files are already at or above the target ceiling.");
+        println!("\n{} No files need a gain change.", style("ℹ").blue());
+        let detail = match gain_mode {
+            GainMode::Normalize => "All files are already at the target ceiling.",
+            GainMode::BoostOnly => "All files are already at or above the target ceiling.",
+        };
+        println!("  {}", detail);
         return Ok(None);
     }
 
-    report::print_analysis_report(&all_analyses, tp_mode);
+    report::print_analysis_report(&all_analyses);
     Ok(Some((all_analyses, summary)))
 }
 
@@ -108,7 +116,7 @@ fn write_csv_report(
     base_dir: &Path,
     explicit_path: Option<&Path>,
 ) -> Result<()> {
-    let processable: Vec<_> = analyses.iter().filter(|a| a.has_headroom()).collect();
+    let processable: Vec<_> = analyses.iter().filter(|a| a.needs_gain()).collect();
     let csv_path = headroom::generate_csv(&processable, base_dir, explicit_path)?;
     println!(
         "{} Report saved: {}",
@@ -118,7 +126,7 @@ fn write_csv_report(
     Ok(())
 }
 
-fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
+fn run_interactive(tp_mode: TpTargetMode, gain_mode: GainMode) -> Result<()> {
     let target_dir = std::env::current_dir().context("Failed to get current directory")?;
 
     println!(
@@ -128,7 +136,7 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     );
 
     let files = headroom::scan_audio_files(&target_dir);
-    let Some((all_analyses, summary)) = analyze_and_report(&files, tp_mode)? else {
+    let Some((all_analyses, summary)) = analyze_and_report(&files, tp_mode, gain_mode)? else {
         return Ok(());
     };
 
@@ -169,7 +177,7 @@ fn run_interactive(tp_mode: TpTargetMode) -> Result<()> {
     Ok(())
 }
 
-fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
+fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode, gain_mode: GainMode) -> Result<()> {
     let (files, base_dir) = if cli.paths.is_empty() {
         let cwd = std::env::current_dir().context("Failed to get current directory")?;
         (headroom::scan_audio_files(&cwd), cwd)
@@ -181,7 +189,7 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode) -> Result<()> {
         (files, base)
     };
 
-    let Some((all_analyses, _)) = analyze_and_report(&files, tp_mode)? else {
+    let Some((all_analyses, _)) = analyze_and_report(&files, tp_mode, gain_mode)? else {
         return Ok(());
     };
 
@@ -298,7 +306,7 @@ fn prompt_reencode_processing(summary: &AnalysisSummary) -> Result<bool> {
     }
 
     println!(
-        "\n{} {} files have headroom but require re-encoding for precise gain.",
+        "\n{} {} files need a gain change that requires re-encoding for precise gain.",
         style("ℹ").magenta(),
         reencode_parts.join(" + ")
     );
@@ -335,11 +343,16 @@ fn print_banner() {
     println!();
 }
 
-fn analyze_files(files: &[PathBuf], tp_mode: TpTargetMode) -> Result<Vec<AudioAnalysis>> {
+fn analyze_files(
+    files: &[PathBuf],
+    tp_mode: TpTargetMode,
+    gain_mode: GainMode,
+) -> Result<Vec<AudioAnalysis>> {
     let pb = make_progress_bar(files.len(), "Analyzing...");
     let outcome = headroom::analyze(
         files,
         tp_mode,
+        gain_mode,
         &BarProgress(pb.clone()),
         &CancelToken::new(),
     );

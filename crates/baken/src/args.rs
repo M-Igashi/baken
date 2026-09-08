@@ -2,7 +2,8 @@ use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 use baken_core::headroom::{
-    TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW,
+    GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH,
+    SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 
 /// Bake'n Deck — Rekordbox → CDJ prep toolkit.
@@ -64,6 +65,12 @@ pub struct HeadroomArgs {
     #[arg(long)]
     pub tp_split_bitrate: bool,
 
+    /// Only raise quiet files toward the ceiling; leave files above it
+    /// untouched (pre-3.3 behaviour). By default loud files are lowered to
+    /// the ceiling as well, so every track ends up at the same True Peak.
+    #[arg(long)]
+    pub boost_only: bool,
+
     /// Apply lossless gain adjustment (default in non-interactive mode)
     #[arg(long, conflicts_with = "no_lossless")]
     pub lossless: bool,
@@ -122,6 +129,7 @@ impl HeadroomArgs {
             || self.analyze_only
             || self.tp_target.is_some()
             || self.tp_split_bitrate
+            || self.boost_only
     }
 
     /// Resolve the True Peak target mode from CLI flags.
@@ -136,6 +144,14 @@ impl HeadroomArgs {
             TpTargetMode::SplitBitrate(SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW)
         } else {
             TpTargetMode::Uniform(DEFAULT_TARGET_TRUE_PEAK)
+        }
+    }
+
+    pub fn gain_mode(&self) -> GainMode {
+        if self.boost_only {
+            GainMode::BoostOnly
+        } else {
+            GainMode::Normalize
         }
     }
 

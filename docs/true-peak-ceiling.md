@@ -58,11 +58,15 @@ A -0.5 dBTP delivery target leaves ~0.5 dB of margin against 0 dBTP, which cover
 --tp-split-bitrate    Restore pre-v1.10 split: -0.5 dBTP for ≥256 kbps,
                       -1.0 dBTP for <256 kbps. Mirrors TD1008 §7B
                       pre-encode limiter recommendations.
+--boost-only          Only raise files below the ceiling; leave files
+                      above it untouched (pre-v3.3 behaviour).
 ```
 
 `--tp-target` and `--tp-split-bitrate` are mutually exclusive.
 
-The native-lossless threshold (the True Peak below which an MP3/AAC file qualifies for in-place global_gain modification rather than re-encoding) is always `target − 1.5 dB`, since global_gain only works in 1.5 dB steps.
+Since v3.3.0 the ceiling is a target, not just a cap: files whose True Peak already exceeds it are lowered to it (lossless files exactly, MP3/AAC in whole 1.5 dB global_gain steps rounded up so the result never sits above the ceiling). This is what makes a loudness-war master and a dynamic master end up at the same True Peak on the USB stick. `--boost-only` restores the raise-only behaviour.
+
+The native-lossless raise threshold (the True Peak below which an MP3/AAC file qualifies for in-place global_gain modification rather than re-encoding) is always `target − 1.5 dB`, since global_gain only works in 1.5 dB steps. Lowering never re-encodes.
 
 ## Preset crib sheet
 
@@ -74,6 +78,7 @@ The native-lossless threshold (the True Peak below which an MP3/AAC file qualifi
 | Conservative master with player-side margin | `--tp-target -2.0` | Leaves room for downstream SRC and Hilbert downmix |
 | Mirror TD1008 §7B pre-encode limiter | `--tp-split-bitrate` | -0.5 dBTP ≥256 k, -1.0 dBTP <256 k |
 | Mirror TD1008 §4 generic pre-encode limiter | `--tp-target -1.0` | One uniform value, the §4 number |
+| Never turn a track down | `--boost-only` | Raise-only, files above the ceiling are skipped (pre-v3.3 default) |
 
 ## References
 

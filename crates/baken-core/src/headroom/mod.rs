@@ -6,7 +6,7 @@ mod report;
 mod scanner;
 
 pub use analyzer::{
-    AudioAnalysis, GainMethod, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP,
+    AudioAnalysis, GainMethod, GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP,
     HIGH_BITRATE_THRESHOLD, SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 pub use processor::{create_backup_dir, ensure_backup_dir};
@@ -35,11 +35,14 @@ pub struct ApplyOutcome {
 }
 
 /// Measure loudness and True Peak for every file in parallel and decide the
-/// gain method per file. Returns `Error::Cancelled` if the token fires; a
-/// partial analysis is not useful to anyone.
+/// gain method per file. `gain_mode` selects whether files above the ceiling
+/// are lowered ([`GainMode::Normalize`]) or skipped ([`GainMode::BoostOnly`]).
+/// Returns `Error::Cancelled` if the token fires; a partial analysis is not
+/// useful to anyone.
 pub fn analyze(
     files: &[PathBuf],
     tp_mode: TpTargetMode,
+    gain_mode: GainMode,
     progress: &dyn Progress,
     cancel: &CancelToken,
 ) -> Result<AnalyzeOutcome> {
@@ -51,7 +54,7 @@ pub fn analyze(
             if cancel.is_cancelled() {
                 return None;
             }
-            let result = analyzer::analyze_file_with_target(file, tp_mode)
+            let result = analyzer::analyze_file_with_target(file, tp_mode, gain_mode)
                 .map_err(|e| (file.clone(), Error::from(e)));
             progress.on_file_done(done.fetch_add(1, Ordering::Relaxed) + 1, files.len(), file);
             Some(result)
@@ -113,7 +116,7 @@ pub fn apply(
     outcome
 }
 
-/// Keep the analyses that have headroom and whose method is enabled.
+/// Keep the analyses that need a gain change and whose method is enabled.
 pub fn select_processable(
     analyses: &[AudioAnalysis],
     lossless: bool,
@@ -122,7 +125,7 @@ pub fn select_processable(
     analyses
         .iter()
         .filter(|a| {
-            a.has_headroom()
+            a.needs_gain()
                 && if a.requires_reencode() {
                     reencode
                 } else {

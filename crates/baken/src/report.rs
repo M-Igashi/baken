@@ -1,7 +1,7 @@
-use baken_core::headroom::{AudioAnalysis, GainMethod, TpTargetMode, GAIN_STEP};
+use baken_core::headroom::{AudioAnalysis, GainMethod, GAIN_STEP};
 use console::Style;
 
-pub fn print_analysis_report(analyses: &[AudioAnalysis], tp_mode: TpTargetMode) {
+pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
     let header_style = Style::new().bold().cyan();
     let lossless_style = Style::new().green();
     let mp3_lossless_style = Style::new().yellow();
@@ -11,7 +11,7 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis], tp_mode: TpTargetMode) 
     // Calculate column width (use character count, not byte count)
     let filename_width = analyses
         .iter()
-        .filter(|a| a.has_headroom())
+        .filter(|a| a.needs_gain())
         .map(|a| a.filename.chars().count())
         .max()
         .unwrap_or(8)
@@ -19,8 +19,8 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis], tp_mode: TpTargetMode) 
 
     println!();
 
-    let mp3_label = native_lossless_label("MP3", tp_mode);
-    let aac_label = native_lossless_label("AAC/M4A", tp_mode);
+    let mp3_label = format!("MP3 files (native lossless, {:.1} dB steps)", GAIN_STEP);
+    let aac_label = format!("AAC/M4A files (native lossless, {:.1} dB steps)", GAIN_STEP);
     let sections: &[(GainMethod, &str, &Style)] = &[
         (
             GainMethod::FfmpegLossless,
@@ -69,28 +69,7 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis], tp_mode: TpTargetMode) 
     }
 
     if total == 0 {
-        println!(
-            "{} No files with available headroom found.",
-            dim_style.apply_to("ℹ")
-        );
-    }
-}
-
-fn native_lossless_label(format: &str, tp_mode: TpTargetMode) -> String {
-    match tp_mode {
-        TpTargetMode::Uniform(t) => format!(
-            "{} files (native lossless, {:.1} dB steps, requires TP ≤ {:+.1} dBTP)",
-            format,
-            GAIN_STEP,
-            t - GAIN_STEP
-        ),
-        TpTargetMode::SplitBitrate(high, low) => format!(
-            "{} files (native lossless, {:.1} dB steps; ≥256k requires TP ≤ {:+.1}, <256k requires TP ≤ {:+.1})",
-            format,
-            GAIN_STEP,
-            high - GAIN_STEP,
-            low - GAIN_STEP
-        ),
+        println!("{} No files need a gain change.", dim_style.apply_to("ℹ"));
     }
 }
 
