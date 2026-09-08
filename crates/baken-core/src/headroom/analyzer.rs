@@ -137,6 +137,19 @@ struct FfprobeOutput {
 /// Parse the overall bitrate from ffmpeg's input dump on stderr, e.g.
 /// `  Duration: 00:03:50.32, start: 0.025057, bitrate: 320 kb/s`.
 /// Returns None for "N/A" or unexpected formatting; callers fall back to ffprobe.
+/// Codec of the first audio stream from ffmpeg's input dump
+/// ("Stream #0:0 ... Audio: alac (alac / 0x63616C61), 44100 Hz ...").
+fn parse_stderr_codec(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .find(|line| line.contains("Audio:"))?
+        .split("Audio:")
+        .nth(1)?
+        .split_whitespace()
+        .next()
+        .map(|codec| codec.trim_end_matches(',').to_ascii_lowercase())
+}
+
 fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
     stderr
         .lines()
@@ -348,7 +361,10 @@ pub fn analyze_file_with_target(
     }
 
     let is_mp3 = scanner::is_mp3(path);
-    let is_aac = scanner::is_aac(path);
+    // An .m4a can hold Apple Lossless as well as AAC. ALAC is lossless: it
+    // gets the exact ffmpeg gain like FLAC instead of native AAC steps, which
+    // mp3rgain rejects ("No AAC audio track found").
+    let is_aac = scanner::is_aac(path) && parse_stderr_codec(&stderr).as_deref() != Some("alac");
     let is_lossy = is_mp3 || is_aac;
 
     // The loudnorm run's stderr already contains the bitrate in the input
@@ -487,6 +503,15 @@ mod tests {
         let loudnorm = result.unwrap();
         assert_eq!(loudnorm.input_i, "-10.00");
         assert_eq!(loudnorm.input_tp, "0.50");
+    }
+
+    #[test]
+    fn codec_is_read_from_the_input_dump() {
+        let alac = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'x.m4a':\n  Duration: 00:05:01.00, start: 0.000000, bitrate: 1030 kb/s\n  Stream #0:0[0x1](und): Audio: alac (alac / 0x63616C61), 44100 Hz, stereo, s16p, 1029 kb/s (default)\n";
+        assert_eq!(parse_stderr_codec(alac).as_deref(), Some("alac"));
+        let aac = "  Stream #0:0[0x1](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 256 kb/s (default)\n";
+        assert_eq!(parse_stderr_codec(aac).as_deref(), Some("aac"));
+        assert_eq!(parse_stderr_codec("no streams here"), None);
     }
 
     fn steps(headroom: f64, mode: GainMode) -> (GainMethod, f64, i32) {

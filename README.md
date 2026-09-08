@@ -58,7 +58,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 
 ### How It Works
 
-1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A)
+1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A, ALAC/M4A)
 2. Measures LUFS (Integrated Loudness) and True Peak using ffmpeg
 3. Computes the gain that puts each file's True Peak at the ceiling (-0.5 dBTP by default). Quiet files get a positive gain, loud files a negative one; `--boost-only` restricts this to positive gains.
 4. Categorizes files by processing method:
@@ -207,6 +207,7 @@ baken selects the optimal method for each file based on format and headroom:
 |--------|--------|-----------|--------------|
 | FLAC, AIFF, WAV | ffmpeg | Arbitrary | None |
 | MP3, AAC/M4A | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
+| ALAC/M4A | ffmpeg (re-encoded as ALAC) | Arbitrary | **None** (lossless codec) |
 | MP3, AAC/M4A | ffmpeg re-encode | Arbitrary | Inaudible at ≥256kbps |
 
 Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
