@@ -1,0 +1,22 @@
+name: Feature request
+description: Suggest something new
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!WARNING]
+        > **This issue is public and permanent.** Do not include your name, email address, phone number, postal address, Apple ID, or any order or receipt number. Paths you paste usually contain your home folder name, which is your real name on most machines: replace it with `[redacted]` before posting.
+        >
+        > Anything personal belongs at <baken@tyna.ninja> instead, never here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is the problem?
+      description: Describe the workflow that is awkward today, not the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?

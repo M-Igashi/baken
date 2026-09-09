@@ -1,0 +1,66 @@
+name: Bug report
+description: Something does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!WARNING]
+        > **This issue is public and permanent.** Do not include your name, email address, phone number, postal address, Apple ID, or any order or receipt number. Paths you paste usually contain your home folder name, which is your real name on most machines: replace it with `[redacted]` before posting.
+        >
+        > Anything personal belongs at <baken@tyna.ninja> instead, never here.
+  - type: dropdown
+    id: product
+    attributes:
+      label: Product
+      options:
+        - Bake'n Deck for Mac
+        - baken (command-line tool)
+    validations:
+      required: true
+  - type: dropdown
+    id: subcommand
+    attributes:
+      label: Which part?
+      options:
+        - headroom (loudness gain)
+        - rbsort (Key + BPM playlist sort)
+        - cdjsafe (CDJ-safe MP3 transcode)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The Mac app shows it under Bake'n Deck > About. The command-line tool prints it with `baken --version`.
+      placeholder: "3.3.2"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.6, Windows 11, Arch Linux
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+  - type: textarea
+    id: files
+    attributes:
+      label: The files involved
+      description: Format, bitrate and sample rate are usually enough. For an XML problem, one `<TRACK>` element for the affected track is plenty. Remember to strip your home folder name out of any path.
+      render: text
