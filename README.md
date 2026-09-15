@@ -4,7 +4,8 @@
 [![Downloads](https://img.shields.io/github/downloads/M-Igashi/baken/total)](https://github.com/M-Igashi/baken/releases)
 [![License: MIT](https://img.shields.io/github/license/M-Igashi/baken)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
-[![Mac App Store](https://img.shields.io/badge/Mac_App_Store-Bake'n_Deck_for_Mac-0D96F6?logo=apple&logoColor=white)](https://apps.apple.com/app/baken-deck/id6808813823)
+
+<a href="https://apps.apple.com/app/baken-deck/id6808813823"><img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-mac-app-store/black/en-us" alt="Download on the Mac App Store" height="48"></a>
 
 **What you prep in rekordbox is what plays on the deck.**
 
