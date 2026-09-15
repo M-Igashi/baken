@@ -5,6 +5,8 @@
 [![License: MIT](https://img.shields.io/github/license/M-Igashi/baken)](LICENSE)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
+<a href="https://apps.apple.com/app/baken-deck/id6808813823"><img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-mac-app-store/black/en-us" alt="Download on the Mac App Store" height="48"></a>
+
 **What you prep in rekordbox is what plays on the deck.**
 
 rekordbox does three things in software that never survive the trip to a CDJ. Bake'n Deck bakes each one into the files themselves:
@@ -17,9 +19,15 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 
 🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
 
+## Bake'n Deck for Mac
+
+[**Bake'n Deck for Mac**](https://apps.apple.com/app/baken-deck/id6808813823) is the native app edition, on the Mac App Store. The same `baken-core` engine and the same numbers, in a window: Headroom for a whole folder or for a single rekordbox playlist, with a review table and audio preview; a sorted-order preview before Sort writes anything; a CDJ Safe pre-flight check; per-run timestamped backups with one-click restore; and Mac Tune-up for the macOS settings that slow rekordbox down. One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
+
+The `baken` command line stays free and MIT-licensed on macOS, Windows and Linux, and always will.
+
 ## Installation
 
-baken requires ffmpeg. Package managers install it automatically.
+The Mac app bundles its own ffmpeg, so there is nothing else to install. The command line requires ffmpeg; package managers install it automatically.
 
 | Platform | Command |
 |----------|---------|
