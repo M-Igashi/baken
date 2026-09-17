@@ -25,7 +25,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 
 The `baken` command line stays free and MIT-licensed on macOS, Windows and Linux, and always will.
 
-If rekordbox is slow on your Mac, the five macOS settings behind most of it are written up in [docs/mac-tuneup.md](docs/mac-tuneup.md), with the manual steps. No tool required, and nothing to buy.
+If rekordbox is slow on your Mac, the five macOS settings behind most of it are written up in [docs/mac-tuneup.md](docs/mac-tuneup.md), with the manual steps ([日本語版](docs/mac-tuneup.ja.md)). No tool required, and nothing to buy.
 
 ## Installation
 

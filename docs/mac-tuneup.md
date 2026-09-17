@@ -1,5 +1,7 @@
 # Making rekordbox start faster on a Mac
 
+[日本語版](mac-tuneup.ja.md)
+
 rekordbox gets blamed for a lot of things macOS is doing. A thirty-second stall on startup, a track that takes a beat too long to load, an analysis run that crawls: on a Mac, five system-level settings account for most of it, and none of them are inside rekordbox.
 
 This page is the whole checklist, with the manual steps. You do not need any tool to work through it. [Bake'n Deck for Mac](https://baken.ravers.workers.dev) has a page that checks all five and fixes the ones a sandboxed app is allowed to fix, but the settings are the point, not the app.
