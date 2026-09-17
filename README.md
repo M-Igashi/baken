@@ -421,7 +421,7 @@ baken cdjsafe ~/Music/rekordbox/collection.xml \
 3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**, grouped in a `CDJ-safe (MP3)/<playlist>-CDJ-safe` folder. The `-CDJ-safe` suffix keeps the imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
 4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
 
-If any track fails to convert, **no XML is written** — a partial USB defeats the point.
+If any track fails to convert, **no XML is written** — a partial USB defeats the point. The same applies if the collection XML changed while the transcodes ran (a rekordbox export made mid-run): the MP3s already converted are kept and the command tells you to re-run, which only copies them.
 
 ### Importing back into rekordbox
 

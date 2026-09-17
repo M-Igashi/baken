@@ -163,7 +163,9 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
 /// missing) and write the updated XML to `output_xml`, or next to the input as
 /// `<stem>-out.xml`. The new playlist is named `<playlist>-CDJ-safe`. Any
 /// conversion failure or cancellation aborts before the XML is written; a
-/// partial USB defeats the purpose.
+/// partial USB defeats the purpose. So does a collection XML that changed
+/// since [`plan`] read it: that returns [`Error::XmlChanged`] with the MP3s
+/// left in place, and a fresh plan picks them up as plain copies.
 pub fn convert(
     plan: &Plan,
     out_dir: &Path,
@@ -210,6 +212,7 @@ pub fn convert(
     if !failures.is_empty() {
         return Err(Error::ConversionFailed { failures, total });
     }
+    ensure_xml_unchanged(plan)?;
 
     let new_tracks = build_new_tracks(&plan.sources, &dest_paths, plan.max_track_id)?;
 
@@ -234,6 +237,21 @@ pub fn convert(
         playlist_name,
         skipped: plan.skipped.iter().map(|s| s.name.clone()).collect(),
     })
+}
+
+/// The plan holds a snapshot of the XML taken at [`plan`] time, and the
+/// conversion can run for minutes. If rekordbox exported a new collection in
+/// between, rewriting from the snapshot would silently overwrite it.
+fn ensure_xml_unchanged(plan: &Plan) -> Result<()> {
+    let current = fs::read(&plan.xml_path)
+        .with_context(|| format!("Failed to re-read {}", plan.xml_path.display()))?;
+    if current == plan.xml_data {
+        Ok(())
+    } else {
+        Err(Error::XmlChanged {
+            path: plan.xml_path.clone(),
+        })
+    }
 }
 
 /// Assign collision-free output filenames: source stem, FAT32-sanitized,
@@ -378,6 +396,28 @@ mod tests {
         assert_eq!(plan.skipped().len(), 1);
         assert_eq!(plan.skipped()[0].name, "Gone");
         assert_eq!(plan.output_playlist_name(), "Set-CDJ-safe");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn convert_refuses_an_xml_that_changed_since_the_plan() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-changed-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("present.wav");
+        fs::write(&present, b"").unwrap();
+        let xml = write_collection(&dir, &[("Present", present.to_str().unwrap())]);
+
+        let plan = plan(&xml, "Set").unwrap();
+        assert!(ensure_xml_unchanged(&plan).is_ok());
+
+        // rekordbox re-exports the collection while the transcodes run.
+        write_collection(&dir, &[("Renamed", present.to_str().unwrap())]);
+        let err = ensure_xml_unchanged(&plan).unwrap_err();
+        assert!(
+            matches!(err, Error::XmlChanged { ref path } if *path == xml),
+            "{err}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -41,6 +41,9 @@ pub enum Error {
     #[error("{} of {total} tracks failed to convert; no XML written. A partial USB defeats the point — fix the sources above and re-run.", failures.len())]
     ConversionFailed { failures: Vec<String>, total: usize },
 
+    #[error("{} changed after it was read; no XML written. The MP3s already converted are kept, so plan again and re-run: files that are already CDJ-safe are only copied.", path.display())]
+    XmlChanged { path: PathBuf },
+
     #[error("XML path has no filename: {}", .0.display())]
     InvalidXmlPath(PathBuf),
 
