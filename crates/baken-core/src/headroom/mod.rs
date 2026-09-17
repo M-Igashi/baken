@@ -6,8 +6,9 @@ mod report;
 mod scanner;
 
 pub use analyzer::{
-    AudioAnalysis, GainMethod, GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP,
-    HIGH_BITRATE_THRESHOLD, SPLIT_TARGET_TRUE_PEAK_HIGH, SPLIT_TARGET_TRUE_PEAK_LOW,
+    decide, AudioAnalysis, Codec, Decision, GainMethod, GainMode, Measurement, TpTargetMode,
+    DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP, HIGH_BITRATE_THRESHOLD, SPLIT_TARGET_TRUE_PEAK_HIGH,
+    SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 pub use processor::{create_backup_dir, ensure_backup_dir};
 pub use report::{generate_csv, AnalysisSummary};
@@ -32,6 +33,16 @@ pub struct ApplyOutcome {
     pub processed: usize,
     pub failures: Vec<(PathBuf, Error)>,
     pub cancelled: bool,
+}
+
+/// Measure one file without deciding anything: loudness, True Peak, bitrate
+/// and codec from a single loudnorm run. Pair with [`decide`] to get the
+/// gain proposal, or with [`AudioAnalysis::new`] for the full record.
+/// [`analyze`] does exactly that for a whole list; this entry point exists
+/// so a front-end can cache measurements and re-decide when the ceiling or
+/// the mode changes, or when a new release changes the decision rules.
+pub fn measure(file: &Path) -> Result<Measurement> {
+    analyzer::measure(file).map_err(Error::from)
 }
 
 /// Measure loudness and True Peak for every file in parallel and decide the

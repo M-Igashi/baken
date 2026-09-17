@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use super::scanner;
@@ -68,6 +68,45 @@ pub enum GainMode {
     BoostOnly,
 }
 
+/// What the file is, as far as the gain decision cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Codec {
+    /// FLAC, WAV, AIFF, ALAC: exact gain via ffmpeg.
+    Lossless,
+    /// Native 1.5 dB steps via mp3rgain, or a re-encode.
+    Mp3,
+    /// Native 1.5 dB steps via mp3rgain, or a re-encode.
+    Aac,
+}
+
+impl Codec {
+    pub fn is_lossy(self) -> bool {
+        self != Codec::Lossless
+    }
+}
+
+/// What the loudnorm run measured. Independent of the ceiling and the
+/// [`GainMode`], so a caller may cache it per file and call [`decide`] with
+/// the current settings on every run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Measurement {
+    pub input_i: f64,
+    pub input_tp: f64,
+    /// Only read for lossy files; the split-bitrate target needs it.
+    pub bitrate_kbps: Option<u32>,
+    pub codec: Codec,
+}
+
+/// The gain proposal for one [`Measurement`] under one ceiling and mode.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decision {
+    pub target_tp: f64,
+    pub headroom: f64,
+    pub gain_method: GainMethod,
+    pub effective_gain: f64,
+    pub lossless_gain_steps: i32,
+}
+
 #[derive(Debug, Clone)]
 pub struct AudioAnalysis {
     pub filename: String,
@@ -84,6 +123,27 @@ pub struct AudioAnalysis {
 }
 
 impl AudioAnalysis {
+    /// Combine a measurement with a decision made from it.
+    pub fn new(path: &Path, measurement: &Measurement, decision: Decision) -> Self {
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        AudioAnalysis {
+            filename,
+            path: path.to_path_buf(),
+            input_i: measurement.input_i,
+            input_tp: measurement.input_tp,
+            bitrate_kbps: measurement.bitrate_kbps,
+            target_tp: decision.target_tp,
+            headroom: decision.headroom,
+            gain_method: decision.gain_method,
+            effective_gain: decision.effective_gain,
+            lossless_gain_steps: decision.lossless_gain_steps,
+        }
+    }
+
     pub fn requires_reencode(&self) -> bool {
         matches!(
             self.gain_method,
@@ -317,11 +377,10 @@ fn decide_gain(
     }
 }
 
-pub fn analyze_file_with_target(
-    path: &Path,
-    tp_mode: TpTargetMode,
-    gain_mode: GainMode,
-) -> Result<AudioAnalysis> {
+/// Run loudnorm over `path` and read loudness, True Peak, bitrate and codec
+/// from that one ffmpeg invocation. Nothing here depends on the ceiling or
+/// the gain mode.
+pub fn measure(path: &Path) -> Result<Measurement> {
     let output = crate::tools::ffmpeg()
         .args(["-nostdin", "-i"])
         .arg(path)
@@ -360,45 +419,62 @@ pub fn analyze_file_with_target(
         ));
     }
 
-    let is_mp3 = scanner::is_mp3(path);
     // An .m4a can hold Apple Lossless as well as AAC. ALAC is lossless: it
     // gets the exact ffmpeg gain like FLAC instead of native AAC steps, which
     // mp3rgain rejects ("No AAC audio track found").
-    let is_aac = scanner::is_aac(path) && parse_stderr_codec(&stderr).as_deref() != Some("alac");
-    let is_lossy = is_mp3 || is_aac;
+    let codec = if scanner::is_mp3(path) {
+        Codec::Mp3
+    } else if scanner::is_aac(path) && parse_stderr_codec(&stderr).as_deref() != Some("alac") {
+        Codec::Aac
+    } else {
+        Codec::Lossless
+    };
 
     // The loudnorm run's stderr already contains the bitrate in the input
     // dump; reuse it to avoid spawning ffprobe per file (issue #47).
-    let bitrate_kbps = if is_lossy {
+    let bitrate_kbps = if codec.is_lossy() {
         parse_stderr_bitrate(&stderr).or_else(|| get_bitrate(path))
     } else {
         None
     };
 
-    let target_tp = tp_mode.target_for(is_lossy, bitrate_kbps);
-    let headroom = target_tp - input_tp;
-
-    let (gain_method, effective_gain, lossless_gain_steps) =
-        decide_gain(headroom, is_lossy, is_aac, gain_mode);
-
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    Ok(AudioAnalysis {
-        filename,
-        path: path.to_path_buf(),
+    Ok(Measurement {
         input_i,
         input_tp,
         bitrate_kbps,
+        codec,
+    })
+}
+
+/// Pure: the ceiling for this file, the headroom to it, and the method, gain
+/// and native step count that get there. Same inputs, same answer, no I/O.
+pub fn decide(measurement: &Measurement, tp_mode: TpTargetMode, gain_mode: GainMode) -> Decision {
+    let is_lossy = measurement.codec.is_lossy();
+    let target_tp = tp_mode.target_for(is_lossy, measurement.bitrate_kbps);
+    let headroom = target_tp - measurement.input_tp;
+    let (gain_method, effective_gain, lossless_gain_steps) = decide_gain(
+        headroom,
+        is_lossy,
+        measurement.codec == Codec::Aac,
+        gain_mode,
+    );
+    Decision {
         target_tp,
         headroom,
         gain_method,
         effective_gain,
         lossless_gain_steps,
-    })
+    }
+}
+
+pub fn analyze_file_with_target(
+    path: &Path,
+    tp_mode: TpTargetMode,
+    gain_mode: GainMode,
+) -> Result<AudioAnalysis> {
+    let measurement = measure(path)?;
+    let decision = decide(&measurement, tp_mode, gain_mode);
+    Ok(AudioAnalysis::new(path, &measurement, decision))
 }
 
 #[cfg(test)]
@@ -512,6 +588,68 @@ mod tests {
         let aac = "  Stream #0:0[0x1](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 256 kb/s (default)\n";
         assert_eq!(parse_stderr_codec(aac).as_deref(), Some("aac"));
         assert_eq!(parse_stderr_codec("no streams here"), None);
+    }
+
+    #[test]
+    fn decide_is_pure_and_matches_the_analysis_fields() {
+        let m = Measurement {
+            input_i: -9.0,
+            input_tp: -2.5,
+            bitrate_kbps: Some(320),
+            codec: Codec::Mp3,
+        };
+        let d = decide(&m, TpTargetMode::default(), GainMode::Normalize);
+        assert_eq!(d.target_tp, DEFAULT_TARGET_TRUE_PEAK);
+        assert_eq!(d.headroom, 2.0);
+        assert_eq!(d.gain_method, GainMethod::Mp3Lossless);
+        assert_eq!(d.lossless_gain_steps, 1);
+        assert_eq!(d, decide(&m, TpTargetMode::default(), GainMode::Normalize));
+
+        // The same measurement under another ceiling: no re-measurement needed.
+        let low = decide(
+            &m,
+            TpTargetMode::SplitBitrate(-0.5, -1.0),
+            GainMode::Normalize,
+        );
+        assert_eq!(low.target_tp, -0.5);
+        let m128 = Measurement {
+            bitrate_kbps: Some(128),
+            ..m.clone()
+        };
+        assert_eq!(
+            decide(
+                &m128,
+                TpTargetMode::SplitBitrate(-0.5, -1.0),
+                GainMode::Normalize
+            )
+            .target_tp,
+            -1.0
+        );
+
+        let a = AudioAnalysis::new(Path::new("/m/track.mp3"), &m, d.clone());
+        assert_eq!(a.filename, "track.mp3");
+        assert_eq!(a.input_tp, -2.5);
+        assert_eq!(a.bitrate_kbps, Some(320));
+        assert_eq!(a.gain_method, d.gain_method);
+        assert_eq!(a.effective_gain, d.effective_gain);
+    }
+
+    #[test]
+    fn lossless_measurements_get_the_exact_gain_whatever_the_bitrate_mode() {
+        let m = Measurement {
+            input_i: -20.0,
+            input_tp: -6.0,
+            bitrate_kbps: None,
+            codec: Codec::Lossless,
+        };
+        let d = decide(
+            &m,
+            TpTargetMode::SplitBitrate(-0.5, -1.0),
+            GainMode::Normalize,
+        );
+        assert_eq!(d.target_tp, -0.5);
+        assert_eq!(d.gain_method, GainMethod::FfmpegLossless);
+        assert_eq!(d.effective_gain, 5.5);
     }
 
     fn steps(headroom: f64, mode: GainMode) -> (GainMethod, f64, i32) {

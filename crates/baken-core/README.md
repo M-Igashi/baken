@@ -6,4 +6,6 @@ Library behind [Bake'n Deck](https://github.com/M-Igashi/baken) (`baken`), the r
 - `rbsort`: in-place Camelot Key + BPM sort of playlists in an exported rekordbox XML
 - `cdjsafe`: playlist transcode to 320 kbps CBR MP3 with cues and beatgrid carried over into a new XML
 
+`headroom` also splits the analysis in two for callers that cache: `headroom::measure` runs loudnorm once and returns a `Measurement` (loudness, True Peak, bitrate, codec) that does not depend on any setting, and `headroom::decide` turns a measurement into the gain proposal for a given ceiling and `GainMode` without touching the file. `headroom::analyze` is the two in sequence.
+
 `headroom` and `cdjsafe` shell out to ffmpeg and ffprobe. They are looked up on `PATH` by default; call `baken_core::set_tools` to point at bundled binaries. Long-running operations take a `Progress` callback and a `CancelToken`.
