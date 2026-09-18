@@ -8,6 +8,8 @@ rekordbox's desktop app, the CDJ-3000, and the XDJ-1000MK2 all let you sort a li
 
 The example below shows what each of the three sort modes actually produces from the same input.
 
+The same walk-through with the full workflow around it, in English and Japanese: [How to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort) / [rekordbox のプレイリストを Key + BPM 順に並べる方法](https://baken.ravers.workers.dev/ja/sort).
+
 ## Input
 
 Consider a playlist holding the following 6 tracks in registration order (i.e. the order they were dragged into the playlist, which is also what the playlist's *stored* order is):

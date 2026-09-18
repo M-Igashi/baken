@@ -348,6 +348,8 @@ rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsor
 
 This is the same idea as `baken headroom` applied to playlist order: rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
 
+Step-by-step, with the sort rules, a comparison against single-column sort and the questions people ask: **[How to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort)** ([日本語](https://baken.ravers.workers.dev/ja/sort)).
+
 ### Workflow
 
 1. **Set key display to Alphanumeric (1A..12B notation)** in rekordbox: *Preferences > View > Key display format > Alphanumeric*.
@@ -388,7 +390,7 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 - **Secondary**: BPM ascending within each key group
 - Tracks with no Camelot key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
 
-See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*.
+See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*. The same walk-through, with the workflow around it, is at [baken.ravers.workers.dev/sort](https://baken.ravers.workers.dev/sort).
 
 ### Notes
 
