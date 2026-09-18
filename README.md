@@ -16,6 +16,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
 | [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Camelot Key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes a whole playlist to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
+| [`baken expressport`](#direct-usb-export-baken-expressport--beta) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings (beta since v3.5.0) |
 
 🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
 
@@ -452,6 +453,48 @@ baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
 - ffmpeg writes a valid Xing/LAME header, so rekordbox compensates the LAME encoder delay and cues stay sample-aligned.
 - Filenames are FAT32/exFAT-sanitized; collisions get a numeric suffix.
 - Requires ffmpeg (with `libmp3lame`; `soxr` resampling is used when available).
+
+## Direct USB Export (`baken expressport`) — beta
+
+*Added in v3.5.0 as a beta. Design and status: [#115](https://github.com/M-Igashi/baken/issues/115); hardware tester call: [#116](https://github.com/M-Igashi/baken/issues/116). The output is byte-checked against real rekordbox exports, but as of 3.5.0 no player has read a stick written by `baken` yet. Use a spare stick.*
+
+`expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read.
+
+```bash
+baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday" --playlist "Sets/Warmup"
+```
+
+### How it works
+
+- Title, artist, BPM, key, colour, rating, playlists, beat grid and cues all come from the XML.
+- Waveforms are not generated: every track must have been analysed in rekordbox once, and its `.DAT`/`.EXT`/`.2EX` files are copied from rekordbox's local analysis cache (`~/Library/Pioneer/rekordbox/share/PIONEER/USBANLZ`, or `PIONEER/Master/share/PIONEER/USBANLZ` on a library drive). On the way the path is rewritten, the cue sections are filled from the XML and the phrase analysis is masked exactly as rekordbox does at export time. Tracks with no analysis are listed and left out.
+- Audio is copied only when missing or of a different size, so re-running after a playlist change is quick. `export.pdb` is rebuilt every run.
+- The four My Settings files are copied from rekordbox's settings directory and are **required**: a stick that resets the player to factory settings is not an export.
+- `--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players.
+
+### Usage
+
+```
+baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR>] [--device-name <NAME>] [--cdjsafe] [--prune] [--dry-run]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--device <DIR>` | Root of the stick (required) |
+| `--playlist <PATH>` | Playlist to export; repeatable. Omitted: every TrackID-referenced playlist |
+| `--anlz-dir <DIR>` | rekordbox analysis directory when auto-detection fails |
+| `--settings-dir <DIR>` | Directory holding the four `*SETTING.DAT` files (default: rekordbox's own) |
+| `--device-name <NAME>` | Name shown on the player (default: the stick's directory name) |
+| `--cdjsafe` | 320 kbps CBR MP3 for every track (needs ffmpeg) |
+| `--prune` | Delete audio and analysis on the stick this export no longer references |
+| `--dry-run` | Resolve and report, write nothing |
+
+### Notes
+
+- Built into the binaries; `cargo install baken --no-default-features` leaves it out.
+- Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
+- Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
+- Artwork is not exported yet.
 
 ## License
 

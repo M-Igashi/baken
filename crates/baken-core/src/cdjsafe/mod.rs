@@ -7,6 +7,8 @@ mod location;
 mod transcode;
 mod xml;
 
+pub use location::{decode_location, encode_location, sanitize_filename};
+pub use transcode::{probe, transcode, SourceInfo};
 pub use xml::CDJSAFE_FOLDER_NAME;
 
 use anyhow::Context;
@@ -20,8 +22,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::rbsort::split_playlist_path;
 use crate::{CancelToken, Error, Progress, Result};
 
-use location::{encode_location, sanitize_filename};
-use transcode::SourceInfo;
 use xml::{NewTrack, SourceTrack};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

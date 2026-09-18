@@ -1,31 +1,28 @@
-# Bake'n Deck 3.4.0 - your DJ software's own tags survive the gain pass
+# Bake'n Deck 3.5.0 - `baken expressport` (beta): write the USB stick yourself
 
 ## Highlights
 
-- **Binary DJ metadata is no longer lost when `baken headroom` rewrites a file.** Gain on lossless formats, and on MP3/AAC under the opt-in `--reencode`, goes through an ffmpeg re-mux, and ffmpeg only re-emits the metadata it can map onto its own key/value model. Everything else was silently dropped: ID3v2 `GEOB` and `PRIV` frames on AIFF and WAV, the whole `id3 ` chunk on WAV, and the free-form `----` atoms that Serato and rekordbox write into `.m4a`. baken now lifts those payloads off the source before the conversion and writes them back over the output byte for byte. Text tags, cover art and audio timing are unchanged, as they already were. MP3 and AAC native gain were never affected: mp3rgain edits `global_gain` in place and never touches the container ([#117](https://github.com/M-Igashi/baken/issues/117)).
-- **`baken cdjsafe` refuses to overwrite a collection XML that changed while it was working.** `plan` reads the XML into memory and `convert` rewrote it from that snapshot at the end of the run, which can be minutes later for a long playlist. A rekordbox export made in between was silently replaced by the old collection plus the new playlist. `convert` now re-reads the file after the transcodes succeed and stops with `XmlChanged` if the bytes differ, writing nothing. The converted MP3s stay where they are, so planning again and re-running only copies them ([#110](https://github.com/M-Igashi/baken/issues/110)).
+- **New subcommand `baken expressport` writes a rekordbox USB export straight from `collection.xml`.** The device library (`PIONEER/rekordbox/export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/` and your CDJ/DJM My Settings all land on the stick from one command, without launching rekordbox, re-importing, or waiting for analysis. rekordbox's own database is never read: everything a player needs is in the XML, and the waveforms are copied from the analysis cache rekordbox keeps locally, rewritten the way rekordbox rewrites them at export time (path, cue sections filled from `POSITION_MARK`, phrase analysis masked). Tracks that rekordbox never analysed are listed and left out ([#115](https://github.com/M-Igashi/baken/issues/115)).
+- **This is a beta, and it has not met a player yet.** The writer is checked byte for byte against real rekordbox 7 exports: the keys, colours and columns pages of `export.pdb` are identical, and for 325 tracks of a real library the regenerated analysis files match the copies rekordbox put on the stick (DAT 304, EXT 294, 2EX 309; the rest were edited after that export). Whether a CDJ accepts the result can only be answered by a CDJ, and none was at hand for this release. If you own a CDJ-3000, CDJ-2000NXS2, XDJ-XZ or anything else that reads a rekordbox stick, [#116](https://github.com/M-Igashi/baken/issues/116) is the tester call. **Use a spare stick.**
+- **`--cdjsafe` on the same command** transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, so pre-NXS2 players get grid, cues and waveform without the XML round trip that `baken cdjsafe` needs.
+- **My Settings are part of the export and required.** The four `*SETTING.DAT` files are copied verbatim from rekordbox's settings directory after their checksums are verified; a stick that resets the player to factory settings is not treated as an export. `--settings-dir` overrides the location.
 
-## Library users of `baken-core`
+## What it writes and what it does not
 
-- New: `headroom::measure(path) -> Measurement` and `headroom::decide(&Measurement, TpTargetMode, GainMode) -> Decision`, the two halves of what `analyze` does per file. A `Measurement` (loudness, True Peak, bitrate, codec) is serde-serialisable and depends on no setting, so a front-end can cache it per file and re-decide when the ceiling, the `GainMode` or the decision rules change, without running loudnorm again. `AudioAnalysis::new` joins the two back together. `analyze` itself is unchanged ([#111](https://github.com/M-Igashi/baken/issues/111)).
-- New error variant `Error::XmlChanged { path }` for the cdjsafe guard above. Consumers with a catch-all match arm need no change.
-- No other API changes. Everything in 3.3.2 still compiles.
+- Legacy device library only: `export.pdb` as read by CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older players. The OneLibrary database (`exportLibrary.db`) needed by CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO is not written yet.
+- Playlists come from the XML: `--playlist "Folder/Name"` repeatable, or every TrackID playlist when omitted. Folders above the selected playlists are created.
+- Idempotent: audio is copied only when missing or of a different size, `export.pdb` is rebuilt every run, `--prune` removes what the export no longer references, `--dry-run` shows the plan. Files players leave on a stick (`PIONEER/CDJ`, `RBFLTR.DAT`, `export.pdb.bak`) are never touched.
+- Artwork is not exported yet. Colour names are rekordbox's defaults (the XML carries only RGB).
 
-## Other Changes
+## Library users
 
-- Mac tune-up checklist added under `docs/mac-tuneup.md`, with a Japanese version at `docs/mac-tuneup.ja.md`: the macOS settings that slow rekordbox down, and the manual steps to fix them.
-- README documents the Mac app edition, and spells out what does and does not survive a rewrite.
-- The LGPL ffmpeg build script used for the Mac app is published at `scripts/build-ffmpeg.sh`, as the written source offer for those binaries.
-- Dependency bumps: `clap` 4.6.7, `windows-sys` 0.16.6, `mp3rgain` 3.8.0.
+- New crate `baken-export` (MIT) with the `export.pdb` writer, the analysis-file pipeline, the `collection.xml` model and a two-phase `plan` / `export` API mirroring `cdjsafe`. `baken-core` is unchanged apart from re-exporting `cdjsafe::{decode_location, encode_location, sanitize_filename, probe, transcode, SourceInfo}` for it.
+- The CLI feature `expressport` is on by default; `cargo install baken --no-default-features` builds the 3.4.0 command set.
 
 ## Upgrading
 
-Nothing about the flags, the report, or the backup layout has changed. Files processed by an earlier version are unaffected.
+`headroom`, `rbsort` and `cdjsafe` are unchanged. Files processed by an earlier version are unaffected.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
-Up to 3.2.x, `baken headroom` only ever turned files **up**. A track whose True Peak already sat above the -0.5 dBTP ceiling (a loudness-war master, or an MP3 with inter-sample overs) was skipped. Since 3.3.0 such tracks are turned **down** to the ceiling, so every track on the stick ends up at the same True Peak, quiet and loud alike. This is the same idea as rekordbox's Auto Gain, which also applies negative gain to loud tracks, but baked into the file so it survives the USB export to a CDJ. Unlike Auto Gain the target is still the True Peak ceiling, not an average-loudness figure, so no track is made quieter than it has to be to avoid clipping.
-
-If you prefer the old raise-only behaviour, pass `--boost-only`. As always, run with `--analyze-only` first if you want to see what would happen, and keep `--backup` on for the first run over an existing library.
-
-Library users coming from 3.2.x: 3.3.0 added a third `GainMode` argument to `headroom::analyze()` and renamed `AudioAnalysis::has_headroom()` to `needs_gain()`. Both are breaking changes; the CLI is unaffected.
+Up to 3.2.x, `baken headroom` only ever turned files **up**. Since 3.3.0 tracks above the -0.5 dBTP ceiling are turned **down** to it, so every track on the stick ends up at the same True Peak. Pass `--boost-only` for the old raise-only behaviour, and run with `--analyze-only` first if you want to see what would happen.

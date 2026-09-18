@@ -15,8 +15,15 @@ homepage.workspace = true
 name = "baken"
 path = "src/main.rs"
 
+[features]
+# Direct USB export (`baken expressport`), beta since 3.5.0 (issue #115). Build with
+# `--no-default-features` to leave it out.
+default = ["expressport"]
+expressport = ["dep:baken-export"]
+
 [dependencies]
 baken-core.workspace = true
+baken-export = { workspace = true, optional = true }
 anyhow.workspace = true
 rayon.workspace = true
 clap = { version = "4.5", features = ["derive"] }
