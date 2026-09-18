@@ -17,6 +17,8 @@ pub fn run() -> Result<()> {
     match cli.command {
         Command::Rbsort(args) => crate::rbsort::run(&args),
         Command::Cdjsafe(args) => crate::cdjsafe::run(&args),
+        #[cfg(feature = "expressport")]
+        Command::Expressport(args) => crate::expressport::run(&args),
         Command::Headroom(args) => run_headroom(&args),
     }
 }

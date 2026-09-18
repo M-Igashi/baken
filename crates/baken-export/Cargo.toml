@@ -1,0 +1,18 @@
+[package]
+name = "baken-export"
+description = "Bake'n Deck device export: writes a rekordbox USB export (export.pdb + ANLZ) from collection.xml"
+keywords = ["dj", "rekordbox", "cdj", "pioneer"]
+categories = ["multimedia::audio"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+baken-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+quick-xml.workspace = true

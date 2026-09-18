@@ -44,6 +44,58 @@ pub enum Command {
     /// beatgrid (TEMPO) and cue points (POSITION_MARK) verbatim. Import the XML
     /// in rekordbox and use "Import to Collection" — no re-analysis needed.
     Cdjsafe(CdjsafeArgs),
+    /// [beta] Write a rekordbox USB export straight from collection.xml:
+    /// export.pdb, the analysis files, audio and My Settings, without launching
+    /// rekordbox.
+    ///
+    /// Tracks must have been analysed in rekordbox once (their beat grid and
+    /// waveform are copied from rekordbox's local analysis cache); cues and
+    /// playlists come from the XML. The four My Settings files are copied from
+    /// rekordbox's settings directory and are required.
+    #[cfg(feature = "expressport")]
+    Expressport(ExpressportArgs),
+}
+
+#[cfg(feature = "expressport")]
+#[derive(Args, Debug)]
+pub struct ExpressportArgs {
+    /// Exported rekordbox XML (File > Export Collection in xml format)
+    #[arg(value_name = "XML")]
+    pub xml: PathBuf,
+
+    /// Root of the USB stick to write (e.g. /Volumes/MYUSB).
+    #[arg(long, value_name = "DIR")]
+    pub device: PathBuf,
+
+    /// Playlist to export; repeat for several. Nested: "Folder/Playlist".
+    /// Omitted: every TrackID-referenced playlist in the XML.
+    #[arg(long, value_name = "PATH")]
+    pub playlist: Vec<String>,
+
+    /// rekordbox analysis directory (PIONEER/USBANLZ) when auto-detection fails; repeatable.
+    #[arg(long, value_name = "DIR")]
+    pub anlz_dir: Vec<PathBuf>,
+
+    /// Directory holding MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT, DEVSETTING.DAT
+    /// (default: rekordbox's own settings directory).
+    #[arg(long, value_name = "DIR")]
+    pub settings_dir: Option<PathBuf>,
+
+    /// Device name shown on the player (default: the device directory name).
+    #[arg(long, value_name = "NAME")]
+    pub device_name: Option<String>,
+
+    /// Transcode every track to 320 kbps CBR MP3 (CDJ-safe) on the way, reusing the source analysis.
+    #[arg(long)]
+    pub cdjsafe: bool,
+
+    /// Delete audio and analysis files on the stick that this export does not reference.
+    #[arg(long)]
+    pub prune: bool,
+
+    /// Resolve everything and print what would be written, without touching the stick.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Args, Debug)]

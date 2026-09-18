@@ -87,10 +87,11 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "baken"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "anyhow",
  "baken-core",
+ "baken-export",
  "clap",
  "console",
  "dialoguer",
@@ -101,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "baken-core"
-version = "3.4.0"
+version = "3.5.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -114,6 +115,16 @@ dependencies = [
  "serde_json",
  "thiserror",
  "walkdir",
+]
+
+[[package]]
+name = "baken-export"
+version = "3.5.0"
+dependencies = [
+ "anyhow",
+ "baken-core",
+ "quick-xml",
+ "thiserror",
 ]
 
 [[package]]
