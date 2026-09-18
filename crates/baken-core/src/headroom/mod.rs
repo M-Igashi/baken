@@ -1,6 +1,7 @@
 //! Loudness analysis and gain application (`baken headroom`).
 
 mod analyzer;
+mod id3;
 mod processor;
 mod report;
 mod scanner;
