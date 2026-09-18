@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::analyzer::{AudioAnalysis, GainMethod};
-use super::id3;
+use super::tags::{self, Tags};
 
 pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
     ensure_backup_dir(&base_dir.join("backup"))
@@ -201,9 +201,10 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let temp_path = file_path.with_extension(format!("tmp.{}", extension));
 
     let volume_arg = format!("volume={}dB", gain_db);
-    // ffmpeg re-emits only the tag frames it understands, so the source's raw
-    // ID3v2 goes back over the output or GEOB/PRIV are lost (issue #117).
-    let tag = id3::read(file_path);
+    // ffmpeg re-emits only the metadata it understands, so the source's raw
+    // tags go back over the output or GEOB/PRIV and the MP4 free-form atoms
+    // are lost (issue #117).
+    let tags = tags::read(file_path);
     let source = probe_source_format(file_path);
     // The lossless path only handles .m4a/.mp4 when the payload is ALAC;
     // anything else in that container would be silently re-encoded as AAC.
@@ -240,17 +241,17 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         return Err(anyhow!("ffmpeg failed: {}", stderr));
     }
 
-    restore_tag(&temp_path, tag.as_deref())?;
+    restore_tags(&temp_path, tags.as_ref())?;
     fs::rename(&temp_path, file_path).context("Failed to rename processed file")
 }
 
-/// Put `tag` back over a freshly converted file, discarding it on failure so a
-/// half-tagged result never replaces the original.
-fn restore_tag(temp_path: &Path, tag: Option<&[u8]>) -> Result<()> {
-    let Some(tag) = tag else {
+/// Put `tags` back over a freshly converted file, discarding it on failure so
+/// a half-tagged result never replaces the original.
+fn restore_tags(temp_path: &Path, tags: Option<&Tags>) -> Result<()> {
+    let Some(tags) = tags else {
         return Ok(());
     };
-    id3::restore(temp_path, tag).inspect_err(|_| {
+    tags::restore(temp_path, tags).inspect_err(|_| {
         let _ = fs::remove_file(temp_path);
     })
 }
@@ -320,8 +321,8 @@ fn apply_gain_reencode(
     let volume_arg = format!("volume={}dB", gain_db);
     let label = format.label();
     // Same reason as the lossless path: the re-encode is an ffmpeg re-mux and
-    // would drop the binary ID3v2 frames DJ software writes (issue #117).
-    let tag = id3::read(file_path);
+    // would drop the binary metadata DJ software writes (issue #117).
+    let tags = tags::read(file_path);
 
     for encoder in format.encoders() {
         // CBR-only: adding -q:a would force libmp3lame to VBR and override -b:a.
@@ -337,7 +338,7 @@ fn apply_gain_reencode(
             .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
 
         if output.status.success() {
-            restore_tag(&temp_path, tag.as_deref())?;
+            restore_tags(&temp_path, tags.as_ref())?;
             return fs::rename(&temp_path, file_path).context("Failed to rename processed file");
         }
 

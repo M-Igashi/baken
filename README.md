@@ -61,7 +61,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 - **Truly lossless MP3/AAC gain** — global_gain header modification in 1.5 dB steps, no re-encode
 - **Uniform True Peak ceiling** — every track lands at -0.5 dBTP by default (AES TD1008 §7B): quiet tracks are raised, loud ones lowered. Tunable via `--tp-target`, or `--boost-only` to never turn anything down
 - **Non-destructive** — automatic backups; `rbsort`/`cdjsafe` only ever touch an exported XML, never your rekordbox library
-- **Metadata preserved** — files overwritten in place and the ID3v2 tag carried across verbatim, so rekordbox cues, hot cues, and beatgrids stay linked
+- **Metadata preserved** — files overwritten in place and every tag carried across verbatim, so rekordbox cues, hot cues, and beatgrids stay linked
 - **Interactive or scriptable** — guided two-stage confirmation, or flags/globs for pipelines and CI
 
 ## Loudness Normalizer (`baken headroom`)
@@ -312,7 +312,7 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 ### Notes & Technical Details
 
 - **Files are overwritten in place** after backup — rekordbox metadata remains linked
-- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (lossless formats, opt-in re-encode) the source's raw ID3v2 tag is put back over the output, so the binary frames DJ software writes (`GEOB`, `PRIV`) are kept byte for byte. ALAC in `.m4a` is the exception, its free-form atoms are still lost ([#117](https://github.com/M-Igashi/baken/issues/117))
+- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (lossless formats, opt-in re-encode) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117))
 - Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
 - MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
 - MP3/AAC re-encoding is **opt-in** and requires explicit confirmation
