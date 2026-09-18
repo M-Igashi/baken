@@ -1,4 +1,4 @@
-//! CLI wrapper for `baken expressport` (experimental direct USB export).
+//! CLI wrapper for `baken expressport` (direct USB export, beta since 3.5.0).
 
 use anyhow::Result;
 use baken_core::CancelToken;
