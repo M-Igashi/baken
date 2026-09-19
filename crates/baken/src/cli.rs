@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
-use baken_core::headroom::{self, AnalysisSummary, AudioAnalysis, GainMode, TpTargetMode};
+use baken_core::headroom::{
+    self, AnalysisSummary, ApplyOutcome, AudioAnalysis, GainMode, TpTargetMode,
+};
 use baken_core::CancelToken;
 use clap::Parser;
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::args::{Cli, Command, HeadroomArgs};
@@ -155,7 +158,11 @@ fn run_interactive(tp_mode: TpTargetMode, gain_mode: GainMode) -> Result<()> {
         false
     };
 
-    let files_to_process = headroom::select_processable(&all_analyses, true, allow_reencode);
+    let files_to_process = drop_unwritable(headroom::select_processable(
+        &all_analyses,
+        true,
+        allow_reencode,
+    ));
     if files_to_process.is_empty() {
         println!("{} No files to process.", style("ℹ").blue());
         return Ok(());
@@ -174,8 +181,8 @@ fn run_interactive(tp_mode: TpTargetMode, gain_mode: GainMode) -> Result<()> {
         None
     };
 
-    process_files(&files_to_process, &target_dir, backup_dir.as_deref());
-    print_final_summary(&files_to_process);
+    let outcome = process_files(&files_to_process, &target_dir, backup_dir.as_deref());
+    print_final_summary(&files_to_process, &outcome);
     Ok(())
 }
 
@@ -212,11 +219,11 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode, gain_mode: GainMode
         return Ok(());
     }
 
-    let files_to_process = headroom::select_processable(
+    let files_to_process = drop_unwritable(headroom::select_processable(
         &all_analyses,
         cli.lossless_enabled(),
         cli.reencode_enabled(),
-    );
+    ));
     if files_to_process.is_empty() {
         println!(
             "{} No files to process with current flags.",
@@ -237,19 +244,39 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode, gain_mode: GainMode
         None
     };
 
-    process_files(&files_to_process, &base_dir, backup_dir.as_deref());
-    print_final_summary(&files_to_process);
+    let outcome = process_files(&files_to_process, &base_dir, backup_dir.as_deref());
+    print_final_summary(&files_to_process, &outcome);
     Ok(())
 }
 
-fn print_final_summary(files_to_process: &[AudioAnalysis]) {
-    println!(
-        "\n{} Done! {} files processed.",
-        style("✓").green().bold(),
-        files_to_process.len()
-    );
+/// The count and the breakdown both describe what actually landed. Reporting
+/// the plan instead meant a run where every file failed still ended on a
+/// green tick claiming success (issue #132).
+fn print_final_summary(attempted: &[AudioAnalysis], outcome: &ApplyOutcome) {
+    let failed: HashSet<&Path> = outcome.failures.iter().map(|(p, _)| p.as_path()).collect();
+    let processed: Vec<AudioAnalysis> = attempted
+        .iter()
+        .filter(|a| !failed.contains(a.path.as_path()))
+        .cloned()
+        .collect();
 
-    let summary = AnalysisSummary::from_analyses(files_to_process);
+    if failed.is_empty() {
+        println!(
+            "\n{} Done! {} files processed.",
+            style("✓").green().bold(),
+            processed.len()
+        );
+    } else {
+        println!(
+            "\n{} Done! {} of {} files processed, {} failed (see the warnings above).",
+            style("⚠").yellow().bold(),
+            processed.len(),
+            attempted.len(),
+            failed.len()
+        );
+    }
+
+    let summary = AnalysisSummary::from_analyses(&processed);
 
     for (count, label) in [
         (summary.lossless_count, "lossless files (ffmpeg)"),
@@ -362,8 +389,11 @@ fn analyze_files(
     let outcome = outcome?;
 
     for (path, e) in &outcome.failures {
+        // `{:#}` and not `{}`: baken_core::Error is transparent over anyhow,
+        // so plain Display stops at the outermost context and drops the cause
+        // that tells the user what to fix (issue #133).
         println!(
-            "{} Failed to analyze {}: {}",
+            "{} Failed to analyze {}: {:#}",
             style("⚠").yellow(),
             path.display(),
             e
@@ -379,7 +409,42 @@ fn analyze_files(
     Ok(outcome.analyses)
 }
 
-fn process_files(analyses: &[AudioAnalysis], base_dir: &Path, backup_dir: Option<&Path>) {
+/// Name the files whose gain cannot be written and leave them out, before
+/// the run rather than one failure at a time after it (issue #134). They are
+/// dropped rather than attempted so a read-only library does not also fill a
+/// backup folder with originals that were never going to change.
+fn drop_unwritable(files: Vec<AudioAnalysis>) -> Vec<AudioAnalysis> {
+    let blocked: HashSet<PathBuf> = headroom::unwritable(&files).into_iter().collect();
+    if blocked.is_empty() {
+        return files;
+    }
+
+    println!(
+        "\n{} {} of {} files are read-only and cannot be rewritten; skipping them:",
+        style("⚠").yellow(),
+        blocked.len(),
+        files.len()
+    );
+    let mut names: Vec<&PathBuf> = blocked.iter().collect();
+    names.sort();
+    for path in names.iter().take(10) {
+        println!("  {} {}", style("•").dim(), path.display());
+    }
+    if names.len() > 10 {
+        println!("  {} and {} more", style("•").dim(), names.len() - 10);
+    }
+
+    files
+        .into_iter()
+        .filter(|a| !blocked.contains(&a.path))
+        .collect()
+}
+
+fn process_files(
+    analyses: &[AudioAnalysis],
+    base_dir: &Path,
+    backup_dir: Option<&Path>,
+) -> ApplyOutcome {
     let pb = make_progress_bar(analyses.len(), "Processing...");
     let outcome = headroom::apply(
         analyses,
@@ -395,6 +460,8 @@ fn process_files(analyses: &[AudioAnalysis], base_dir: &Path, backup_dir: Option
             .file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default();
-        println!("{} {}: {}", style("⚠").yellow(), name, e);
+        println!("{} {}: {:#}", style("⚠").yellow(), name, e);
     }
+
+    outcome
 }

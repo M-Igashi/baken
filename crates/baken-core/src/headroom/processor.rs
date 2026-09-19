@@ -1,10 +1,33 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use super::analyzer::{AudioAnalysis, GainMethod};
 use super::tags::{self, Tags};
+
+/// Whether applying gain to this file could actually write it.
+///
+/// The lossless path finishes with `rename`, which only needs write
+/// permission on the *directory*, so it would replace a read-only file and
+/// leave the replacement carrying the temp file's mode: the protection the
+/// user set disappears, while the same library on Windows refuses the write
+/// outright (issue #131). Opening the target the way the native MP3 and AAC
+/// path already does is the check that matches what the apply will really
+/// ask for, and unlike `access(W_OK)` it is not fooled by the synthesised
+/// permissions on volumes mounted `noowners` (baken-mac#32). Nothing is
+/// truncated: the handle is opened for writing and dropped.
+pub fn is_writable(path: &Path) -> bool {
+    OpenOptions::new().write(true).open(path).is_ok()
+}
+
+fn ensure_writable(path: &Path) -> Result<()> {
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map(|_| ())
+        .context("file is read-only or locked; it cannot be rewritten")
+}
 
 pub fn create_backup_dir(base_dir: &Path) -> Result<PathBuf> {
     ensure_backup_dir(&base_dir.join("backup"))
@@ -362,6 +385,11 @@ pub fn process_file(
 
     let file_path = analysis.path.as_path();
 
+    // Before the backup, not after: a file we cannot write is a file we have
+    // no reason to copy (issue #134), and the lossless path would otherwise
+    // replace it regardless of its permissions (issue #131).
+    ensure_writable(file_path)?;
+
     if let Some(backup) = backup_dir {
         backup_file(file_path, base_dir, backup).context("Backup failed")?;
     }
@@ -491,5 +519,49 @@ mod tests {
         assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
         assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
         assert_eq!(parse_bits(&None), None);
+    }
+
+    /// Issue #131: `rename` only needs the directory, so without this guard
+    /// the lossless path replaced a read-only file and the replacement came
+    /// out writable.
+    #[test]
+    #[cfg(unix)]
+    fn a_read_only_file_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("baken-writable-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("track.wav");
+        fs::write(&path, b"").unwrap();
+        assert!(is_writable(&path));
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(!is_writable(&path));
+        assert!(ensure_writable(&path).is_err());
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The probe must not truncate: it is run over the user's library before
+    /// anything has been decided.
+    #[test]
+    fn checking_writability_leaves_the_file_alone() {
+        let dir = std::env::temp_dir().join(format!("baken-writable-keep-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("track.wav");
+        fs::write(&path, b"not empty").unwrap();
+
+        assert!(is_writable(&path));
+        assert_eq!(fs::read(&path).unwrap(), b"not empty");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_is_not_writable() {
+        let path = std::env::temp_dir().join(format!("baken-absent-{}.wav", std::process::id()));
+        let _ = fs::remove_file(&path);
+        assert!(!is_writable(&path));
     }
 }
