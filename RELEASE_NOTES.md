@@ -1,27 +1,24 @@
-# Bake'n Deck 3.5.0 - `baken expressport` (beta): write the USB stick yourself
+# Bake'n Deck 3.6.0 - `baken headroom` analysis is 15x faster
 
 ## Highlights
 
-- **New subcommand `baken expressport` writes a rekordbox USB export straight from `collection.xml`.** The device library (`PIONEER/rekordbox/export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/` and your CDJ/DJM My Settings all land on the stick from one command, without launching rekordbox, re-importing, or waiting for analysis. rekordbox's own database is never read: everything a player needs is in the XML, and the waveforms are copied from the analysis cache rekordbox keeps locally, rewritten the way rekordbox rewrites them at export time (path, cue sections filled from `POSITION_MARK`, phrase analysis masked). Tracks that rekordbox never analysed are listed and left out ([#115](https://github.com/M-Igashi/baken/issues/115)).
-- **This is a beta, and it has not met a player yet.** The writer is checked byte for byte against real rekordbox 7 exports: the keys, colours and columns pages of `export.pdb` are identical, and for 325 tracks of a real library the regenerated analysis files match the copies rekordbox put on the stick (DAT 304, EXT 294, 2EX 309; the rest were edited after that export). Whether a CDJ accepts the result can only be answered by a CDJ, and none was at hand for this release. If you own a CDJ-3000, CDJ-2000NXS2, XDJ-XZ or anything else that reads a rekordbox stick, [#116](https://github.com/M-Igashi/baken/issues/116) is the tester call. **Use a spare stick.**
-- **`--cdjsafe` on the same command** transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, so pre-NXS2 players get grid, cues and waveform without the XML round trip that `baken cdjsafe` needs.
-- **My Settings are part of the export and required.** The four `*SETTING.DAT` files are copied verbatim from rekordbox's settings directory after their checksums are verified; a stick that resets the player to factory settings is not treated as an export. `--settings-dir` overrides the location.
+- **Analysis no longer waits on ffmpeg's `loudnorm` filter.** `baken headroom` now decodes each file in-process (symphonia) and measures integrated loudness and true peak with the BS.1770-4 analyzer from the built-in mp3rgain library, true peak meter per Annex 2 included. An 8.9 minute 320 kbps MP3 that took 14.3 s to analyse now takes 0.9 s; a 4.6 minute 24-bit WAV goes from 7.3 s to 0.3 s; a six-track test batch that took 124 s finishes in 8 s. Where the time went: `loudnorm` resamples everything to 192 kHz and runs a complete normalisation pass whose output baken never used, while the decode itself was about 3% of the cost ([#114](https://github.com/M-Igashi/baken/issues/114), [#129](https://github.com/M-Igashi/baken/issues/129)).
+- **Same decisions, same numbers where it matters.** True peak agrees with the previous engine to 0.01 dB for every test file at or below 0 dBTP, and integrated loudness within 0.06 LU. Hard-clipped masters that sit well above the ceiling (+1.5 dBTP and beyond) can read 0.1 to 0.2 dB differently, because the two engines interpolate inter-sample overs differently; the proposed method and step count were identical on every test file, and files already processed by an earlier version are not proposed again.
+- **Nothing that measured before stops measuring.** Anything symphonia cannot open (HE-AAC, an unusual container, a mislabelled file) is measured by the old `loudnorm` run automatically. ffmpeg is still required by `baken headroom` for applying gain to lossless files and for re-encodes.
 
-## What it writes and what it does not
+## Other changes
 
-- Legacy device library only: `export.pdb` as read by CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older players. The OneLibrary database (`exportLibrary.db`) needed by CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO is not written yet.
-- Playlists come from the XML: `--playlist "Folder/Name"` repeatable, or every TrackID playlist when omitted. Folders above the selected playlists are created.
-- Idempotent: audio is copied only when missing or of a different size, `export.pdb` is rebuilt every run, `--prune` removes what the export no longer references, `--dry-run` shows the plan. Files players leave on a stick (`PIONEER/CDJ`, `RBFLTR.DAT`, `export.pdb.bak`) are never touched.
-- Artwork is not exported yet. Colour names are rekordbox's defaults (the XML carries only RGB).
+- `baken expressport --help` describes the command as beta, matching the release notes.
 
 ## Library users
 
-- New crate `baken-export` (MIT) with the `export.pdb` writer, the analysis-file pipeline, the `collection.xml` model and a two-phase `plan` / `export` API mirroring `cdjsafe`. `baken-core` is unchanged apart from re-exporting `cdjsafe::{decode_location, encode_location, sanitize_filename, probe, transcode, SourceInfo}` for it.
-- The CLI feature `expressport` is on by default; `cargo install baken --no-default-features` builds the 3.4.0 command set.
+- `baken-core`: `headroom::measure` (and therefore `headroom::analyze`) decodes in-process. `Measurement`, `decide` and `analyze` keep their signatures and fields, so front-ends compile unchanged; a `Measurement` cached from 3.5 stays comparable (see the parity numbers above). The codec of an `.m4a` file now comes from the decoded stream rather than ffmpeg's input dump on this path.
+- New dependency `symphonia 0.6` with the `mp3`, `aac`, `isomp4`, `flac`, `wav`, `aiff`, `alac` and `pcm` features; `mp3rgain` is now used with its `replaygain` feature (the BS.1770 analyzer lives behind it). The MP3 and AAC decoders were already compiled in through mp3rgain, so the release binary grows by about 1.3 MB for the lossless codecs.
+- The ffmpeg binaries configured with `set_tools` are only used by `measure` for the fallback; a front-end that bundles them keeps working exactly as before, one without them measures every common format natively.
 
 ## Upgrading
 
-`headroom`, `rbsort` and `cdjsafe` are unchanged. Files processed by an earlier version are unaffected.
+No action needed. Analysis results and gain proposals for your library stay the same apart from the clipped-master delta described above; `--tp-target`, `--tp-split-bitrate` and `--boost-only` behave as before.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 

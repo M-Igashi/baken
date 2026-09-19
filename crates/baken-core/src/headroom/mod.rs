@@ -37,8 +37,11 @@ pub struct ApplyOutcome {
 }
 
 /// Measure one file without deciding anything: loudness, True Peak, bitrate
-/// and codec from a single loudnorm run. Pair with [`decide`] to get the
-/// gain proposal, or with [`AudioAnalysis::new`] for the full record.
+/// and codec from one in-process decode (symphonia feeding a BS.1770-4
+/// analyzer). ffmpeg is only involved as the fallback for files symphonia
+/// cannot open, so a front-end without the ffmpeg binaries still measures
+/// every common format. Pair with [`decide`] to get the gain proposal, or
+/// with [`AudioAnalysis::new`] for the full record.
 /// [`analyze`] does exactly that for a whole list; this entry point exists
 /// so a front-end can cache measurements and re-decide when the ceiling or
 /// the mode changes, or when a new release changes the decision rules.

@@ -464,6 +464,7 @@ fn measure_native(path: &Path) -> Result<Measurement> {
     // the container: AAC parameters may not name a channel layout at all.
     let mut analyzer: Option<Bs1770Analyzer> = None;
     let mut sample_rate = 0;
+    let mut expected_channels = 0;
     let mut frames: u64 = 0;
     let mut samples: Vec<f64> = Vec::new();
     loop {
@@ -481,10 +482,19 @@ fn measure_native(path: &Path) -> Result<Measurement> {
             Err(e) => return Err(e.into()),
         };
         let channels = decoded.spec().channels().count();
-        let analyzer = analyzer.get_or_insert_with(|| {
-            sample_rate = decoded.spec().rate();
-            Bs1770Analyzer::new_with_true_peak(sample_rate, channels)
-        });
+        let analyzer = match analyzer.as_mut() {
+            // A layout or rate change mid-stream would be fed to filters
+            // sized for the old one; let ffmpeg measure this file instead.
+            Some(_) if channels != expected_channels || decoded.spec().rate() != sample_rate => {
+                return Err(anyhow!("stream parameters changed mid-file"));
+            }
+            Some(a) => a,
+            None => {
+                sample_rate = decoded.spec().rate();
+                expected_channels = channels;
+                analyzer.insert(Bs1770Analyzer::new_with_true_peak(sample_rate, channels))
+            }
+        };
         frames += decoded.frames() as u64;
         samples.clear();
         decoded.copy_to_vec_interleaved(&mut samples);
