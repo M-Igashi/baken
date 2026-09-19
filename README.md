@@ -70,7 +70,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 ### How It Works
 
 1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A, ALAC/M4A)
-2. Measures LUFS (Integrated Loudness) and True Peak using ffmpeg
+2. Measures LUFS (Integrated Loudness) and True Peak per ITU-R BS.1770-4, decoding in-process (ffmpeg is used for files the built-in decoder cannot open)
 3. Computes the gain that puts each file's True Peak at the ceiling (-0.5 dBTP by default). Quiet files get a positive gain, loud files a negative one; `--boost-only` restricts this to positive gains.
 4. Categorizes files by processing method:
    - **Green**: Lossless files (ffmpeg)

@@ -1,6 +1,14 @@
 use anyhow::{anyhow, Context, Result};
+use mp3rgain::bs1770::Bs1770Analyzer;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use symphonia::core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_MP3};
+use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoderOptions};
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, TrackType};
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::MetadataOptions;
 
 use super::scanner;
 
@@ -85,7 +93,7 @@ impl Codec {
     }
 }
 
-/// What the loudnorm run measured. Independent of the ceiling and the
+/// What the measurement run found. Independent of the ceiling and the
 /// [`GainMode`], so a caller may cache it per file and call [`decide`] with
 /// the current settings on every run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -377,10 +385,137 @@ fn decide_gain(
     }
 }
 
-/// Run loudnorm over `path` and read loudness, True Peak, bitrate and codec
-/// from that one ffmpeg invocation. Nothing here depends on the ceiling or
-/// the gain mode.
+/// Measure loudness, True Peak, bitrate and codec for `path`. Nothing here
+/// depends on the ceiling or the gain mode.
+///
+/// Decodes in-process with symphonia and measures with mp3rgain's BS.1770-4
+/// analyzer (issue #129): about 15x faster than ffmpeg's `loudnorm`, whose
+/// 192 kHz resample and full normalisation pass were 97% of the analysis
+/// time. Anything symphonia cannot open or finish (HE-AAC, odd containers,
+/// a truncated stream) falls back to the loudnorm run, so every file that
+/// measured before still does.
 pub fn measure(path: &Path) -> Result<Measurement> {
+    measure_native(path).or_else(|_| measure_ffmpeg(path))
+}
+
+fn codec_from_id(id: AudioCodecId) -> Codec {
+    if id == CODEC_ID_MP3 {
+        Codec::Mp3
+    } else if id == CODEC_ID_AAC {
+        Codec::Aac
+    } else {
+        Codec::Lossless
+    }
+}
+
+/// Overall bitrate the way ffmpeg's input dump reports it: whole file
+/// (tags included) over the decoded duration.
+fn bitrate_kbps(file_size: u64, frames: u64, sample_rate: u32) -> Option<u32> {
+    if frames == 0 || sample_rate == 0 {
+        return None;
+    }
+    let seconds = frames as f64 / sample_rate as f64;
+    Some((file_size as f64 * 8.0 / seconds / 1000.0).round() as u32)
+}
+
+/// loudnorm reports "-inf" for silent audio and the BS.1770 path gives the
+/// same for silence or a file shorter than one 400 ms block; a non-finite
+/// value would blow up the gain math (inf headroom -> i32::MAX gain steps).
+fn ensure_finite(input_i: f64, input_tp: f64) -> Result<()> {
+    if input_i.is_finite() && input_tp.is_finite() {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "Non-finite loudness measurement (input_i={}, input_tp={}); file may be silent or corrupted",
+        input_i,
+        input_tp
+    ))
+}
+
+fn measure_native(path: &Path) -> Result<Measurement> {
+    let file = std::fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let mut format = symphonia::default::get_probe().probe(
+        &hint,
+        stream,
+        FormatOptions::default(),
+        MetadataOptions::default(),
+    )?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| anyhow!("no audio track"))?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| anyhow!("no audio codec parameters"))?
+        .clone();
+    let codec = codec_from_id(params.codec);
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
+
+    // Rate and channel count come from the first decoded buffer rather than
+    // the container: AAC parameters may not name a channel layout at all.
+    let mut analyzer: Option<Bs1770Analyzer> = None;
+    let mut sample_rate = 0;
+    let mut frames: u64 = 0;
+    let mut samples: Vec<f64> = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(p)) => p,
+            Ok(None) => break,
+            Err(e) => return Err(e.into()),
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(d) => d,
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(e) => return Err(e.into()),
+        };
+        let channels = decoded.spec().channels().count();
+        let analyzer = analyzer.get_or_insert_with(|| {
+            sample_rate = decoded.spec().rate();
+            Bs1770Analyzer::new_with_true_peak(sample_rate, channels)
+        });
+        frames += decoded.frames() as u64;
+        samples.clear();
+        decoded.copy_to_vec_interleaved(&mut samples);
+        for frame in samples.chunks_exact(channels) {
+            analyzer.add_frame(frame);
+        }
+    }
+    let analyzer = analyzer.ok_or_else(|| anyhow!("no audio decoded"))?;
+    let true_peak = analyzer
+        .true_peak()
+        .ok_or_else(|| anyhow!("no true peak measured"))?;
+    let input_tp = 20.0 * true_peak.log10();
+    let input_i = analyzer.into_blocks().integrated_lufs();
+    ensure_finite(input_i, input_tp)?;
+
+    let bitrate = if codec.is_lossy() {
+        bitrate_kbps(file_size, frames, sample_rate).or_else(|| get_bitrate(path))
+    } else {
+        None
+    };
+    Ok(Measurement {
+        input_i,
+        input_tp,
+        bitrate_kbps: bitrate,
+        codec,
+    })
+}
+
+/// The pre-3.6 measurement: one ffmpeg `loudnorm` run, read back from
+/// stderr. Kept as the fallback for files symphonia cannot handle.
+fn measure_ffmpeg(path: &Path) -> Result<Measurement> {
     let output = crate::tools::ffmpeg()
         .args(["-nostdin", "-i"])
         .arg(path)
@@ -409,15 +544,7 @@ pub fn measure(path: &Path) -> Result<Measurement> {
         .parse()
         .context("Failed to parse input_tp")?;
 
-    // loudnorm reports "-inf" for silent audio; a non-finite value would blow up
-    // the gain math (inf headroom -> i32::MAX gain steps), so reject it here.
-    if !input_i.is_finite() || !input_tp.is_finite() {
-        return Err(anyhow!(
-            "Non-finite loudness measurement (input_i={}, input_tp={}); file may be silent or corrupted",
-            input_i,
-            input_tp
-        ));
-    }
+    ensure_finite(input_i, input_tp)?;
 
     // An .m4a can hold Apple Lossless as well as AAC. ALAC is lossless: it
     // gets the exact ffmpeg gain like FLAC instead of native AAC steps, which
@@ -588,6 +715,90 @@ mod tests {
         let aac = "  Stream #0:0[0x1](und): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 256 kb/s (default)\n";
         assert_eq!(parse_stderr_codec(aac).as_deref(), Some("aac"));
         assert_eq!(parse_stderr_codec("no streams here"), None);
+    }
+
+    /// Minimal 16-bit PCM WAV: 44-byte header plus interleaved samples.
+    fn write_wav(path: &Path, rate: u32, channels: u16, samples: &[i16]) {
+        let data_len = (samples.len() * 2) as u32;
+        let mut bytes = Vec::with_capacity(44 + data_len as usize);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&channels.to_le_bytes());
+        bytes.extend_from_slice(&rate.to_le_bytes());
+        bytes.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+        bytes.extend_from_slice(&(channels * 2).to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for s in samples {
+            bytes.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("baken-analyzer-{}-{}", std::process::id(), name))
+    }
+
+    /// EBU Tech 3341 case 1, scaled: a 1 kHz sine on both channels at
+    /// -6 dBFS reads -6.0 LUFS, and its true peak is its amplitude.
+    #[test]
+    fn native_measurement_of_a_sine_matches_bs1770() {
+        let rate = 44_100;
+        let amplitude = 10f64.powf(-6.0 / 20.0);
+        let samples: Vec<i16> = (0..rate * 3)
+            .flat_map(|n| {
+                let v = (amplitude
+                    * (2.0 * std::f64::consts::PI * 1000.0 * n as f64 / rate as f64).sin()
+                    * 32767.0)
+                    .round() as i16;
+                [v, v]
+            })
+            .collect();
+        let path = temp_path("sine.wav");
+        write_wav(&path, rate, 2, &samples);
+        let m = measure_native(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert!((m.input_i + 6.0).abs() < 0.1, "input_i = {}", m.input_i);
+        assert!((m.input_tp + 6.0).abs() < 0.05, "input_tp = {}", m.input_tp);
+        assert_eq!(m.codec, Codec::Lossless);
+        assert_eq!(m.bitrate_kbps, None);
+    }
+
+    #[test]
+    fn native_measurement_rejects_silence_and_garbage() {
+        let silent = temp_path("silent.wav");
+        write_wav(&silent, 44_100, 2, &vec![0i16; 44_100 * 2]);
+        let err = measure_native(&silent).unwrap_err().to_string();
+        std::fs::remove_file(&silent).ok();
+        assert!(err.contains("Non-finite"), "{err}");
+
+        let garbage = temp_path("garbage.mp3");
+        std::fs::write(&garbage, [0x5au8; 4096]).unwrap();
+        assert!(measure_native(&garbage).is_err());
+        std::fs::remove_file(&garbage).ok();
+    }
+
+    #[test]
+    fn codec_comes_from_the_decoded_stream_not_the_extension() {
+        use symphonia::core::codecs::audio::well_known::{
+            CODEC_ID_ALAC, CODEC_ID_FLAC, CODEC_ID_PCM_S24LE,
+        };
+        assert_eq!(codec_from_id(CODEC_ID_MP3), Codec::Mp3);
+        assert_eq!(codec_from_id(CODEC_ID_AAC), Codec::Aac);
+        assert_eq!(codec_from_id(CODEC_ID_ALAC), Codec::Lossless);
+        assert_eq!(codec_from_id(CODEC_ID_FLAC), Codec::Lossless);
+        assert_eq!(codec_from_id(CODEC_ID_PCM_S24LE), Codec::Lossless);
+    }
+
+    #[test]
+    fn bitrate_is_whole_file_over_decoded_duration() {
+        // 320 kbps CBR: 40 000 bytes per second of audio.
+        assert_eq!(bitrate_kbps(40_000 * 300, 44_100 * 300, 44_100), Some(320));
+        assert_eq!(bitrate_kbps(1_000, 0, 44_100), None);
     }
 
     #[test]
