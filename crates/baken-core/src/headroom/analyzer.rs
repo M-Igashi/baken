@@ -395,7 +395,28 @@ fn decide_gain(
 /// a truncated stream) falls back to the loudnorm run, so every file that
 /// measured before still does.
 pub fn measure(path: &Path) -> Result<Measurement> {
-    measure_native(path).or_else(|_| measure_ffmpeg(path))
+    match measure_native(path) {
+        Ok(m) => Ok(m),
+        // A second engine cannot open a file we could not open, and it cannot
+        // find loudness in silence. Falling back on those costs a full
+        // loudnorm pass and replaces an exact message with a vague one
+        // (issue #135).
+        Err(e) if e.downcast_ref::<Conclusive>().is_some() => Err(e),
+        Err(_) => measure_ffmpeg(path),
+    }
+}
+
+/// Measurement failures the loudnorm fallback cannot do anything about, so
+/// [`measure`] returns them as they are instead of measuring the file twice
+/// to reach the same answer (issue #135).
+#[derive(Debug, thiserror::Error)]
+enum Conclusive {
+    // Not `#[from]`/`#[source]`: thiserror would then report the io error as
+    // this error's source and `{:#}` would print the same sentence twice.
+    #[error("{0}")]
+    Unreadable(std::io::Error),
+    #[error("Non-finite loudness measurement (input_i={input_i}, input_tp={input_tp}); file may be silent or corrupted")]
+    NonFinite { input_i: f64, input_tp: f64 },
 }
 
 fn codec_from_id(id: AudioCodecId) -> Codec {
@@ -425,15 +446,11 @@ fn ensure_finite(input_i: f64, input_tp: f64) -> Result<()> {
     if input_i.is_finite() && input_tp.is_finite() {
         return Ok(());
     }
-    Err(anyhow!(
-        "Non-finite loudness measurement (input_i={}, input_tp={}); file may be silent or corrupted",
-        input_i,
-        input_tp
-    ))
+    Err(Conclusive::NonFinite { input_i, input_tp }.into())
 }
 
 fn measure_native(path: &Path) -> Result<Measurement> {
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).map_err(Conclusive::Unreadable)?;
     let file_size = file.metadata()?.len();
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
@@ -939,5 +956,40 @@ mod tests {
             decide_gain(0.16, false, false, GainMode::Normalize),
             (GainMethod::FfmpegLossless, 0.16, 0)
         );
+    }
+
+    /// Issue #135: the loudnorm fallback cannot open a file symphonia could
+    /// not open either, so the accurate error has to survive instead of
+    /// being replaced by ffmpeg's "No loudnorm data found" message.
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_file_keeps_its_own_error() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("baken-measure-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("track.flac");
+        fs::write(&path, b"not audio").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let message = format!("{:#}", measure(&path).unwrap_err());
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            message.contains("Permission denied"),
+            "expected the open error, got: {message}"
+        );
+    }
+
+    /// The other half of #135: silence is a conclusion, not a reason to
+    /// decode the file again with a second engine.
+    #[test]
+    fn silence_is_reported_without_a_second_pass() {
+        let err = ensure_finite(f64::NEG_INFINITY, f64::NEG_INFINITY).unwrap_err();
+        assert!(err.downcast_ref::<Conclusive>().is_some());
+        assert!(format!("{err}").contains("may be silent or corrupted"));
     }
 }

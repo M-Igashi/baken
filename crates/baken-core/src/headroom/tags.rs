@@ -135,7 +135,10 @@ fn read_prefix(path: &Path) -> Result<Option<Vec<u8>>> {
 fn restore_prefix(path: &Path, tag: &[u8]) -> Result<()> {
     let mut src = File::open(path)?;
     let end = prefix_end(&mut src)?;
-    rewrite(path, |out| {
+    // `move`, so the read handle is dropped when the closure returns and the
+    // rename inside `rewrite` no longer has to replace a file this process
+    // still has open (issue #137).
+    rewrite(path, move |out| {
         out.write_all(tag)?;
         src.seek(SeekFrom::Start(end))?;
         io::copy(&mut src, out)?;
@@ -222,7 +225,9 @@ fn restore_chunk(path: &Path, tag: &[u8], container: Container) -> Result<()> {
     src.read_exact(&mut head)?;
     head[4..8].copy_from_slice(&container.encode_len(size as u32));
 
-    rewrite(path, |out| {
+    // `move` for the same reason as restore_prefix: no live handle on the
+    // file the rename is about to replace (issue #137).
+    rewrite(path, move |out| {
         out.write_all(&head)?;
         for chunk in &kept {
             src.seek(SeekFrom::Start(chunk.start - 8))?;
@@ -244,6 +249,11 @@ fn restore_chunk(path: &Path, tag: &[u8], container: Container) -> Result<()> {
 }
 
 /// Build the replacement in a sibling temp file, then move it over `path`.
+///
+/// `fill` is consumed inside `build`, so anything it captured, including a
+/// read handle on `path` itself, is dropped before the rename. Windows has
+/// to delete the destination to replace it, and that is not reliable while
+/// the process still holds it open (issue #137).
 fn rewrite(path: &Path, fill: impl FnOnce(&mut BufWriter<File>) -> Result<()>) -> Result<()> {
     let temp = path.with_extension("tags.tmp");
     let build = || -> Result<()> {

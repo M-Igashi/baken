@@ -11,7 +11,7 @@ pub use analyzer::{
     DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP, HIGH_BITRATE_THRESHOLD, SPLIT_TARGET_TRUE_PEAK_HIGH,
     SPLIT_TARGET_TRUE_PEAK_LOW,
 };
-pub use processor::{create_backup_dir, ensure_backup_dir};
+pub use processor::{create_backup_dir, ensure_backup_dir, is_writable};
 pub use report::{generate_csv, AnalysisSummary};
 pub use scanner::{resolve_inputs, scan_audio_files, supported_extensions, BACKUP_MARKER};
 
@@ -129,6 +129,20 @@ pub fn apply(
         }
     }
     outcome
+}
+
+/// The files in `analyses` whose gain cannot be written, checked the way the
+/// apply will check it (issue #134).
+///
+/// Call it on the selected set before the run so a read-only library is
+/// reported up front rather than one failure at a time after the work, and
+/// so those files are not backed up for a rewrite that cannot happen.
+pub fn unwritable(analyses: &[AudioAnalysis]) -> Vec<PathBuf> {
+    analyses
+        .par_iter()
+        .filter(|a| !is_writable(&a.path))
+        .map(|a| a.path.clone())
+        .collect()
 }
 
 /// Keep the analyses that need a gain change and whose method is enabled.
