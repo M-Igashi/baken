@@ -1,24 +1,29 @@
-# Bake'n Deck 3.6.0 - `baken headroom` analysis is 15x faster
+# Bake'n Deck 3.6.1 - `baken headroom` refuses files it cannot write, and says what it actually did
+
+A fix release, all of it from one tester report on 3.6.0: read-only tracks cannot be rewritten, and nothing tells you. The first half turned out to be true only on Windows, and the second half was true everywhere.
 
 ## Highlights
 
-- **Analysis no longer waits on ffmpeg's `loudnorm` filter.** `baken headroom` now decodes each file in-process (symphonia) and measures integrated loudness and true peak with the BS.1770-4 analyzer from the built-in mp3rgain library, true peak meter per Annex 2 included. An 8.9 minute 320 kbps MP3 that took 14.3 s to analyse now takes 0.9 s; a 4.6 minute 24-bit WAV goes from 7.3 s to 0.3 s; a six-track test batch that took 124 s finishes in 8 s. Where the time went: `loudnorm` resamples everything to 192 kHz and runs a complete normalisation pass whose output baken never used, while the decode itself was about 3% of the cost ([#114](https://github.com/M-Igashi/baken/issues/114), [#129](https://github.com/M-Igashi/baken/issues/129)).
-- **Same decisions, same numbers where it matters.** True peak agrees with the previous engine to 0.01 dB for every test file at or below 0 dBTP, and integrated loudness within 0.06 LU. Hard-clipped masters that sit well above the ceiling (+1.5 dBTP and beyond) can read 0.1 to 0.2 dB differently, because the two engines interpolate inter-sample overs differently; the proposed method and step count were identical on every test file, and files already processed by an earlier version are not proposed again.
-- **Nothing that measured before stops measuring.** Anything symphonia cannot open (HE-AAC, an unusual container, a mislabelled file) is measured by the old `loudnorm` run automatically. ffmpeg is still required by `baken headroom` for applying gain to lossless files and for re-encodes.
+- **Read-only files are refused, on every platform and in every format.** The lossless path finished with a rename, which on Unix only needs write permission on the *directory*, so macOS replaced read-only FLAC, WAV, AIFF and ALAC anyway and the replacement came out writable: the protection you set was destroyed in passing. MP3 and AAC already failed, and Windows already refused every format. `baken headroom` now checks that it can open a file for writing before it touches it, and refuses with a message naming the reason ([#131](https://github.com/M-Igashi/baken/issues/131)).
+- **You hear about them before the run, not after it.** The files are listed and skipped up front instead of failing one at a time at the end, and they are no longer copied into the backup folder for a rewrite that was never going to happen ([#134](https://github.com/M-Igashi/baken/issues/134)).
+- **The summary reports the result instead of the plan.** It counted the files it was about to process, so a run where every file failed still finished on a green tick claiming success, with the warnings scrolled off the top. It now counts what landed, says how many did not, and the per-format breakdown describes the same set ([#132](https://github.com/M-Igashi/baken/issues/132)).
+- **Failures say why.** `mp3rgain failed to apply MP3 gain` is now `file is read-only or locked: Permission denied (os error 13)`. The cause was in the error chain all along and the CLI was dropping it ([#133](https://github.com/M-Igashi/baken/issues/133)).
 
 ## Other changes
 
-- `baken expressport --help` describes the command as beta, matching the release notes.
+- Analysis no longer runs the `loudnorm` fallback for errors a second engine cannot resolve. A file that could not be opened reported ffmpeg's `No loudnorm data found in ffmpeg output` instead of `Permission denied`, and a silent file was decoded twice to reach the answer the first pass already had ([#135](https://github.com/M-Igashi/baken/issues/135)).
+- Tag restoration closes its read handle before the rename that replaces the file. Unix does not care, but Windows has to delete the destination to replace it. This is a portability fix and possibly, but not confirmably, the cause of [#137](https://github.com/M-Igashi/baken/issues/137), a Windows report that every MP3 re-encode fails with `Failed to restore metadata`. That report is still open: the error underneath that message is exactly the one the CLI used to drop, so it needs a re-run on this release to identify.
+- New document: `docs/dj-software-compatibility.md`, on what Headroom does and does not change when you also play the same files in Traktor, Serato or Engine DJ.
 
 ## Library users
 
-- `baken-core`: `headroom::measure` (and therefore `headroom::analyze`) decodes in-process. `Measurement`, `decide` and `analyze` keep their signatures and fields, so front-ends compile unchanged; a `Measurement` cached from 3.5 stays comparable (see the parity numbers above). The codec of an `.m4a` file now comes from the decoded stream rather than ffmpeg's input dump on this path.
-- New dependency `symphonia 0.6` with the `mp3`, `aac`, `isomp4`, `flac`, `wav`, `aiff`, `alac` and `pcm` features; `mp3rgain` is now used with its `replaygain` feature (the BS.1770 analyzer lives behind it). The MP3 and AAC decoders were already compiled in through mp3rgain, so the release binary grows by about 1.3 MB for the lossless codecs.
-- The ffmpeg binaries configured with `set_tools` are only used by `measure` for the fallback; a front-end that bundles them keeps working exactly as before, one without them measures every common format natively.
+- `baken-core` gains `headroom::is_writable(&Path) -> bool` and `headroom::unwritable(&[AudioAnalysis]) -> Vec<PathBuf>`. Both check the file the way the apply will, by opening it for writing and closing it again, which is not the same as `access(W_OK)` on volumes mounted `noowners`. Call `unwritable` on the selected set to put the warning in front of the user before anything runs.
+- Behaviour change: `headroom::apply` now fails a file it cannot open for writing, before the backup copy rather than after it. A front end that relied on the old macOS behaviour, where a read-only lossless file was replaced regardless, will now see that file in `ApplyOutcome::failures`. That is the fix, not a regression.
+- `Measurement`, `decide`, `analyze`, `ApplyOutcome` and `AnalyzeOutcome` keep their signatures and fields. A `Measurement` cached from 3.6.0 stays comparable; nothing about the measurement changed except which errors are returned directly.
 
 ## Upgrading
 
-No action needed. Analysis results and gain proposals for your library stay the same apart from the clipped-master delta described above; `--tp-target`, `--tp-split-bitrate` and `--boost-only` behave as before.
+No action needed. If your library contains read-only files, this is the release that starts telling you so instead of quietly doing the wrong thing with half of them.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
