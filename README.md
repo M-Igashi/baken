@@ -75,17 +75,15 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 4. Categorizes files by processing method:
    - **Green**: Lossless files (ffmpeg)
    - **Yellow**: MP3/AAC files with enough headroom for native lossless gain
-   - **Magenta**: MP3/AAC files requiring re-encode
+   - MP3/AAC files already within one 1.5 dB step of the ceiling are left alone: nothing is re-encoded to move a file by less than a step
 5. Displays categorized report
-6. Two-stage confirmation:
-   - First: "Apply lossless gain adjustment?" (lossless + native MP3/AAC)
-   - Second: "Also process files with re-encoding?" (MP3/AAC requiring re-encode)
+6. Confirmation: "Apply lossless gain adjustment?" (lossless + native MP3/AAC)
 7. Creates backups and processes files
 
 #### Example
 
 <details>
-<summary>Full interactive session (28 files analyzed → 10 processed)</summary>
+<summary>Full interactive session (28 files analyzed → 8 processed)</summary>
 
 ```
 $ cd ~/Music/DJ-Tracks
@@ -118,15 +116,6 @@ $ baken headroom
   track08.m4a    -13.0    -4.0 dBTP   -0.5 dBTP   +3.0 dB
   track09.m4a    -12.5    -4.5 dBTP   -0.5 dBTP   +3.0 dB
 
-● 2 MP3 files (re-encode required for precise gain)
-  Filename        LUFS    True Peak    Target        Gain
-  track06.mp3    -12.0    -1.5 dBTP   -0.5 dBTP   +1.0 dB
-  track07.mp3    -11.5    -1.2 dBTP   -0.5 dBTP   +0.7 dB
-
-● 1 AAC/M4A files (re-encode required)
-  Filename        LUFS    True Peak    Target        Gain
-  track10.m4a    -12.5    -1.8 dBTP   -0.5 dBTP   +1.3 dB
-
 ▸ TP target: -0.5 dBTP (uniform delivery ceiling, AES TD1008 §7B)
 ▸ Gain mode: normalize (raise quiet files, lower loud ones)
 
@@ -134,20 +123,13 @@ $ baken headroom
 
 ? Apply lossless gain adjustment to 3 lossless + 3 MP3 (lossless gain) + 2 AAC/M4A (lossless gain) files? [y/N] y
 
-ℹ 2 MP3 + 1 AAC/M4A files need a gain change that requires re-encoding for precise gain.
-  • Re-encoding causes minor quality loss (inaudible at 256kbps+)
-  • Original bitrate will be preserved
-? Also process these files with re-encoding? [y/N] y
-
 ? Create backup before processing? [Y/n] y
 ✓ Backup directory: ./backup
 
-✓ Done! 10 files processed.
+✓ Done! 8 files processed.
   • 3 lossless files (ffmpeg)
-  • 2 MP3 files (native, lossless)
+  • 3 MP3 files (native, lossless)
   • 2 AAC/M4A files (native, lossless)
-  • 2 MP3 files (re-encoded)
-  • 1 AAC/M4A files (re-encoded)
 ```
 
 </details>
@@ -167,8 +149,7 @@ The tool will guide you through:
 1. Scanning and analyzing all audio files
 2. Reviewing the categorized report
 3. Confirming lossless processing
-4. Optionally enabling MP3/AAC re-encoding
-5. Creating backups (recommended)
+4. Creating backups (recommended)
 
 #### Scriptable Mode
 
@@ -180,9 +161,6 @@ baken headroom --analyze-only ~/Music/DJ-Tracks
 
 # Apply only lossless gain, with backup, save report to a specific path
 baken headroom --lossless --backup ./bak --report results.csv ./album/
-
-# Enable re-encoding as well
-baken headroom --lossless --reencode --backup ./bak ./album/
 
 # Operate on specific files
 baken headroom --lossless track1.mp3 track2.flac
@@ -202,7 +180,7 @@ baken headroom --lossless --boost-only ./album/
 
 **Non-interactive defaults** (when any flag or path is provided):
 - `--lossless` is **on** unless `--no-lossless`
-- `--reencode` is **off** unless `--reencode` is explicitly passed
+- `--reencode` and `--no-reencode` are accepted for compatibility and do nothing: no file is re-encoded for gain
 - `--backup` is **off** unless provided; bare `--backup` uses `<target>/backup`
 - CSV report is written unless `--no-report`; `--report PATH` sets a custom location
 - `--analyze-only` runs analysis + report only, skips processing
@@ -219,7 +197,8 @@ baken selects the optimal method for each file based on format and headroom:
 | FLAC, AIFF, WAV | ffmpeg | Arbitrary | None |
 | MP3, AAC/M4A | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
 | ALAC/M4A | ffmpeg (re-encoded as ALAC) | Arbitrary | **None** (lossless codec) |
-| MP3, AAC/M4A | ffmpeg re-encode | Arbitrary | Inaudible at ≥256kbps |
+
+A lossy file closer to the ceiling than one 1.5 dB step is left alone rather than re-encoded, so no MP3 or AAC ever loses a generation to a gain change.
 
 Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
 
@@ -227,9 +206,9 @@ Lossless files are written back in their **original sample format** — a 16-bit
 
 The gain for each file is `ceiling − measured True Peak`. Files below the ceiling get a positive gain, files above it (loudness-war masters, inter-sample overs from lossy encoding) get a negative one, so every track ends up at the same True Peak with no limiter involved. Pass `--boost-only` to keep the pre-v3.3 behaviour of raising quiet files only and leaving loud files untouched.
 
-#### Three-Tier Approach for Lossy Formats (MP3/AAC)
+#### Two-Tier Approach for Lossy Formats (MP3/AAC)
 
-Each MP3 and AAC/M4A file is categorized into one of three tiers:
+Each MP3 and AAC/M4A file is categorized into one of two tiers:
 
 1. **Native Lossless** — the gain is at least one 1.5 dB step in either direction
    - Truly lossless global_gain header modification in 1.5dB steps
@@ -237,13 +216,10 @@ Each MP3 and AAC/M4A file is categorized into one of three tiers:
    - Raising rounds down to whole steps (never overshoots the ceiling); lowering rounds up (the result never exceeds the ceiling, e.g. TP +0.3 dBTP → -1.5 dB → -1.2 dBTP)
    - Applied automatically (no user confirmation needed)
 
-2. **Re-encode** — the file needs raising by 1.0 to 1.5 dB (less than one native step, but enough to be worth a lossy pass)
-   - Uses ffmpeg for arbitrary precision gain
-   - MP3: `libmp3lame` / AAC: `libfdk_aac` (falls back to built-in `aac`)
-   - Preserves original bitrate; requires explicit user confirmation
-   - Lowering never re-encodes: a lossy pass just to make a file quieter is not worth it, so small overshoots take one full native step instead
-
-3. **Skip** — True Peak within 0.05 dB of the ceiling; a lossy file less than 1.0 dB below it (a re-encode for that little is not worth the generation loss, and this is exactly where every file lands after a native step); or above the ceiling with `--boost-only`
+2. **Skip** — True Peak within 0.05 dB of the ceiling; a lossy file less than one 1.5 dB step below it; or above the ceiling with `--boost-only`
+   - A raise smaller than one step could only be applied by re-encoding, and a lossy generation to move a file already within 1.5 dB of the ceiling is not a trade worth making
+   - It is also exactly where every lossy file lands after a native step, since lowering rounds up. Re-encoding there meant offering a third of a processed library up for another lossy generation on every later run ([#138](https://github.com/M-Igashi/baken/issues/138))
+   - Lowering never re-encodes either: small overshoots take one full native step instead
 
 ### True Peak Ceiling
 
@@ -289,7 +265,7 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 |----------|--------|----------------|------|------------------|---------------|---------------|--------|---------------------|
 | track01.flac | Lossless | - | -13.3 | -3.2 | -0.5 | +2.7 | ffmpeg | +2.7 |
 | track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 |
-| track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | re-encode | +1.0 |
+| track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | none | 0.0 |
 | track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 |
 | track10.m4a | AAC | 256 | -12.5 | -1.2 | -0.5 | +0.7 | none | 0.0 |
 
@@ -313,10 +289,10 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 ### Notes & Technical Details
 
 - **Files are overwritten in place** after backup — rekordbox metadata remains linked
-- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (lossless formats, opt-in re-encode) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117))
+- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (the lossless formats) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117))
 - Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
 - MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
-- MP3/AAC re-encoding is **opt-in** and requires explicit confirmation
+- MP3/AAC files closer to the ceiling than one step are left alone; nothing is re-encoded for gain
 - macOS resource fork files (`._*`) are automatically ignored
 
 #### Why 1.5dB Steps?
@@ -339,9 +315,9 @@ Example: 320 kbps file at -3.5 dBTP, default target → 2 steps (+3.0 dB) → -0
 
 Lowering has no such threshold: a file at +0.3 dBTP takes one step down (-1.5 dB) and lands at -1.2 dBTP, slightly under the ceiling rather than re-encoded to hit it exactly.
 
-#### Re-encode Quality
+#### Why files under the threshold are left alone
 
-At ≥256kbps, re-encoding introduces quantization noise below -90dB — far below audible threshold. Only gain is applied (no EQ, compression, or dynamics processing), and original bitrate is preserved.
+A lossy file within one step of the ceiling can only be moved by re-encoding it, and that costs a generation of quality to gain less than 1.5 dB. It is also where every file ends up after a native step, so re-encoding there would mean re-encoding a large part of the library again on every later run. Both directions therefore stop at whole steps, and a run over a library that has already been processed finds nothing left to do.
 
 ## rekordbox Playlist Sorter (`baken rbsort`)
 
