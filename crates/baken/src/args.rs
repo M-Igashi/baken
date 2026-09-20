@@ -131,11 +131,12 @@ pub struct HeadroomArgs {
     #[arg(long)]
     pub no_lossless: bool,
 
-    /// Apply re-encoding for MP3/AAC files needing precise gain
+    /// Deprecated and ignored: nothing is re-encoded for gain any more. A
+    /// lossy file within one 1.5 dB step of the ceiling is left where it is
     #[arg(long, conflicts_with = "no_reencode")]
     pub reencode: bool,
 
-    /// Skip re-encoding (default in non-interactive mode)
+    /// Deprecated and ignored: nothing is re-encoded for gain any more
     #[arg(long)]
     pub no_reencode: bool,
 

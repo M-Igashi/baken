@@ -39,12 +39,24 @@ pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
 /// Files whose True Peak is within this distance of the target are left alone
 const MIN_EFFECTIVE_GAIN: f64 = 0.05;
 
-/// Smallest raise worth a lossy re-encode. Below one native step the only way
-/// to raise an MP3/AAC file is to re-encode it, and a generation of loss for
-/// less than 1 dB is not a trade anyone wants; after a native step the
-/// leftover is by construction under 1.5 dB, so without this floor every
-/// stepped file came back asking for a re-encode on the next analysis.
-pub const MIN_REENCODE_GAIN: f64 = 1.0;
+/// Smallest raise worth a lossy re-encode, and the reason a processed library
+/// stays processed (issue #138).
+///
+/// A lossy file moves in whole [`GAIN_STEP`] steps, and a lowering is rounded
+/// up so the result stays under the ceiling, so everything this tool touches
+/// lands somewhere inside the step below it. Any floor smaller than one step
+/// reads that leftover back as "needs a re-encode" on the next analysis: at
+/// 1.0 dB that was a third of every library, offered up for another lossy
+/// generation on every later run, forever. One full step is the only value
+/// that cannot do that, and a file already within a step of the ceiling is
+/// not worth a generation of loss to move by less than that.
+///
+/// A consequence worth stating: [`decide_gain`] can no longer return
+/// [`GainMethod::Mp3Reencode`] or [`GainMethod::AacReencode`], because a raise
+/// of one step or more is native by definition. The variants, the apply path
+/// behind them and the `--reencode` flag stay for now so the published API
+/// does not break in a bug-fix release; retiring them is a separate change.
+pub const MIN_REENCODE_GAIN: f64 = GAIN_STEP;
 
 /// Processing method for the file
 #[derive(Debug, Clone, PartialEq)]
@@ -53,11 +65,13 @@ pub enum GainMethod {
     FfmpegLossless,
     /// MP3 files with enough headroom for lossless gain (1.5dB steps)
     Mp3Lossless,
-    /// MP3 files requiring re-encode for precise gain
+    /// MP3 files requiring re-encode for precise gain. Never produced by
+    /// [`decide`] any more; see [`MIN_REENCODE_GAIN`].
     Mp3Reencode,
     /// AAC/M4A files with enough headroom for lossless gain (1.5dB steps)
     AacLossless,
-    /// AAC/M4A files requiring re-encode for precise gain
+    /// AAC/M4A files requiring re-encode for precise gain. Never produced by
+    /// [`decide`] any more; see [`MIN_REENCODE_GAIN`].
     AacReencode,
     /// No processing needed (already at the target)
     None,
@@ -370,9 +384,9 @@ fn decide_gain(
         // the ceiling. A re-encode just to make a file quieter is never worth it.
         return native(-((-headroom / GAIN_STEP).ceil() as i32));
     }
-    // Raising: whole steps natively. Under one step, re-encode for the exact
-    // gain only when it buys at least MIN_REENCODE_GAIN; otherwise the file is
-    // close enough to the ceiling and is left alone.
+    // Raising: whole steps natively. Anything under one step is left where it
+    // is, since MIN_REENCODE_GAIN is one full step; see there for why a lossy
+    // re-encode is never the right answer for a sub-step raise.
     let steps = (headroom / GAIN_STEP).floor() as i32;
     if steps >= 1 {
         native(steps)
@@ -925,10 +939,7 @@ mod tests {
     #[test]
     fn boost_only_skips_loud_files_and_keeps_raising_logic() {
         assert_eq!(steps(-0.8, GainMode::BoostOnly).0, GainMethod::None);
-        assert_eq!(
-            steps(1.2, GainMode::BoostOnly),
-            (GainMethod::Mp3Reencode, 1.2, 0)
-        );
+        assert_eq!(steps(1.2, GainMode::BoostOnly), (GainMethod::None, 0.0, 0));
         assert_eq!(
             steps(3.2, GainMode::BoostOnly),
             (GainMethod::Mp3Lossless, 2.0 * GAIN_STEP, 2)
@@ -941,21 +952,72 @@ mod tests {
     }
 
     #[test]
-    fn small_raises_of_lossy_files_are_left_alone_instead_of_reencoded() {
-        // The leftover after a native step (always under 1.5 dB) must not turn
-        // into a re-encode proposal on the next analysis.
+    fn raises_under_one_native_step_are_left_alone_instead_of_reencoded() {
+        // Issue #138: the leftover after a native step is under one step by
+        // construction, so nothing in that band may become a re-encode.
         assert_eq!(steps(0.16, GainMode::Normalize), (GainMethod::None, 0.0, 0));
         assert_eq!(steps(0.99, GainMode::Normalize).0, GainMethod::None);
-        assert_eq!(steps(1.0, GainMode::Normalize).0, GainMethod::Mp3Reencode);
+        assert_eq!(steps(1.0, GainMode::Normalize).0, GainMethod::None);
+        assert_eq!(steps(1.49, GainMode::Normalize).0, GainMethod::None);
         assert_eq!(
-            decide_gain(1.2, true, true, GainMode::Normalize),
-            (GainMethod::AacReencode, 1.2, 0)
+            decide_gain(1.2, true, true, GainMode::Normalize).0,
+            GainMethod::None
+        );
+        // One full step is native, in both lossy formats.
+        assert_eq!(
+            steps(GAIN_STEP, GainMode::Normalize),
+            (GainMethod::Mp3Lossless, GAIN_STEP, 1)
+        );
+        assert_eq!(
+            decide_gain(GAIN_STEP, true, true, GainMode::Normalize),
+            (GainMethod::AacLossless, GAIN_STEP, 1)
         );
         // Lossless files are still raised exactly, however small the gain.
         assert_eq!(
             decide_gain(0.16, false, false, GainMode::Normalize),
             (GainMethod::FfmpegLossless, 0.16, 0)
         );
+    }
+
+    /// Issue #138: one pass has to be enough. Whatever the file and whichever
+    /// mode it ran in, deciding again on what the first decision left behind
+    /// must come back with nothing to do. Without this, a rounded-up lowering
+    /// left up to one step of headroom that the next run read as a re-encode,
+    /// so a third of a processed library was offered up for another lossy
+    /// generation on every later run.
+    #[test]
+    fn a_second_pass_never_finds_anything_left_to_do() {
+        for (is_lossy, is_aac) in [(false, false), (true, false), (true, true)] {
+            for mode in [GainMode::Normalize, GainMode::BoostOnly] {
+                for hundredths in -1500..=1500 {
+                    let headroom = f64::from(hundredths) / 100.0;
+                    let (_, gain, _) = decide_gain(headroom, is_lossy, is_aac, mode);
+                    let left = headroom - gain;
+                    let (method, again, _) = decide_gain(left, is_lossy, is_aac, mode);
+                    assert_eq!(
+                        method,
+                        GainMethod::None,
+                        "headroom {headroom} moved by {gain}, and the {left} left over asks for {again} more"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The report behind #138 in numbers: an MP3 at +2.7 dBTP against the
+    /// -0.5 ceiling needs -3.2 dB, takes three whole steps down to stay under
+    /// it, and ends 1.3 dB below. That leftover used to come back as
+    /// "re-encode required for precise gain" on the next run.
+    #[test]
+    fn the_reported_mp3_settles_after_one_pass() {
+        let (method, gain, steps_taken) = steps(-3.2, GainMode::Normalize);
+        assert_eq!(
+            (method, gain, steps_taken),
+            (GainMethod::Mp3Lossless, -3.0 * GAIN_STEP, -3)
+        );
+        // Around 1.3 dB of headroom left over, which used to be a re-encode.
+        assert!((-3.2 - gain - 1.3).abs() < 0.02);
+        assert_eq!(steps(-3.2 - gain, GainMode::Normalize).0, GainMethod::None);
     }
 
     /// Issue #135: the loudnorm fallback cannot open a file symphonia could

@@ -13,7 +13,7 @@ Headroom rewrites the audio file in place. It never renames a file, never moves 
 | MP3 | `global_gain` rewritten in the frame headers, 1.5 dB steps (`mp3rgain`, `undo: false` so no APEv2 tag is appended) | Unchanged, byte for byte apart from the gain bits | Unchanged | Untouched, the container is never opened |
 | AAC (`.m4a`) | Native gain in 1.5 dB steps | Unchanged | Unchanged | Untouched |
 | FLAC, WAV, AIFF, ALAC | ffmpeg volume filter, exact gain, then tmp file plus rename | Changes | Unchanged | Vorbis comments survive ffmpeg; ID3v2 `GEOB`/`PRIV`, the WAV `id3 ` chunk and MP4 `----` atoms are lifted off the source and written back byte for byte (`baken-core` 3.4.0, `src/headroom/tags.rs`) |
-| MP3/AAC needing a re-encode to reach the ceiling | Full re-encode, opt-in, unchecked by default | Changes | Can change by a few ms of encoder padding | Re-emitted |
+| MP3/AAC within one 1.5 dB step of the ceiling | Left untouched | Unchanged | Unchanged | Untouched |
 
 Everything a cue point or a beatgrid is anchored to (the file path, the sample position, the duration) is identical before and after. That is why rekordbox, Traktor, Serato and Engine DJ all keep their analysis: there is nothing for them to notice.
 
@@ -35,7 +35,9 @@ Two honest framings of the same fix, and users pick by taste:
 
 ## The one option to leave off
 
-The analysis summary has an opt-in checkbox for the handful of MP3/AAC files that could only reach the ceiling by being re-encoded (a raise of 1.0 to 1.5 dB; smaller raises are left alone since `baken-core` 3.3.1). Those rows are unchecked by default. A re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which is the only path in the tool where a beatgrid could drift. For anyone running two DJ apps over one set of files, recommend leaving it off.
+Nothing is re-encoded for gain any more: a lossy file that would need a raise smaller than one 1.5 dB step is left where it is ([#138](https://github.com/M-Igashi/baken/issues/138)). A re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which was the only path in the tool where a beatgrid could drift, so that path is now closed in the CLI.
+
+The Mac app still shows the opt-in checkbox for those files until its next core update. It is unchecked by default; for anyone running two DJ apps over one set of files, recommend leaving it that way.
 
 ## Library sync tools
 
@@ -55,7 +57,7 @@ Adjust the greeting, keep the structure.
 > Two things worth knowing:
 >
 > 1. Traktor's own Autogain. Traktor stores a gain value per track from its own analysis. For tracks it analysed before the conversion, that value still describes the old level, so Traktor will partly cancel out what Headroom did. Two ways around it: re-run analysis in Traktor afterwards so it picks up the new level (lock the tracks first if you want to be certain Traktor leaves your beatgrids alone), or switch Autogain off in Preferences under Mixer, so what you hear is the level baked into the file. On CDJs from a USB export there is nothing to do: they play what is in the file, which is exactly the gap Headroom fills, since rekordbox Auto Gain never makes it onto the stick.
-> 2. Leave the re-encode option off. After an analysis, the summary has an opt-in checkbox for the handful of MP3/AAC files that could only reach the ceiling by being re-encoded. Those rows are unchecked by default and I would keep it that way in your setup: a re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which is the one case where a grid could drift. Everything else is done without re-encoding.
+> 2. If you see a re-encode option, leave it off. The command line tool no longer re-encodes anything for gain: a file that would need a raise of less than one 1.5 dB step is simply left where it is. The Mac app still offers it as an opt-in checkbox until its next update, unchecked by default, and I would keep it that way in your setup: a re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which is the one case where a grid could drift.
 >
 > My suggestion: run it on one playlist first, open those tracks in Traktor and check a couple of cue points before doing the whole library. Every run is backed up into a timestamped folder anyway, and Restore puts the originals back in one click.
 
