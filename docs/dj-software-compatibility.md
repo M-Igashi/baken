@@ -33,11 +33,11 @@ Two honest framings of the same fix, and users pick by taste:
 - **Turn the host's auto-gain off.** Then what you hear is the uniform ceiling baked into the files, which is the point of running Headroom, and it matches what the CDJs will do.
 - **Re-analyse.** The app recomputes its gain from the new level and behaves normally. If the app might touch beatgrids during analysis, lock the tracks first (Traktor's padlock, Serato's lock).
 
-## The one option to leave off
+## Re-encoding, which no longer happens
 
-Nothing is re-encoded for gain any more: a lossy file that would need a raise smaller than one 1.5 dB step is left where it is ([#138](https://github.com/M-Igashi/baken/issues/138)). A re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which was the only path in the tool where a beatgrid could drift, so that path is now closed in the CLI.
+Nothing is re-encoded for gain any more, in the command line tool or in the Mac app. A lossy file that would need a raise smaller than one 1.5 dB step is left where it is ([#138](https://github.com/M-Igashi/baken/issues/138)). A re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which was the only path in either tool where a beatgrid could drift, and that path is now closed in both.
 
-The Mac app still shows the opt-in checkbox for those files until its next core update. It is unchecked by default; for anyone running two DJ apps over one set of files, recommend leaving it that way.
+The Mac app used to offer those files behind an opt-in checkbox, unchecked by default. It is gone as of 1.0.2, released 2026-09-21, because there is nothing left for it to offer.
 
 ## Library sync tools
 
@@ -57,7 +57,7 @@ Adjust the greeting, keep the structure.
 > Two things worth knowing:
 >
 > 1. Traktor's own Autogain. Traktor stores a gain value per track from its own analysis. For tracks it analysed before the conversion, that value still describes the old level, so Traktor will partly cancel out what Headroom did. Two ways around it: re-run analysis in Traktor afterwards so it picks up the new level (lock the tracks first if you want to be certain Traktor leaves your beatgrids alone), or switch Autogain off in Preferences under Mixer, so what you hear is the level baked into the file. On CDJs from a USB export there is nothing to do: they play what is in the file, which is exactly the gap Headroom fills, since rekordbox Auto Gain never makes it onto the stick.
-> 2. If you see a re-encode option, leave it off. The command line tool no longer re-encodes anything for gain: a file that would need a raise of less than one 1.5 dB step is simply left where it is. The Mac app still offers it as an opt-in checkbox until its next update, unchecked by default, and I would keep it that way in your setup: a re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which is the one case where a grid could drift.
+> 2. If you see a re-encode option, leave it off. The command line tool no longer re-encodes anything for gain: a file that would need a raise of less than one 1.5 dB step is simply left where it is. The Mac app had an opt-in checkbox for it, unchecked by default, and from 1.0.2 that is gone too. So there is nothing to switch off: a re-encode rewrites the whole file and can add a few milliseconds of encoder padding, which was the one case where a grid could drift, and neither tool does it any more.
 >
 > My suggestion: run it on one playlist first, open those tracks in Traktor and check a couple of cue points before doing the whole library. Every run is backed up into a timestamped folder anyway, and Restore puts the originals back in one click.
 
@@ -72,6 +72,6 @@ Link one of those from a support reply instead of retyping the answer. The sourc
 
 ## Sources
 
-- `baken-core` 3.6.0: `src/headroom/processor.rs` (`apply_gain_native`, `apply_gain_ffmpeg`, `apply_gain_reencode`), `src/headroom/tags.rs`
+- `baken-core` 3.7.0: `src/headroom/processor.rs` (`apply_gain_native`, `apply_gain_ffmpeg`), `src/headroom/analyzer.rs` (`MIN_REENCODE_GAIN`, now one full native step), `src/headroom/tags.rs`
 - `mp3rgain` 3.8.1: `src/gain.rs`, `GainOptions::new` defaults to `undo: false`, so no APEv2 tag is appended and the file length is unchanged
-- `M-Igashi/baken-mac`, `docs/gui-features.md`, for the re-encode opt-in and the backup and restore behaviour
+- `M-Igashi/baken-mac`, `docs/gui-features.md`, for the backup and restore behaviour and the read-only refusal added in 1.0.2
