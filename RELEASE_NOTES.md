@@ -1,26 +1,27 @@
-# Bake'n Deck 3.7.0 - running `baken headroom` twice stops asking to re-encode what the first run already did
+# Bake'n Deck 3.8.0 - `baken expressport` writes a stick for libraries rekordbox has never analysed
 
-A fix release for one defect, reported by the same tester as 3.6.1 and worth a minor version because it changes which files the tool touches.
+A feature release for `expressport`, prompted by the first report from a machine without rekordbox: a Mixxx library converted to `collection.xml` on Ubuntu ([#145](https://github.com/M-Igashi/baken/issues/145)). `expressport` stays a beta until a player has read a stick it wrote; what that takes is in [#116](https://github.com/M-Igashi/baken/issues/116).
 
 ## Highlights
 
-- **A processed library stays processed.** A lossy file moves in whole 1.5 dB steps, and a lowering is rounded up so the result can never sit above the ceiling, which leaves every file somewhere inside the step below it. The threshold for offering a re-encode was 1.0 dB, so on the next run about a third of an already-processed library came back listed as "re-encode required for precise gain", and would lose another generation of quality to move by around a decibel. The reporter saw 43 re-encodes on a first pass over 24,000 tracks and 7,700 on the second ([#138](https://github.com/M-Igashi/baken/issues/138)).
-- **The threshold is now one full native step**, the only value that cannot feed on its own output, because the leftover after a step is under one step by construction. A lossy file closer than that to the ceiling is left where it is, which is the better trade anyway: a lossy generation is not worth less than 1.5 dB. Analysing a library that has already been through `baken headroom` now reports that there is nothing to do, and that is a property test over every headroom, codec and gain mode rather than a comment.
+- **`--generate-analysis` computes the analysis files from the audio** for tracks rekordbox never analysed, instead of leaving them out ([#147](https://github.com/M-Igashi/baken/issues/147), [#148](https://github.com/M-Igashi/baken/pull/148)). The beat grid and the cues come from the XML as before; the waveforms are decoded in-process (symphonia, the same decoder `baken headroom` uses) and written as rekordbox 7 writes them: `.DAT`, `.EXT` and `.2EX` with every section but the phrase analysis, which only rekordbox can produce. The rules were measured against 1,070 rekordbox analysis files paired with their audio: the scrolling waveform's height and whiteness reproduce rekordbox on 99.5% of columns, the three-band and colour waveforms are close approximations (correlation 0.90 to 0.99), and the beat grid expands from `TEMPO` with rekordbox's own rounding. Off by default, and tracks that do have a rekordbox analysis are still copied, because copying is exact.
+- **With the flag, rekordbox is no longer required for the waveforms.** A Traktor or Mixxx library converted to `collection.xml` can go straight to a stick. The four My Settings files are still required, because nothing in the XML can stand in for them; `--settings-dir` takes the `PIONEER` folder of any stick rekordbox once exported.
+- **`expressport` says what it needs when rekordbox is not there** ([#146](https://github.com/M-Igashi/baken/pull/146)). On Linux it no longer suggests a macOS path under `$HOME/Library`, it searches the platform mount points (`/media`, `/mnt`, `/run/media/$USER`) for an attached library drive, and both the settings error and the analysis error state what is actually required and which flag supplies it.
 
 ## Other changes
 
-- `--reencode` and `--no-reencode` still parse, for scripts, but no file is classified as a re-encode for gain any more, so they select nothing. Their help text says so.
-- README, `docs/true-peak-ceiling.md` and `docs/dj-software-compatibility.md` describe two tiers for lossy files instead of three.
+- `--dry-run` reports how many tracks will have their analysis generated, and the summary counts them separately from the copied ones.
+- `docs/dj-software-compatibility.md` answers two questions that came in after the 3.7.0 run: why re-analysing in Traktor still leaves a different autogain on every track (Headroom aligns true peak, not loudness), and where the Mac app writes its backups. It also stops describing the Mac app's re-encode checkbox, which Bake'n Deck 1.0.2 removed.
+- Issue housekeeping: the `expressport` design record ([#115](https://github.com/M-Igashi/baken/issues/115)) is closed as complete, and [#116](https://github.com/M-Igashi/baken/issues/116) is the one place that says what remains before release and what to test.
 
 ## Library users
 
-- `headroom::MIN_REENCODE_GAIN` is now `GAIN_STEP` rather than 1.0. As a result `headroom::decide` never returns `GainMethod::Mp3Reencode` or `GainMethod::AacReencode`, and the `reencode` argument to `headroom::select_processable` no longer changes its result.
-- Nothing is removed. Both variants, `AudioAnalysis::requires_reencode` and the apply path behind them keep their signatures, so this is not a breaking change; retiring them is [#141](https://github.com/M-Igashi/baken/issues/141), for the next major.
-- **If you cache analyses, invalidate them on this upgrade.** The measurement is unchanged, but the decision for any lossy file whose True Peak sits within one step of the ceiling is not, so a cached `Decision` or `AudioAnalysis` from 3.6.x can still propose a re-encode. A cached `Measurement` is fine: re-run `decide` on it.
+- `baken-export`: new module `anlz::generate` (`decode`, `grid`, `waveform`, `assemble`; `build_files` returns the three `AnlzFile`s for a track). `Options` gains `generate_analysis: bool` (the struct is `Default`, so `..Default::default()` literals keep compiling). `PlanTrack::anlz` is now `Option<Entry>` (`None` means generate), `Plan::generated()` counts those tracks and `Report` gains `anlz_generated`. `anlz::cues::sections` builds the cue sections without an existing file. `Error::NoAnlzRoot` is not returned when `generate_analysis` is set.
+- `baken-core`: no API change. `symphonia` moved to a workspace dependency shared with `baken-export`.
 
 ## Upgrading
 
-No action needed, and nothing you have already processed is damaged. If you had been re-running `baken headroom` over the same library and accepting the re-encodes, those files took one lossy generation per run; this release is where that stops.
+No action needed. `expressport` behaves exactly as in 3.7.0 unless you pass `--generate-analysis`. The beta banner stays until [#116](https://github.com/M-Igashi/baken/issues/116) has a hardware result; if you own a CDJ, that issue says what to test and in which order.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
