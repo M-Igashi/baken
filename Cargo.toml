@@ -20,6 +20,7 @@ anyhow = "1.0"
 rayon = "1.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "aac", "isomp4", "flac", "wav", "aiff", "alac", "pcm"] }
 
 [profile.release]
 lto = "thin"

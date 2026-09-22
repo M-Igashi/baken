@@ -15,6 +15,7 @@ pub mod settings;
 
 pub use error::{Error, Result};
 
+use anlz::generate;
 use anlz::hash::anlz_dir;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind};
@@ -37,6 +38,9 @@ pub struct Options {
     pub device_name: Option<String>,
     /// Transcode every track to 320 kbps CBR MP3 and reuse the source analysis.
     pub cdjsafe: bool,
+    /// Compute the analysis files from the audio for tracks rekordbox never
+    /// analysed, instead of leaving them out (issue #147).
+    pub generate_analysis: bool,
     /// Delete audio and analysis on the stick that this export does not reference.
     pub prune: bool,
 }
@@ -51,7 +55,8 @@ pub struct Skipped {
 pub struct PlanTrack {
     pub device: DeviceTrack,
     pub source: PathBuf,
-    pub anlz: Entry,
+    /// rekordbox's own analysis to copy; `None` means generate it from the audio.
+    pub anlz: Option<Entry>,
 }
 
 #[derive(Debug)]
@@ -71,6 +76,11 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Tracks whose analysis files will be generated rather than copied.
+    pub fn generated(&self) -> usize {
+        self.tracks.iter().filter(|t| t.anlz.is_none()).count()
+    }
+
     pub fn playlist_names(&self) -> Vec<&str> {
         self.selected
             .iter()
@@ -85,6 +95,8 @@ pub struct Report {
     pub kept: usize,
     pub transcoded: usize,
     pub anlz_files: usize,
+    /// Tracks whose analysis files were generated from the audio.
+    pub anlz_generated: usize,
     pub pruned: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
@@ -106,7 +118,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     } else {
         opts.anlz_roots.clone()
     };
-    if anlz_roots.is_empty() {
+    if anlz_roots.is_empty() && !opts.generate_analysis {
         return Err(Error::NoAnlzRoot {
             searched: anlz_roots,
         });
@@ -137,13 +149,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 });
                 continue;
             };
-            let Some(entry) = index.find(track) else {
+            let entry = index.find(track);
+            if entry.is_none() && !opts.generate_analysis {
                 skipped.push(Skipped {
                     name: track.name.clone(),
-                    reason: "no rekordbox analysis found (analyse it in rekordbox first)".into(),
+                    reason: "no rekordbox analysis found (analyse it in rekordbox first, or pass --generate-analysis)".into(),
                 });
                 continue;
-            };
+            }
             let mut t = track.clone();
             if opts.cdjsafe {
                 let stem = t
@@ -179,7 +192,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                     sample_rate,
                 },
                 source,
-                anlz: entry.clone(),
+                anlz: entry.cloned(),
             });
         }
     }
@@ -342,13 +355,31 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         .first()
         .map(|t| t.bpm)
         .unwrap_or(pt.device.track.average_bpm);
+    let Some(entry) = &pt.anlz else {
+        let frames = match frames {
+            Some(f) => Some(f),
+            None if is_mp3(&dest) => Some(rewrite::mp3_audio_frames(&dest)?),
+            None => None,
+        };
+        let pcm = generate::decode::decode(&pt.source)?;
+        let files = generate::build_files(&pt.device.track, &pt.device.usb_path, &pcm, frames);
+        for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
+            std::fs::write(
+                anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
+                file.to_bytes(),
+            )?;
+            report.anlz_files += 1;
+        }
+        report.anlz_generated += 1;
+        return Ok(pt.device.clone());
+    };
     for kind in FileKind::ALL {
-        let Some(mut file) = read_optional(&pt.anlz.sibling(kind.extension()))? else {
+        let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
             if kind != FileKind::TwoEx {
                 anyhow::bail!(
                     "analysis file .{} missing next to {}",
                     kind.extension(),
-                    pt.anlz.dat.display()
+                    entry.dat.display()
                 );
             }
             continue;
@@ -374,6 +405,12 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         report.anlz_files += 1;
     }
     Ok(pt.device.clone())
+}
+
+fn is_mp3(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp3"))
 }
 
 /// Delete files under `root` not in `keep`, then empty directories. Returns the file count.
