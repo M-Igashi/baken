@@ -434,7 +434,7 @@ baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
 
 ## Direct USB Export (`baken expressport`) — beta
 
-*Added in v3.5.0 as a beta. Design and status: [#115](https://github.com/M-Igashi/baken/issues/115); hardware tester call: [#116](https://github.com/M-Igashi/baken/issues/116). The output is byte-checked against real rekordbox exports, but as of 3.5.0 no player has read a stick written by `baken` yet. Use a spare stick.*
+*Added in v3.5.0 as a beta. The implementation is complete (design record: [#115](https://github.com/M-Igashi/baken/issues/115)) and byte-checked against real rekordbox exports, but no player has read a stick written by `baken` yet. What would end the beta, and how to help with a stick and a player, is in [#116](https://github.com/M-Igashi/baken/issues/116). Use a spare stick.*
 
 `expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read.
 
