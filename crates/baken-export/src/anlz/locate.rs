@@ -31,21 +31,45 @@ pub struct AnlzIndex {
     pub files: usize,
 }
 
-/// Directories rekordbox uses for its analysis cache, on this machine.
+/// Directories rekordbox uses for its analysis cache, on this machine: its
+/// own cache where rekordbox runs, plus any attached library drive. Linux has
+/// no rekordbox, so only a library drive can turn up there.
 pub fn default_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    #[cfg(target_os = "macos")]
     if let Some(home) = std::env::var_os("HOME") {
         roots.push(PathBuf::from(home).join("Library/Pioneer/rekordbox/share/PIONEER/USBANLZ"));
     }
-    if let Ok(vols) = std::fs::read_dir("/Volumes") {
-        for v in vols.flatten() {
-            roots.push(v.path().join("PIONEER/Master/share/PIONEER/USBANLZ"));
-        }
-    }
+    #[cfg(target_os = "windows")]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         roots.push(PathBuf::from(appdata).join(r"Pioneer\rekordbox\share\PIONEER\USBANLZ"));
     }
+    for mounts in mount_points() {
+        let Ok(entries) = std::fs::read_dir(mounts) else {
+            continue;
+        };
+        for v in entries.flatten() {
+            roots.push(v.path().join("PIONEER/Master/share/PIONEER/USBANLZ"));
+        }
+    }
     roots.into_iter().filter(|p| p.is_dir()).collect()
+}
+
+/// Where this platform mounts removable volumes.
+fn mount_points() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return vec![PathBuf::from("/Volumes")];
+    #[cfg(target_os = "linux")]
+    {
+        let mut dirs = vec![PathBuf::from("/media"), PathBuf::from("/mnt")];
+        if let Some(user) = std::env::var_os("USER") {
+            dirs.push(PathBuf::from("/media").join(&user));
+            dirs.push(PathBuf::from("/run/media").join(&user));
+        }
+        return dirs;
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return Vec::new();
 }
 
 fn pqtz_summary(file: &AnlzFile) -> (u32, u32, u16) {
