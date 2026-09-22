@@ -15,12 +15,15 @@ pub const FILES: [&str; 4] = [
     "DEVSETTING.DAT",
 ];
 
-/// Where rekordbox 6 and 7 keep the files on this machine.
+/// Where rekordbox 6 and 7 keep the files on this machine. Empty where
+/// rekordbox does not run, so `--settings-dir` is the only way in.
 pub fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    #[cfg(target_os = "macos")]
     if let Some(home) = std::env::var_os("HOME") {
         dirs.push(PathBuf::from(home).join("Library/Application Support/Pioneer/rekordbox6"));
     }
+    #[cfg(target_os = "windows")]
     if let Some(appdata) = std::env::var_os("APPDATA") {
         dirs.push(PathBuf::from(appdata).join(r"Pioneer\rekordbox6"));
     }

@@ -469,6 +469,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 
 ### Notes
 
+- **A rekordbox install is required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own, and nothing in `collection.xml` can stand in for them. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) is not enough on its own (see [#145](https://github.com/M-Igashi/baken/issues/145)).
 - Built into the binaries; `cargo install baken --no-default-features` leaves it out.
 - Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
 - Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
