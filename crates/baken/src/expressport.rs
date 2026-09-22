@@ -24,6 +24,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         settings_dir: args.settings_dir.clone(),
         device_name: args.device_name.clone(),
         cdjsafe: args.cdjsafe,
+        generate_analysis: args.generate_analysis,
         prune: args.prune,
     };
     let plan = plan(&opts)?;
@@ -75,6 +76,13 @@ fn print_plan(plan: &Plan) {
             style("▸").cyan()
         );
     }
+    if plan.generated() > 0 {
+        println!(
+            "{} {} tracks have no rekordbox analysis: waveforms will be computed from the audio (no phrase data)",
+            style("▸").cyan(),
+            plan.generated()
+        );
+    }
     for s in &plan.skipped {
         println!("{} Skipped {}: {}", style("⚠").yellow(), s.name, s.reason);
     }
@@ -101,6 +109,10 @@ fn print_report(plan: &Plan, r: &Report) {
         (r.transcoded, "audio files transcoded"),
         (r.kept, "audio files already on the stick"),
         (r.anlz_files, "analysis files written"),
+        (
+            r.anlz_generated,
+            "tracks with analysis computed from the audio",
+        ),
         (r.pruned, "stale files removed"),
         (r.failures.len(), "tracks failed (left out of the database)"),
     ] {

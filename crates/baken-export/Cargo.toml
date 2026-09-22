@@ -16,3 +16,4 @@ baken-core.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
+symphonia.workspace = true

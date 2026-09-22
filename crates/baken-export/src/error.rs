@@ -29,7 +29,7 @@ pub enum Error {
     #[error("No exportable playlists selected")]
     NoPlaylists,
 
-    #[error("No rekordbox analysis files found. Searched: {}. expressport copies the waveforms rekordbox analysed and cannot compute them from the XML, so every track needs its .DAT/.EXT in rekordbox's PIONEER/USBANLZ directory; pass --anlz-dir if it is somewhere this did not look.", searched_paths(searched))]
+    #[error("No rekordbox analysis files found. Searched: {}. expressport copies the waveforms rekordbox analysed and cannot compute them from the XML, so every track needs its .DAT/.EXT in rekordbox's PIONEER/USBANLZ directory; pass --anlz-dir if it is somewhere this did not look, or --generate-analysis to compute the waveforms from the audio.", searched_paths(searched))]
     NoAnlzRoot { searched: Vec<PathBuf> },
 
     #[error("None of the selected tracks can be exported (missing source files or analysis)")]

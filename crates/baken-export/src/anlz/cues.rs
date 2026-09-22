@@ -163,30 +163,30 @@ pub enum Kind {
     Ext,
 }
 
-/// Replace the cue sections of `file` with ones generated from `cues`,
-/// keeping rekordbox's section order (`PCOB` hot, `PCOB` memory, and in the
-/// `.EXT` also `PCO2` hot, `PCO2` memory).
-pub fn splice(file: &mut AnlzFile, kind: Kind, cues: &[Cue], bpm: f64) {
+/// The cue sections of one analysis file in rekordbox's order: `PCOB` hot,
+/// `PCOB` memory, and in the `.EXT` also `PCO2` hot and `PCO2` memory.
+pub fn sections(kind: Kind, cues: &[Cue], bpm: f64) -> Vec<Section> {
     let (hot, mem) = split(cues);
-    let mut pcobs = match kind {
+    match kind {
         Kind::Dat => vec![pcob(HOT, &hot), pcob(MEMORY, &mem)],
-        Kind::Ext => vec![pcob_empty(HOT), pcob_empty(MEMORY)],
+        Kind::Ext => vec![
+            pcob_empty(HOT),
+            pcob_empty(MEMORY),
+            pco2(HOT, &hot, bpm),
+            pco2(MEMORY, &mem, bpm),
+        ],
     }
-    .into_iter();
-    let mut pco2s = vec![pco2(HOT, &hot, bpm), pco2(MEMORY, &mem, bpm)].into_iter();
+}
+
+/// Replace the cue sections of `file` with ones generated from `cues`,
+/// keeping rekordbox's section order.
+pub fn splice(file: &mut AnlzFile, kind: Kind, cues: &[Cue], bpm: f64) {
+    let mut fresh = sections(kind, cues, bpm).into_iter();
     for s in &mut file.sections {
-        match &s.tag {
-            b"PCOB" => {
-                if let Some(n) = pcobs.next() {
-                    *s = n;
-                }
+        if matches!(&s.tag, b"PCOB" | b"PCO2") {
+            if let Some(n) = fresh.next() {
+                *s = n;
             }
-            b"PCO2" => {
-                if let Some(n) = pco2s.next() {
-                    *s = n;
-                }
-            }
-            _ => {}
         }
     }
 }

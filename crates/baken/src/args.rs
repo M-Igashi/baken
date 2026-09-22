@@ -89,6 +89,12 @@ pub struct ExpressportArgs {
     #[arg(long)]
     pub cdjsafe: bool,
 
+    /// Compute the analysis files (waveforms) from the audio for tracks rekordbox never
+    /// analysed, instead of leaving them out. Grid and cues still come from the XML; phrase
+    /// analysis cannot be generated. Tracks with a rekordbox analysis are still copied.
+    #[arg(long)]
+    pub generate_analysis: bool,
+
     /// Delete audio and analysis files on the stick that this export does not reference.
     #[arg(long)]
     pub prune: bool,
