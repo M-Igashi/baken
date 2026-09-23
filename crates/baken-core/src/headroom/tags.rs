@@ -2,7 +2,7 @@
 //!
 //! ffmpeg re-emits only the metadata it can map onto its own key/value model,
 //! so the binary payloads DJ software writes are dropped whenever headroom
-//! rewrites a container: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and
+//! rewrites a container: ID3v2 `GEOB`/`PRIV` frames on AIFF and WAV, and
 //! free-form `----` atoms on MP4. Lifting them off the source and putting them
 //! back over the output keeps them byte for byte.
 //!
@@ -16,7 +16,7 @@ use std::path::Path;
 
 /// Metadata an ffmpeg re-mux would drop, lifted off a source file.
 pub enum Tags {
-    /// A raw ID3v2 tag: MP3's file prefix, or an AIFF/WAV `ID3 ` chunk.
+    /// A raw ID3v2 tag from an AIFF/WAV `ID3 ` chunk.
     Id3(Vec<u8>),
     /// Free-form `----` items from an MP4's `moov/udta/meta/ilst`, the ones
     /// Serato and rekordbox write.
@@ -26,22 +26,20 @@ pub enum Tags {
 /// Where a container keeps the metadata worth carrying.
 #[derive(Clone, Copy, PartialEq)]
 enum Container {
-    /// MP3: the ID3v2 tag is a plain file prefix.
-    Mp3,
     /// AIFF: an `ID3 ` chunk inside a big-endian FORM.
     Aiff,
     /// WAV: an `id3 ` chunk inside a little-endian RIFF.
     Wav,
-    /// MP4 (ALAC or AAC in `.m4a`): `----` items nested in `moov`.
+    /// MP4 (ALAC in `.m4a`): `----` items nested in `moov`.
     Mp4,
 }
 
 impl Container {
-    /// None for containers with nothing to carry: FLAC's Vorbis comments and
-    /// raw ADTS `.aac` both survive ffmpeg on their own.
+    /// None for containers with nothing to carry: FLAC's Vorbis comments
+    /// survive ffmpeg on their own, and MP3 and AAC take native gain, which
+    /// never rewrites the container.
     fn of(path: &Path) -> Option<Self> {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
-            "mp3" => Some(Container::Mp3),
             "aiff" | "aif" => Some(Container::Aiff),
             "wav" => Some(Container::Wav),
             "m4a" | "mp4" => Some(Container::Mp4),
@@ -76,7 +74,6 @@ impl Container {
 /// needs no help, or the file cannot be read. Pair with [`restore`].
 pub fn read(path: &Path) -> Option<Tags> {
     match Container::of(path)? {
-        Container::Mp3 => read_prefix(path).ok().flatten().map(Tags::Id3),
         Container::Mp4 => read_free_form(path).ok().flatten().map(Tags::Mp4),
         container => read_chunk(path, container).ok().flatten().map(Tags::Id3),
     }
@@ -85,7 +82,6 @@ pub fn read(path: &Path) -> Option<Tags> {
 /// Put `tags` back over a file ffmpeg has just written.
 pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
     match (Container::of(path), tags) {
-        (Some(Container::Mp3), Tags::Id3(tag)) => restore_prefix(path, tag),
         (Some(Container::Aiff), Tags::Id3(tag)) => restore_chunk(path, tag, Container::Aiff),
         (Some(Container::Wav), Tags::Id3(tag)) => restore_chunk(path, tag, Container::Wav),
         (Some(Container::Mp4), Tags::Mp4(items)) => restore_free_form(path, items),
@@ -97,54 +93,6 @@ pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
 }
 
 // ------------------------------------------------------------------ ID3 ---
-
-/// Total length of the ID3v2 tag described by a 10-byte header.
-fn prefix_len(header: &[u8; 10]) -> Option<u64> {
-    if &header[..3] != b"ID3" {
-        return None;
-    }
-    let size = header[6..10]
-        .iter()
-        .fold(0u64, |acc, b| (acc << 7) | (b & 0x7f) as u64);
-    // Flags bit 4 marks a 10-byte footer (ID3v2.4 only).
-    Some(10 + size + if header[5] & 0x10 != 0 { 10 } else { 0 })
-}
-
-/// Offset of the first byte after the leading ID3v2 tag, 0 when there is none.
-fn prefix_end(file: &mut File) -> io::Result<u64> {
-    let mut header = [0u8; 10];
-    file.seek(SeekFrom::Start(0))?;
-    if file.read_exact(&mut header).is_err() {
-        return Ok(0);
-    }
-    Ok(prefix_len(&header).unwrap_or(0))
-}
-
-fn read_prefix(path: &Path) -> Result<Option<Vec<u8>>> {
-    let mut file = File::open(path)?;
-    let end = prefix_end(&mut file)?;
-    if end == 0 {
-        return Ok(None);
-    }
-    let mut tag = vec![0u8; end as usize];
-    file.seek(SeekFrom::Start(0))?;
-    file.read_exact(&mut tag)?;
-    Ok(Some(tag))
-}
-
-fn restore_prefix(path: &Path, tag: &[u8]) -> Result<()> {
-    let mut src = File::open(path)?;
-    let end = prefix_end(&mut src)?;
-    // `move`, so the read handle is dropped when the closure returns and the
-    // rename inside `rewrite` no longer has to replace a file this process
-    // still has open (issue #137).
-    rewrite(path, move |out| {
-        out.write_all(tag)?;
-        src.seek(SeekFrom::Start(end))?;
-        io::copy(&mut src, out)?;
-        Ok(())
-    })
-}
 
 /// One chunk of a RIFF/FORM container: its id and the span of its payload.
 struct Chunk {
@@ -225,8 +173,9 @@ fn restore_chunk(path: &Path, tag: &[u8], container: Container) -> Result<()> {
     src.read_exact(&mut head)?;
     head[4..8].copy_from_slice(&container.encode_len(size as u32));
 
-    // `move` for the same reason as restore_prefix: no live handle on the
-    // file the rename is about to replace (issue #137).
+    // `move`, so the read handle is dropped when the closure returns and the
+    // rename inside `rewrite` no longer has to replace a file this process
+    // still has open (issue #137).
     rewrite(path, move |out| {
         out.write_all(&head)?;
         for chunk in &kept {
@@ -527,45 +476,6 @@ mod tests {
             Tags::Mp4(items) => items,
             Tags::Id3(_) => panic!("expected MP4 free-form items"),
         }
-    }
-
-    #[test]
-    fn reads_a_v23_tag_length() {
-        let tag = tag_with_geob();
-        let mut header = [0u8; 10];
-        header.copy_from_slice(&tag[..10]);
-        assert_eq!(prefix_len(&header), Some(tag.len() as u64));
-        assert_eq!(prefix_len(&[0u8; 10]), None);
-    }
-
-    /// ID3v2.4 may repeat the header as a footer, which counts toward the tag.
-    #[test]
-    fn counts_the_v24_footer() {
-        let mut header = *b"ID3\x04\x00\x10\x00\x00\x00\x0a";
-        assert_eq!(prefix_len(&header), Some(30));
-        header[5] = 0x00;
-        assert_eq!(prefix_len(&header), Some(20));
-    }
-
-    #[test]
-    fn round_trips_an_mp3_prefix() {
-        let path = temp_path("prefix.mp3");
-        let tag = tag_with_geob();
-        // ffmpeg's output: a smaller tag with only the text frame, plus audio.
-        fs::write(
-            &path,
-            [
-                b"ID3\x03\x00\x00\x00\x00\x00\x00".as_slice(),
-                b"\xff\xfbaudio",
-            ]
-            .concat(),
-        )
-        .unwrap();
-        restore(&path, &Tags::Id3(tag.clone())).unwrap();
-
-        assert_eq!(id3_of(&read(&path).unwrap()), tag.as_slice());
-        let written = fs::read(&path).unwrap();
-        assert_eq!(&written[tag.len()..], b"\xff\xfbaudio");
     }
 
     #[test]

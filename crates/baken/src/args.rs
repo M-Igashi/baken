@@ -137,13 +137,12 @@ pub struct HeadroomArgs {
     #[arg(long)]
     pub no_lossless: bool,
 
-    /// Deprecated and ignored: nothing is re-encoded for gain any more. A
-    /// lossy file within one 1.5 dB step of the ceiling is left where it is
-    #[arg(long, conflicts_with = "no_reencode")]
+    /// Accepted and ignored so scripts written for 3.x keep running: nothing is
+    /// re-encoded for gain any more (issue #141).
+    #[arg(long, hide = true)]
     pub reencode: bool,
 
-    /// Deprecated and ignored: nothing is re-encoded for gain any more
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub no_reencode: bool,
 
     /// Create backup before processing (optional DIR; default: <target>/backup)
@@ -217,12 +216,6 @@ impl HeadroomArgs {
     /// Whether lossless processing is enabled in non-interactive mode (default: true).
     pub fn lossless_enabled(&self) -> bool {
         !self.no_lossless
-    }
-
-    /// Whether re-encode processing is enabled in non-interactive mode (default: false).
-    /// clap's `conflicts_with` guarantees `--reencode` and `--no-reencode` are never both set.
-    pub fn reencode_enabled(&self) -> bool {
-        self.reencode
     }
 
     /// Whether CSV report should be generated in non-interactive mode (default: true).

@@ -152,17 +152,7 @@ fn run_interactive(tp_mode: TpTargetMode, gain_mode: GainMode) -> Result<()> {
         return Ok(());
     }
 
-    let allow_reencode = if summary.total_reencode() > 0 {
-        prompt_reencode_processing(&summary)?
-    } else {
-        false
-    };
-
-    let files_to_process = drop_unwritable(headroom::select_processable(
-        &all_analyses,
-        true,
-        allow_reencode,
-    ));
+    let files_to_process = drop_unwritable(headroom::select_processable(&all_analyses, true));
     if files_to_process.is_empty() {
         println!("{} No files to process.", style("ℹ").blue());
         return Ok(());
@@ -222,7 +212,6 @@ fn run_scriptable(cli: &HeadroomArgs, tp_mode: TpTargetMode, gain_mode: GainMode
     let files_to_process = drop_unwritable(headroom::select_processable(
         &all_analyses,
         cli.lossless_enabled(),
-        cli.reencode_enabled(),
     ));
     if files_to_process.is_empty() {
         println!(
@@ -285,8 +274,6 @@ fn print_final_summary(attempted: &[AudioAnalysis], outcome: &ApplyOutcome) {
             summary.aac_lossless_count,
             "AAC/M4A files (native, lossless)",
         ),
-        (summary.mp3_reencode_count, "MP3 files (re-encoded)"),
-        (summary.aac_reencode_count, "AAC/M4A files (re-encoded)"),
     ] {
         if count > 0 {
             println!("  {} {} {}", style("•").dim(), count, label);
@@ -320,33 +307,6 @@ fn prompt_lossless_processing(summary: &AnalysisSummary) -> Result<bool> {
 
     Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt(&prompt)
-        .default(false)
-        .interact()
-        .map_err(Into::into)
-}
-
-fn prompt_reencode_processing(summary: &AnalysisSummary) -> Result<bool> {
-    let mut reencode_parts = Vec::new();
-    if summary.mp3_reencode_count > 0 {
-        reencode_parts.push(format!("{} MP3", summary.mp3_reencode_count));
-    }
-    if summary.aac_reencode_count > 0 {
-        reencode_parts.push(format!("{} AAC/M4A", summary.aac_reencode_count));
-    }
-
-    println!(
-        "\n{} {} files need a gain change that requires re-encoding for precise gain.",
-        style("ℹ").magenta(),
-        reencode_parts.join(" + ")
-    );
-    println!(
-        "  {} Re-encoding causes minor quality loss (inaudible at 256kbps+)",
-        style("•").dim()
-    );
-    println!("  {} Original bitrate will be preserved", style("•").dim());
-
-    Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Also process these files with re-encoding?")
         .default(false)
         .interact()
         .map_err(Into::into)

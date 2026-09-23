@@ -5,7 +5,6 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
     let header_style = Style::new().bold().cyan();
     let lossless_style = Style::new().green();
     let mp3_lossless_style = Style::new().yellow();
-    let reencode_style = Style::new().magenta();
     let dim_style = Style::new().dim();
 
     // Calculate column width (use character count, not byte count)
@@ -36,16 +35,6 @@ pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
             GainMethod::AacLossless,
             aac_label.as_str(),
             &mp3_lossless_style,
-        ),
-        (
-            GainMethod::Mp3Reencode,
-            "MP3 files (re-encode required for precise gain)",
-            &reencode_style,
-        ),
-        (
-            GainMethod::AacReencode,
-            "AAC/M4A files (re-encode required)",
-            &reencode_style,
         ),
     ];
 

@@ -70,8 +70,6 @@ pub struct AnalysisSummary {
     pub lossless_count: usize,
     pub mp3_lossless_count: usize,
     pub aac_lossless_count: usize,
-    pub mp3_reencode_count: usize,
-    pub aac_reencode_count: usize,
 }
 
 impl AnalysisSummary {
@@ -82,8 +80,6 @@ impl AnalysisSummary {
                 GainMethod::FfmpegLossless => summary.lossless_count += 1,
                 GainMethod::Mp3Lossless => summary.mp3_lossless_count += 1,
                 GainMethod::AacLossless => summary.aac_lossless_count += 1,
-                GainMethod::Mp3Reencode => summary.mp3_reencode_count += 1,
-                GainMethod::AacReencode => summary.aac_reencode_count += 1,
                 GainMethod::None => {}
             }
         }
@@ -94,11 +90,7 @@ impl AnalysisSummary {
         self.lossless_count + self.mp3_lossless_count + self.aac_lossless_count
     }
 
-    pub fn total_reencode(&self) -> usize {
-        self.mp3_reencode_count + self.aac_reencode_count
-    }
-
     pub fn has_processable(&self) -> bool {
-        self.total_lossless() + self.total_reencode() > 0
+        self.total_lossless() > 0
     }
 }
