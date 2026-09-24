@@ -1,5 +1,5 @@
 use anyhow::Result;
-use baken_core::cdjsafe::{self, Action, Report, CDJSAFE_FOLDER_NAME};
+use baken_core::cdjsafe::{self, Action, Report, SkipReason, CDJSAFE_FOLDER_NAME};
 use baken_core::{CancelToken, Error};
 use console::style;
 
@@ -11,12 +11,21 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
 
     let plan = cdjsafe::plan(&args.xml, &args.playlist)?;
     for skipped in plan.skipped() {
-        println!(
-            "{} '{}' not found on disk — skipped: {}",
-            style("⚠").yellow(),
-            skipped.name,
-            skipped.location
-        );
+        match &skipped.reason {
+            SkipReason::NotFound => println!(
+                "{} '{}' not found on disk — skipped: {}",
+                style("⚠").yellow(),
+                skipped.name,
+                skipped.location
+            ),
+            SkipReason::BadLocation(why) => println!(
+                "{} '{}' has a Location that is not a usable file URL — skipped: {} ({})",
+                style("⚠").yellow(),
+                skipped.name,
+                skipped.location,
+                why
+            ),
+        }
     }
     for name in plan.missing_total_time() {
         println!(
@@ -100,7 +109,7 @@ fn print_report(report: &Report) {
 
     if !report.skipped.is_empty() {
         println!(
-            "\n{} Skipped (file not found on disk) — not on the stick, not in the new playlist:",
+            "\n{} Skipped (file not found on disk, or Location not decodable) — not on the stick, not in the new playlist:",
             style("⚠").yellow()
         );
         for name in &report.skipped {

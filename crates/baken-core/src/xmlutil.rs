@@ -1,8 +1,11 @@
-//! Small quick-xml helpers shared by the rbsort and cdjsafe XML passes.
+//! Small helpers shared by the rbsort and cdjsafe XML passes.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::writer::Writer;
+use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
 
 /// Read one attribute's unescaped value from a start tag.
 pub(crate) fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
@@ -83,4 +86,36 @@ pub(crate) fn emit_playlist<W: std::io::Write>(
 
     writer.write_event(Event::End(BytesEnd::new("NODE")))?;
     Ok(())
+}
+
+/// Write `bytes` to a sibling temp file and move it over `path`, so a crash
+/// or a full disk mid-write never leaves a truncated collection behind.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut name = path.file_name().map(OsString::from).unwrap_or_default();
+    name.push(".tmp");
+    let temp = path.with_file_name(name);
+    let result = fs::write(&temp, bytes).and_then(|()| fs::rename(&temp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.with_context(|| format!("Failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_temp_behind() {
+        let dir = std::env::temp_dir().join(format!("baken-atomic-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("collection.xml");
+        fs::write(&path, b"old").unwrap();
+
+        write_atomic(&path, b"new").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert!(!dir.join("collection.xml.tmp").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

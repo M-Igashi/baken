@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::camelot::parse_camelot;
-use crate::xmlutil::{get_attr, playlist_node_attrs};
+use crate::xmlutil::{get_attr, playlist_node_attrs, write_atomic};
 
 #[derive(Debug, Clone, Default)]
 struct TrackMeta {
@@ -32,9 +32,10 @@ struct CollectedPlaylist {
 }
 
 /// Sort one playlist (`target = Some(path)`) or every TrackID-referenced
-/// playlist in the XML (`target = None`), then write the result to `output`.
-/// Each playlist keeps its NODE, name, and folder position; only the order of
-/// its `<TRACK Key=…/>` children changes.
+/// playlist in the XML (`target = None`), then write the result to `output`
+/// through a sibling temp file and a rename, so an interrupted run never
+/// leaves a truncated XML behind. Each playlist keeps its NODE, name, and
+/// folder position; only the order of its `<TRACK Key=…/>` children changes.
 pub fn sort_and_write(
     input: &Path,
     output: &Path,
@@ -58,8 +59,7 @@ pub fn sort_and_write(
     }
 
     let output_bytes = rewrite_xml(&xml_data, &sorted)?;
-    std::fs::write(output, output_bytes)
-        .with_context(|| format!("Failed to write {}", output.display()))?;
+    write_atomic(output, &output_bytes)?;
 
     Ok(sorted)
 }
@@ -521,6 +521,22 @@ mod tests {
         // Top keeps its original 2,1 order; Inner becomes 4,3.
         assert!(out_str.contains("<TRACK Key=\"2\"/>\n        <TRACK Key=\"1\"/>"));
         assert!(out_str.contains("<TRACK Key=\"4\"/>\n          <TRACK Key=\"3\"/>"));
+    }
+
+    // rekordbox 7 writes a playlist with no tracks self-closing; the fixture
+    // export has one. Selecting it is a no-op, not "not found".
+    #[test]
+    fn a_self_closing_playlist_is_found_and_left_as_is() {
+        let target = vec!["Folder".to_string(), "Empty".to_string()];
+        let xml = MULTI_PLAYLIST_XML.replace(
+            r#"<NODE Name="LocBased" Type="1" KeyType="1" Entries="0"/>"#,
+            r#"<NODE Name="Empty" Type="1" KeyType="0" Entries="0"/>"#,
+        );
+        let sorted = sort_all(&xml, Some(&target));
+        assert_eq!(sorted.len(), 1);
+        assert!(sorted[0].track_ids.is_empty());
+        let out = rewrite_xml(xml.as_bytes(), &sorted).unwrap();
+        assert_eq!(out, xml.as_bytes());
     }
 
     #[test]
