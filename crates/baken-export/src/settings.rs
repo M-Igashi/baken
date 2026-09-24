@@ -66,20 +66,30 @@ pub fn validate(path: &Path) -> Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // Payload sizes rekordbox writes; the file is 104 + payload + 4 bytes.
+    let expected_payload = match name.as_str() {
+        "MYSETTING.DAT" | "MYSETTING2.DAT" => Some(40),
+        "DJMMYSETTING.DAT" => Some(52),
+        "DEVSETTING.DAT" => Some(32),
+        _ => None,
+    };
+    let expected_file = expected_payload.map(|p| 104 + p + 4);
     if b.len() < 110 {
-        bail!("{name}: too short ({} bytes)", b.len());
+        match expected_file {
+            Some(size) => bail!(
+                "{name}: too short ({} bytes); a rekordbox {name} is {size} bytes, so this is not one",
+                b.len()
+            ),
+            None => bail!("{name}: too short ({} bytes)", b.len()),
+        }
     }
     let len_data = u32::from_le_bytes(b[100..104].try_into().unwrap()) as usize;
-    let expected = match name.as_str() {
-        "MYSETTING.DAT" | "MYSETTING2.DAT" => 40,
-        "DJMMYSETTING.DAT" => 52,
-        "DEVSETTING.DAT" => 32,
-        _ => len_data,
-    };
+    let expected = expected_payload.unwrap_or(len_data);
     if len_data != expected || b.len() != 104 + len_data + 4 {
         bail!(
-            "{name}: unexpected layout (len_data {len_data}, file {} bytes)",
-            b.len()
+            "{name}: unexpected layout (len_data {len_data}, file {} bytes); a rekordbox {name} is {} bytes with a {expected}-byte payload",
+            b.len(),
+            104 + expected + 4
         );
     }
     if !b[36..].starts_with(b"rekordbox\0")
@@ -115,6 +125,20 @@ pub fn copy_all(from: &Path, device: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stray_file_is_named_with_the_expected_size() {
+        let dir = std::env::temp_dir().join(format!("baken-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stray = dir.join("DEVSETTING.DAT");
+        std::fs::write(&stray, [0u8; 39]).unwrap();
+        let message = validate(&stray).unwrap_err().to_string();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            message,
+            "DEVSETTING.DAT: too short (39 bytes); a rekordbox DEVSETTING.DAT is 140 bytes, so this is not one"
+        );
+    }
 
     #[test]
     fn crc_reference() {
