@@ -126,6 +126,7 @@ dependencies = [
  "anyhow",
  "baken-core",
  "quick-xml",
+ "rayon",
  "symphonia",
  "thiserror",
 ]

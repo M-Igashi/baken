@@ -131,6 +131,9 @@ def main():
         check(run(*args, "--prune"), "second export with --prune exits cleanly")
         audio = [NFC(f) for _, _, fs in os.walk(os.path.join(stick, "Contents")) for f in fs if not f.startswith("._")]
         check(audio == [NFC("Hålla ä.flac")], f"--prune keeps the track still in the playlist and removes the other ({audio})")
+        check(run(*args), "third export, nothing changed, exits cleanly")
+        leftovers = [os.path.relpath(os.path.join(r, f), stick) for r, _, fs in os.walk(stick) for f in fs if f.startswith("._")]
+        check(not leftovers, f"still no AppleDouble files after a run that rewrote only export.pdb and the settings {leftovers}")
 
         print("afterwards")
         check(removable(os.path.join(vol, "lib")), "rm -rf removes the tracks headroom rewrote")
