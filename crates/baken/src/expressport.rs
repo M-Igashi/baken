@@ -66,9 +66,17 @@ fn print_plan(plan: &Plan) {
             .join(", ")
     );
     println!(
-        "{} My Settings from {}",
+        "{} My Settings from {}{}",
         style("▸").cyan(),
-        plan.settings_dir.display()
+        plan.settings_dir.display(),
+        if plan
+            .settings_files
+            .contains(&baken_export::settings::OPTIONAL)
+        {
+            ""
+        } else {
+            " (without DEVSETTING.DAT, which is optional)"
+        }
     );
     if plan.cdjsafe {
         println!(

@@ -21,25 +21,30 @@ pub struct DeviceTrack {
     pub sample_rate: u32,
 }
 
+/// The extension decides, because rekordbox always writes a `Kind` that
+/// matches it and other tools do not (mixxx2rekordbox writes `MP3 File` for
+/// FLAC, and the player then fails to load the track). `Kind` only tells ALAC
+/// from AAC inside an `.m4a`, and covers files without a known extension.
 pub fn file_type_for(kind: &str, file_name: &str) -> u16 {
     let ext = file_name
         .rsplit('.')
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
-    match kind {
-        "MP3 File" => rows::FILE_TYPE_MP3,
-        "M4A File" => rows::FILE_TYPE_M4A,
-        "FLAC File" => rows::FILE_TYPE_FLAC,
-        "ALAC File" => rows::FILE_TYPE_ALAC,
-        "WAV File" => rows::FILE_TYPE_WAV,
-        "AIFF File" => rows::FILE_TYPE_AIFF,
-        _ => match ext.as_str() {
-            "mp3" => rows::FILE_TYPE_MP3,
-            "m4a" | "aac" | "mp4" => rows::FILE_TYPE_M4A,
-            "flac" => rows::FILE_TYPE_FLAC,
-            "wav" => rows::FILE_TYPE_WAV,
-            "aif" | "aiff" => rows::FILE_TYPE_AIFF,
+    match ext.as_str() {
+        "mp3" => rows::FILE_TYPE_MP3,
+        "m4a" | "aac" | "mp4" if kind == "ALAC File" => rows::FILE_TYPE_ALAC,
+        "m4a" | "aac" | "mp4" => rows::FILE_TYPE_M4A,
+        "flac" => rows::FILE_TYPE_FLAC,
+        "wav" => rows::FILE_TYPE_WAV,
+        "aif" | "aiff" => rows::FILE_TYPE_AIFF,
+        _ => match kind {
+            "MP3 File" => rows::FILE_TYPE_MP3,
+            "M4A File" => rows::FILE_TYPE_M4A,
+            "FLAC File" => rows::FILE_TYPE_FLAC,
+            "ALAC File" => rows::FILE_TYPE_ALAC,
+            "WAV File" => rows::FILE_TYPE_WAV,
+            "AIFF File" => rows::FILE_TYPE_AIFF,
             _ => 0,
         },
     }
@@ -231,6 +236,20 @@ pub fn today() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_wins_over_a_wrong_kind() {
+        assert_eq!(
+            file_type_for("MP3 File", "Transfer.flac"),
+            rows::FILE_TYPE_FLAC
+        );
+        assert_eq!(file_type_for("ALAC File", "a.m4a"), rows::FILE_TYPE_ALAC);
+        assert_eq!(file_type_for("M4A File", "a.m4a"), rows::FILE_TYPE_M4A);
+        assert_eq!(
+            file_type_for("WAV File", "no-extension"),
+            rows::FILE_TYPE_WAV
+        );
+    }
 
     #[test]
     fn today_is_a_date() {

@@ -1,19 +1,19 @@
-//! CDJ and DJM "My Settings". rekordbox keeps the four files it writes onto a
+//! CDJ and DJM "My Settings". rekordbox keeps the files it writes onto a
 //! stick as ordinary files in its settings directory, in the same format:
 //! 104-byte header (`len_strings` u8 + 3 pad, brand, `rekordbox`, version as
 //! 32-byte fields, `len_data` u32), payload, CRC16-XMODEM, two zero bytes.
 //! They are copied verbatim into `PIONEER/` on the stick; an export without
-//! them is an error.
+//! the three in `REQUIRED` is an error.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const FILES: [&str; 4] = [
-    "MYSETTING.DAT",
-    "MYSETTING2.DAT",
-    "DJMMYSETTING.DAT",
-    "DEVSETTING.DAT",
-];
+pub const REQUIRED: [&str; 3] = ["MYSETTING.DAT", "MYSETTING2.DAT", "DJMMYSETTING.DAT"];
+
+/// Copied when present. A rekordbox 7 export does not always carry it, the
+/// one on a real stick was written by the player (issue #116), and a
+/// CDJ-2000NXS2 reads a stick without it.
+pub const OPTIONAL: &str = "DEVSETTING.DAT";
 
 /// Where rekordbox 6 and 7 keep the files on this machine. Empty where
 /// rekordbox does not run, so `--settings-dir` is the only way in.
@@ -30,8 +30,8 @@ pub fn default_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The directory holding all four files: `explicit` if given, else the first
-/// default that has them. `Err` lists every directory tried.
+/// The directory holding the required files: `explicit` if given, else the
+/// first default that has them. `Err` lists every directory tried.
 pub fn locate(explicit: Option<&Path>) -> std::result::Result<PathBuf, Vec<PathBuf>> {
     let candidates: Vec<PathBuf> = match explicit {
         Some(p) => vec![p.to_path_buf()],
@@ -39,7 +39,7 @@ pub fn locate(explicit: Option<&Path>) -> std::result::Result<PathBuf, Vec<PathB
     };
     candidates
         .iter()
-        .find(|d| FILES.iter().all(|f| d.join(f).is_file()))
+        .find(|d| REQUIRED.iter().all(|f| d.join(f).is_file()))
         .cloned()
         .ok_or(candidates)
 }
@@ -110,11 +110,32 @@ pub fn validate(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Validate and copy all four files into `<device>/PIONEER/`.
-pub fn copy_all(from: &Path, device: &Path) -> Result<()> {
+/// The files to copy from `dir`, each validated: the required ones, plus
+/// `DEVSETTING.DAT` when it is there.
+pub fn files(dir: &Path) -> Result<Vec<&'static str>> {
+    let mut files = REQUIRED.to_vec();
+    if dir.join(OPTIONAL).is_file() {
+        files.push(OPTIONAL);
+    }
+    for f in &files {
+        if let Err(e) = validate(&dir.join(f)) {
+            if *f == OPTIONAL {
+                bail!(
+                    "{e}. {OPTIONAL} is optional: remove it from {} to export without it",
+                    dir.display()
+                );
+            }
+            return Err(e);
+        }
+    }
+    Ok(files)
+}
+
+/// Validate and copy `files` into `<device>/PIONEER/`.
+pub fn copy_all(from: &Path, files: &[&str], device: &Path) -> Result<()> {
     let dest = device.join("PIONEER");
     std::fs::create_dir_all(&dest)?;
-    for f in FILES {
+    for f in files {
         let src = from.join(f);
         validate(&src)?;
         std::fs::copy(&src, dest.join(f)).with_context(|| format!("copying {f}"))?;
@@ -140,6 +161,47 @@ mod tests {
         );
     }
 
+    fn write_valid(dir: &Path, name: &str) {
+        let payload = match name {
+            "DJMMYSETTING.DAT" => 52,
+            "DEVSETTING.DAT" => 32,
+            _ => 40,
+        };
+        let mut b = vec![0u8; 104];
+        b[0] = 0x60;
+        b[4..11].copy_from_slice(b"PIONEER");
+        b[36..46].copy_from_slice(b"rekordbox\0");
+        b[100..104].copy_from_slice(&(payload as u32).to_le_bytes());
+        b.resize(104 + payload, 1);
+        let crc = if name == "DJMMYSETTING.DAT" {
+            crc16_xmodem(&b)
+        } else {
+            crc16_xmodem(&b[104..])
+        };
+        b.extend(crc.to_le_bytes());
+        b.extend([0, 0]);
+        std::fs::write(dir.join(name), b).unwrap();
+    }
+
+    #[test]
+    fn devsetting_is_optional_but_checked_when_present() {
+        let dir = std::env::temp_dir().join(format!("baken-devsetting-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in REQUIRED {
+            write_valid(&dir, f);
+        }
+        assert_eq!(locate(Some(&dir)).unwrap(), dir);
+        assert_eq!(files(&dir).unwrap(), REQUIRED);
+
+        write_valid(&dir, OPTIONAL);
+        assert_eq!(files(&dir).unwrap().last(), Some(&OPTIONAL));
+
+        std::fs::write(dir.join(OPTIONAL), [0u8; 39]).unwrap();
+        let message = files(&dir).unwrap_err().to_string();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(message.contains("DEVSETTING.DAT is optional"), "{message}");
+    }
+
     #[test]
     fn crc_reference() {
         // CRC-16/XMODEM check value
@@ -149,9 +211,7 @@ mod tests {
     #[test]
     fn local_files_validate_when_present() {
         let Ok(dir) = locate(None) else { return };
-        for f in FILES {
-            validate(&dir.join(f)).unwrap();
-        }
+        files(&dir).unwrap();
     }
 
     #[test]

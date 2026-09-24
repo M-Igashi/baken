@@ -67,6 +67,8 @@ pub struct Plan {
     pub selected: Vec<usize>,
     pub skipped: Vec<Skipped>,
     pub settings_dir: PathBuf,
+    /// Settings files to copy, already validated so a bad one fails before anything is written.
+    pub settings_files: Vec<&'static str>,
     pub anlz_roots: Vec<PathBuf>,
     pub anlz_files_indexed: usize,
     pub device: PathBuf,
@@ -109,6 +111,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     }
     let settings_dir = settings::locate(opts.settings_dir.as_deref())
         .map_err(|searched| Error::SettingsNotFound { searched })?;
+    let settings_files = settings::files(&settings_dir)?;
 
     let library = Library::load(&opts.xml)?;
     let selected = select_playlists(&library, &opts.playlists)?;
@@ -214,6 +217,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         selected,
         skipped,
         settings_dir,
+        settings_files,
         anlz_roots,
         anlz_files_indexed: index.files,
         device: opts.device.clone(),
@@ -307,7 +311,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     std::fs::create_dir_all(&rb_dir)?;
     std::fs::write(rb_dir.join("export.pdb"), pdb::write(&model))?;
 
-    settings::copy_all(&plan.settings_dir, &plan.device)?;
+    settings::copy_all(&plan.settings_dir, &plan.settings_files, &plan.device)?;
 
     if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
