@@ -55,16 +55,23 @@ fn print_plan(plan: &Plan) {
         style("▸").cyan(),
         plan.playlist_names().join(", ")
     );
+    let indexed = if plan.anlz_roots.is_empty() {
+        "no rekordbox analysis directory".to_string()
+    } else {
+        format!(
+            "{} analysis files indexed under {}",
+            plan.anlz_files_indexed,
+            plan.anlz_roots
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
     println!(
-        "{} Tracks: {} ({} analysis files indexed under {})",
+        "{} Tracks: {} ({indexed})",
         style("▸").cyan(),
-        style(plan.tracks.len()).cyan(),
-        plan.anlz_files_indexed,
-        plan.anlz_roots
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
+        style(plan.tracks.len()).cyan()
     );
     match &plan.settings_dir {
         Some(dir) => println!(
@@ -96,6 +103,13 @@ fn print_plan(plan: &Plan) {
             "{} {} tracks have no rekordbox analysis: waveforms will be computed from the audio (no phrase data)",
             style("▸").cyan(),
             plan.generated()
+        );
+    }
+    if plan.without_grid() > 0 {
+        println!(
+            "{} {} of them have no beat grid in the XML (no TEMPO): the player shows their BPM only after detecting it while playing, and quantize and beat sync cannot use them",
+            style("⚠").yellow(),
+            plan.without_grid()
         );
     }
     for s in &plan.skipped {
