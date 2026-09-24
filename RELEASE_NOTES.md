@@ -1,26 +1,25 @@
-# Bake'n Deck 4.0.0 - `baken headroom` never re-encodes a file, and the code now says so
+# Bake'n Deck 4.0.1 - `cdjsafe` and `rbsort` agree with the Mac app on odd XML, and never leave a truncated collection behind
 
-A major release because `baken-core` loses public items ([#141](https://github.com/M-Igashi/baken/issues/141), [#151](https://github.com/M-Igashi/baken/pull/151)). For command line users the behaviour is the one 3.7.0 and 3.8.0 already had: every file gets the same decision it got in 3.8.0, and a script written for 3.x keeps running. `expressport` is unchanged and still a beta ([#116](https://github.com/M-Igashi/baken/issues/116)).
+A patch release for the three findings of the 2026-09-23 Mac app review ([#152](https://github.com/M-Igashi/baken/issues/152), fixed in [#155](https://github.com/M-Igashi/baken/pull/155)). The app's pre-flight mirrors core's XML parsing but skipped the rows core rejected, so the two reached different conclusions on the same file. Nothing else changed since 4.0.0: `headroom` and `expressport` are untouched, and `expressport` stays a beta ([#116](https://github.com/M-Igashi/baken/issues/116)).
 
 ## Highlights
 
-- **The lossy re-encode path is gone** ([#141](https://github.com/M-Igashi/baken/issues/141), [#151](https://github.com/M-Igashi/baken/pull/151)). Since 3.7.0 ([#138](https://github.com/M-Igashi/baken/issues/138)) the gain decision has had a floor of one full native step for MP3 and AAC, and a raise of a step or more is applied natively by definition, so no file could be classified for a re-encode any more. What remained was a path that could not run: the "re-encode required for precise gain" prompt, its lines in the summary, its group in the report and the apply code behind them. All of it is removed. The product statement is now the simple one: MP3 and AAC move in native 1.5 dB steps through mp3rgain, lossless formats move exactly through ffmpeg, and nothing is ever re-encoded to change its gain.
-- **`--reencode` and `--no-reencode` are still accepted and ignored**, and no longer listed in `--help`, so a 3.x script that passes either keeps working. Drop them when convenient. In the CSV report the `Method` column simply never says `re-encode`; no value changes meaning.
-- **`expressport` is the 3.8.0 code, still in beta.** The beta banner and the "beta" in the README come off in a patch release once [#116](https://github.com/M-Igashi/baken/issues/116) reports a pass on a CDJ-3000 and a CDJ-2000NXS2. The two were decoupled on purpose: this major does not wait on hardware time, and the beta removal does not wait on a major.
+- **A `Location` that cannot be decoded is skipped like a missing file** (`baken cdjsafe`). A row whose `Location` is not a `file://` URL or has a bad percent-escape, typically a hand-edited one, used to fail the whole plan with `Unsupported Location URL`, while a file that decoded but was not on disk was skipped and counted. Both mean the source cannot be reached, and both are now skipped and listed with the reason, in playlist order, so one bad row no longer stops a 300-track conversion. Only a playlist with nothing reachable at all is an error, as before.
+- **An empty playlist is found, not "not found".** rekordbox writes a playlist with no tracks as a self-closing `<NODE .../>` (verified in a rekordbox 7 export), and `cdjsafe` never matched that form, so a name the app had just listed came back as `Playlist not found`. It is now found with no tracks and reported as `Playlist 'X' has no tracks`. `rbsort` already handled the case: selecting such a playlist is a no-op, and a test now locks that in.
+- **The collection XML is written atomically.** `rbsort` (which sorts in place by default) and `cdjsafe` wrote the rewritten collection straight over the target path, so a crash or a full disk mid-write left a truncated `collection.xml`. Both now write a temp file in the same folder and rename it over the target, the way `baken headroom` has always written audio. The cost was only a re-export, since the rekordbox database is never touched, but the export is the file the whole workflow runs on.
 
 ## Other changes
 
-- The release binaries build with symphonia 0.6.1 and mp3rgain 3.8.1 ([#150](https://github.com/M-Igashi/baken/pull/150)), the versions the Mac app has been decoding with since 2026-09-21, so both builds of the same core use the same decoder. Lockfile only, the crate requirements did not change.
+- `cdjsafe` playlist lookup failures are the typed errors `rbsort` already used (`PlaylistNotFound`, `UnsupportedPlaylistType`), so a front-end can match them instead of parsing a message. The messages are unchanged.
 
 ## Library users
 
-- `baken-core` 4.0.0 is a breaking release. Removed: `GainMethod::Mp3Reencode`, `GainMethod::AacReencode`, `AudioAnalysis::requires_reencode()`, `headroom::MIN_REENCODE_GAIN`, and `AnalysisSummary::mp3_reencode_count`, `aac_reencode_count` and `total_reencode()`. `select_processable(analyses, lossless)` loses its third parameter. The #138 rationale that lived on `MIN_REENCODE_GAIN` is now a comment in `decide_gain`. `measure`, `decide`, `analyze`, `apply` and `Measurement` are unchanged.
-- `baken-export`: no API change, the version moves with the workspace.
-- The Mac app (`baken-ffi`) pins `baken-core = "3.8.0"` and is unaffected until it moves to 4.x; what to change when it does is listed in [#151](https://github.com/M-Igashi/baken/pull/151).
+- `baken-core`: `cdjsafe::SkippedTrack` gains `reason: cdjsafe::SkipReason`, which is `NotFound` or `BadLocation(message)`; in the latter case `location` holds the raw attribute value. New public items only, nothing is removed or renamed: a caller that reads the fields keeps compiling, one that builds the struct itself has one field to add. `baken-export`: no change.
+- The Mac app's FileWatcher already re-arms after the rename that replaces the XML, so nothing changes there when it moves to 4.x.
 
 ## Upgrading
 
-No action needed. `baken headroom` proposes and applies the same gain to every file as 3.8.0 did, and `--reencode` / `--no-reencode` still parse. `cdjsafe` transcodes as before: that is a different feature, and this release does not touch it.
+No action needed. Results are identical for any collection the previous version accepted. The difference is what happens on a hand-edited row or an empty playlist, and what a crash mid-write leaves behind.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
