@@ -34,6 +34,8 @@ pub struct Options {
     /// Empty means rekordbox's default locations on this machine.
     pub anlz_roots: Vec<PathBuf>,
     pub settings_dir: Option<PathBuf>,
+    /// Write no My Settings, so the player keeps its own.
+    pub no_settings: bool,
     /// Defaults to the device directory name.
     pub device_name: Option<String>,
     /// Transcode every track to 320 kbps CBR MP3 and reuse the source analysis.
@@ -66,7 +68,8 @@ pub struct Plan {
     /// Indices into `library.playlists`.
     pub selected: Vec<usize>,
     pub skipped: Vec<Skipped>,
-    pub settings_dir: PathBuf,
+    /// `None` with `no_settings`.
+    pub settings_dir: Option<PathBuf>,
     /// Settings files to copy, already validated so a bad one fails before anything is written.
     pub settings_files: Vec<&'static str>,
     pub anlz_roots: Vec<PathBuf>,
@@ -109,9 +112,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     if !opts.device.is_dir() {
         return Err(Error::DeviceNotFound(opts.device.clone()));
     }
-    let settings_dir = settings::locate(opts.settings_dir.as_deref())
-        .map_err(|searched| Error::SettingsNotFound { searched })?;
-    let settings_files = settings::files(&settings_dir)?;
+    let (settings_dir, settings_files) = if opts.no_settings {
+        (None, Vec::new())
+    } else {
+        let dir = settings::locate(opts.settings_dir.as_deref())
+            .map_err(|searched| Error::SettingsNotFound { searched })?;
+        let files = settings::files(&dir)?;
+        (Some(dir), files)
+    };
 
     let library = Library::load(&opts.xml)?;
     let selected = select_playlists(&library, &opts.playlists)?;
@@ -311,7 +319,9 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     std::fs::create_dir_all(&rb_dir)?;
     std::fs::write(rb_dir.join("export.pdb"), pdb::write(&model))?;
 
-    settings::copy_all(&plan.settings_dir, &plan.settings_files, &plan.device)?;
+    if let Some(dir) = &plan.settings_dir {
+        settings::copy_all(dir, &plan.settings_files, &plan.device)?;
+    }
 
     if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
