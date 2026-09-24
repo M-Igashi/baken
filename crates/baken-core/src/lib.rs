@@ -7,6 +7,7 @@ mod tools;
 mod xmlutil;
 
 pub mod cdjsafe;
+pub mod fsname;
 pub mod headroom;
 pub mod rbsort;
 

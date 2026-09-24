@@ -60,7 +60,7 @@ fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<P
         .filter(|p| !p.is_absolute() && !p.as_os_str().is_empty())
         .unwrap_or(file_path.file_name().map(Path::new).unwrap_or(file_path));
 
-    let backup_path = backup_dir.join(relative_path);
+    let backup_path = crate::fsname::native(&backup_dir.join(relative_path));
 
     if let Some(parent) = backup_path.parent() {
         fs::create_dir_all(parent).context("Failed to create backup subdirectory")?;
@@ -221,7 +221,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("wav");
-    let temp_path = file_path.with_extension(format!("tmp.{}", extension));
+    let temp_path = crate::fsname::native(&file_path.with_extension(format!("tmp.{}", extension)));
 
     let volume_arg = format!("volume={}dB", gain_db);
     // ffmpeg re-emits only the metadata it understands, so the source's raw
@@ -265,7 +265,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     }
 
     restore_tags(&temp_path, tags.as_ref())?;
-    fs::rename(&temp_path, file_path).context("Failed to rename processed file")
+    crate::fsname::replace(&temp_path, file_path).context("Failed to rename processed file")
 }
 
 /// Put `tags` back over a freshly converted file, discarding it on failure so
