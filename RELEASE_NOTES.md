@@ -1,27 +1,26 @@
-# Bake'n Deck 3.8.0 - `baken expressport` writes a stick for libraries rekordbox has never analysed
+# Bake'n Deck 4.0.0 - `baken headroom` never re-encodes a file, and the code now says so
 
-A feature release for `expressport`, prompted by the first report from a machine without rekordbox: a Mixxx library converted to `collection.xml` on Ubuntu ([#145](https://github.com/M-Igashi/baken/issues/145)). `expressport` stays a beta until a player has read a stick it wrote; what that takes is in [#116](https://github.com/M-Igashi/baken/issues/116).
+A major release because `baken-core` loses public items ([#141](https://github.com/M-Igashi/baken/issues/141), [#151](https://github.com/M-Igashi/baken/pull/151)). For command line users the behaviour is the one 3.7.0 and 3.8.0 already had: every file gets the same decision it got in 3.8.0, and a script written for 3.x keeps running. `expressport` is unchanged and still a beta ([#116](https://github.com/M-Igashi/baken/issues/116)).
 
 ## Highlights
 
-- **`--generate-analysis` computes the analysis files from the audio** for tracks rekordbox never analysed, instead of leaving them out ([#147](https://github.com/M-Igashi/baken/issues/147), [#148](https://github.com/M-Igashi/baken/pull/148)). The beat grid and the cues come from the XML as before; the waveforms are decoded in-process (symphonia, the same decoder `baken headroom` uses) and written as rekordbox 7 writes them: `.DAT`, `.EXT` and `.2EX` with every section but the phrase analysis, which only rekordbox can produce. The rules were measured against 1,070 rekordbox analysis files paired with their audio: the scrolling waveform's height and whiteness reproduce rekordbox on 99.5% of columns, the three-band and colour waveforms are close approximations (correlation 0.90 to 0.99), and the beat grid expands from `TEMPO` with rekordbox's own rounding. Off by default, and tracks that do have a rekordbox analysis are still copied, because copying is exact.
-- **With the flag, rekordbox is no longer required for the waveforms.** A Traktor or Mixxx library converted to `collection.xml` can go straight to a stick. The four My Settings files are still required, because nothing in the XML can stand in for them; `--settings-dir` takes the `PIONEER` folder of any stick rekordbox once exported.
-- **`expressport` says what it needs when rekordbox is not there** ([#146](https://github.com/M-Igashi/baken/pull/146)). On Linux it no longer suggests a macOS path under `$HOME/Library`, it searches the platform mount points (`/media`, `/mnt`, `/run/media/$USER`) for an attached library drive, and both the settings error and the analysis error state what is actually required and which flag supplies it.
+- **The lossy re-encode path is gone** ([#141](https://github.com/M-Igashi/baken/issues/141), [#151](https://github.com/M-Igashi/baken/pull/151)). Since 3.7.0 ([#138](https://github.com/M-Igashi/baken/issues/138)) the gain decision has had a floor of one full native step for MP3 and AAC, and a raise of a step or more is applied natively by definition, so no file could be classified for a re-encode any more. What remained was a path that could not run: the "re-encode required for precise gain" prompt, its lines in the summary, its group in the report and the apply code behind them. All of it is removed. The product statement is now the simple one: MP3 and AAC move in native 1.5 dB steps through mp3rgain, lossless formats move exactly through ffmpeg, and nothing is ever re-encoded to change its gain.
+- **`--reencode` and `--no-reencode` are still accepted and ignored**, and no longer listed in `--help`, so a 3.x script that passes either keeps working. Drop them when convenient. In the CSV report the `Method` column simply never says `re-encode`; no value changes meaning.
+- **`expressport` is the 3.8.0 code, still in beta.** The beta banner and the "beta" in the README come off in a patch release once [#116](https://github.com/M-Igashi/baken/issues/116) reports a pass on a CDJ-3000 and a CDJ-2000NXS2. The two were decoupled on purpose: this major does not wait on hardware time, and the beta removal does not wait on a major.
 
 ## Other changes
 
-- `--dry-run` reports how many tracks will have their analysis generated, and the summary counts them separately from the copied ones.
-- `docs/dj-software-compatibility.md` answers two questions that came in after the 3.7.0 run: why re-analysing in Traktor still leaves a different autogain on every track (Headroom aligns true peak, not loudness), and where the Mac app writes its backups. It also stops describing the Mac app's re-encode checkbox, which Bake'n Deck 1.0.2 removed.
-- Issue housekeeping: the `expressport` design record ([#115](https://github.com/M-Igashi/baken/issues/115)) is closed as complete, and [#116](https://github.com/M-Igashi/baken/issues/116) is the one place that says what remains before release and what to test.
+- The release binaries build with symphonia 0.6.1 and mp3rgain 3.8.1 ([#150](https://github.com/M-Igashi/baken/pull/150)), the versions the Mac app has been decoding with since 2026-09-21, so both builds of the same core use the same decoder. Lockfile only, the crate requirements did not change.
 
 ## Library users
 
-- `baken-export`: new module `anlz::generate` (`decode`, `grid`, `waveform`, `assemble`; `build_files` returns the three `AnlzFile`s for a track). `Options` gains `generate_analysis: bool` (the struct is `Default`, so `..Default::default()` literals keep compiling). `PlanTrack::anlz` is now `Option<Entry>` (`None` means generate), `Plan::generated()` counts those tracks and `Report` gains `anlz_generated`. `anlz::cues::sections` builds the cue sections without an existing file. `Error::NoAnlzRoot` is not returned when `generate_analysis` is set.
-- `baken-core`: no API change. `symphonia` moved to a workspace dependency shared with `baken-export`.
+- `baken-core` 4.0.0 is a breaking release. Removed: `GainMethod::Mp3Reencode`, `GainMethod::AacReencode`, `AudioAnalysis::requires_reencode()`, `headroom::MIN_REENCODE_GAIN`, and `AnalysisSummary::mp3_reencode_count`, `aac_reencode_count` and `total_reencode()`. `select_processable(analyses, lossless)` loses its third parameter. The #138 rationale that lived on `MIN_REENCODE_GAIN` is now a comment in `decide_gain`. `measure`, `decide`, `analyze`, `apply` and `Measurement` are unchanged.
+- `baken-export`: no API change, the version moves with the workspace.
+- The Mac app (`baken-ffi`) pins `baken-core = "3.8.0"` and is unaffected until it moves to 4.x; what to change when it does is listed in [#151](https://github.com/M-Igashi/baken/pull/151).
 
 ## Upgrading
 
-No action needed. `expressport` behaves exactly as in 3.7.0 unless you pass `--generate-analysis`. The beta banner stays until [#116](https://github.com/M-Igashi/baken/issues/116) has a hardware result; if you own a CDJ, that issue says what to test and in which order.
+No action needed. `baken headroom` proposes and applies the same gain to every file as 3.8.0 did, and `--reencode` / `--no-reencode` still parse. `cdjsafe` transcodes as before: that is a different feature, and this release does not touch it.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
