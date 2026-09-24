@@ -475,6 +475,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 - Built into the binaries; `cargo install baken --no-default-features` leaves it out.
 - Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
 - Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
+- On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.
 - Artwork is not exported yet.
 
 ## License

@@ -304,6 +304,8 @@ fn plan_filenames(sources: &[SourceTrack], out_dir: &Path) -> Vec<PathBuf> {
 
 fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
     let src_path = Path::new(&src.location);
+    // The XML keeps `dst` as planned; only the file on disk takes the native name.
+    let dst = &crate::fsname::native(dst);
     let info: SourceInfo = transcode::probe(src_path)?;
 
     if info.is_compatible_mp3() {

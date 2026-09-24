@@ -19,7 +19,7 @@ use anlz::generate;
 use anlz::hash::anlz_dir;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind};
-use baken_core::{CancelToken, Progress};
+use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
 use std::collections::HashSet;
@@ -313,8 +313,13 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
         report.pruned += prune_tree(&plan.device.join("PIONEER/USBANLZ"), &wanted)?;
     }
-    remove_apple_double(&plan.device.join("Contents"))?;
-    remove_apple_double(&plan.device.join("PIONEER"))?;
+    for dir in ["Contents", "PIONEER"] {
+        remove_apple_double(&plan.device.join(dir))?;
+        match std::fs::remove_file(plan.device.join(format!("._{dir}"))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+    }
     Ok(report)
 }
 
@@ -414,6 +419,9 @@ fn is_mp3(path: &Path) -> bool {
 }
 
 /// Delete files under `root` not in `keep`, then empty directories. Returns the file count.
+/// Remove what `keep` does not name. Paths are compared in NFC: on macOS 26
+/// `read_dir` lists an ExFAT or FAT stick's names in NFD whatever form they
+/// were written in, and the stick is written in the XML's NFC (issue #154).
 fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
     fn walk(dir: &Path, keep: &HashSet<PathBuf>, removed: &mut usize) -> std::io::Result<bool> {
         let mut empty = true;
@@ -422,22 +430,23 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
             let path = entry.path();
             if entry.file_type()?.is_dir() {
                 if walk(&path, keep, removed)? {
-                    std::fs::remove_dir(&path)?;
+                    fsname::remove_dir(&path)?;
                 } else {
                     empty = false;
                 }
-            } else if keep.contains(&path) {
+            } else if keep.contains(&fsname::nfc(&path)) {
                 empty = false;
             } else {
-                std::fs::remove_file(&path)?;
+                fsname::remove_file(&path)?;
                 *removed += 1;
             }
         }
         Ok(empty)
     }
+    let keep: HashSet<PathBuf> = keep.iter().map(|p| fsname::nfc(p)).collect();
     let mut removed = 0;
     if root.is_dir() {
-        walk(root, keep, &mut removed)?;
+        walk(root, &keep, &mut removed)?;
     }
     Ok(removed)
 }
@@ -451,7 +460,7 @@ fn remove_apple_double(root: &Path) -> Result<()> {
             if entry.file_type()?.is_dir() {
                 walk(&path)?;
             } else if entry.file_name().to_string_lossy().starts_with("._") {
-                std::fs::remove_file(&path)?;
+                fsname::remove_file(&path)?;
             }
         }
         Ok(())

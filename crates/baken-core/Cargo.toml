@@ -24,3 +24,4 @@ walkdir = "2.4"
 mp3rgain = { version = "3.6", default-features = false, features = ["aac", "replaygain"] }
 symphonia.workspace = true
 quick-xml = "0.42"
+unicode-normalization = "0.1.25"

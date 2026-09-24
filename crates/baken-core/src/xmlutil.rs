@@ -93,8 +93,8 @@ pub(crate) fn emit_playlist<W: std::io::Write>(
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut name = path.file_name().map(OsString::from).unwrap_or_default();
     name.push(".tmp");
-    let temp = path.with_file_name(name);
-    let result = fs::write(&temp, bytes).and_then(|()| fs::rename(&temp, path));
+    let temp = crate::fsname::native(&path.with_file_name(name));
+    let result = fs::write(&temp, bytes).and_then(|()| crate::fsname::replace(&temp, path));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
