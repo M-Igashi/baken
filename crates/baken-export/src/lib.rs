@@ -86,6 +86,15 @@ impl Plan {
         self.tracks.iter().filter(|t| t.anlz.is_none()).count()
     }
 
+    /// Generated tracks whose XML carries no beat grid (`TEMPO`), so they get
+    /// none on the stick either.
+    pub fn without_grid(&self) -> usize {
+        self.tracks
+            .iter()
+            .filter(|t| t.anlz.is_none() && t.device.track.tempos.is_empty())
+            .count()
+    }
+
     pub fn playlist_names(&self) -> Vec<&str> {
         self.selected
             .iter()
