@@ -100,6 +100,8 @@ pub struct Report {
     pub kept: usize,
     pub transcoded: usize,
     pub anlz_files: usize,
+    /// Analysis files already on the stick byte for byte, so not written again.
+    pub anlz_unchanged: usize,
     /// Tracks whose analysis files were generated from the audio.
     pub anlz_generated: usize,
     pub pruned: usize,
@@ -327,8 +329,17 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
         report.pruned += prune_tree(&plan.device.join("PIONEER/USBANLZ"), &wanted)?;
     }
+    // Only files written in this run can have gained an AppleDouble file, so
+    // the two big trees are walked only when something was written into them.
+    if report.copied + report.transcoded > 0 || plan.prune {
+        remove_apple_double(&plan.device.join("Contents"), true)?;
+    }
+    if report.anlz_files > 0 || plan.prune {
+        remove_apple_double(&plan.device.join("PIONEER/USBANLZ"), true)?;
+    }
+    remove_apple_double(&plan.device.join("PIONEER"), false)?;
+    remove_apple_double(&rb_dir, false)?;
     for dir in ["Contents", "PIONEER"] {
-        remove_apple_double(&plan.device.join(dir))?;
         match std::fs::remove_file(plan.device.join(format!("._{dir}"))) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
@@ -383,11 +394,11 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         let pcm = generate::decode::decode(&pt.source)?;
         let files = generate::build_files(&pt.device.track, &pt.device.usb_path, &pcm, frames);
         for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
-            std::fs::write(
-                anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
-                file.to_bytes(),
+            write_anlz(
+                &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
+                &file.to_bytes(),
+                report,
             )?;
-            report.anlz_files += 1;
         }
         report.anlz_generated += 1;
         return Ok(pt.device.clone());
@@ -417,13 +428,27 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
                 FileKind::TwoEx => {}
             }
         }
-        std::fs::write(
-            anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
-            file.to_bytes(),
+        write_anlz(
+            &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
+            &file.to_bytes(),
+            report,
         )?;
-        report.anlz_files += 1;
     }
     Ok(pt.device.clone())
+}
+
+/// Write an analysis file unless the stick already holds exactly these bytes.
+/// A re-run after a playlist change then writes only what changed, and on a
+/// USB stick writing is what takes the time.
+fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result<()> {
+    match std::fs::read(path) {
+        Ok(old) if old == bytes => report.anlz_unchanged += 1,
+        _ => {
+            std::fs::write(path, bytes)?;
+            report.anlz_files += 1;
+        }
+    }
+    Ok(())
 }
 
 fn is_mp3(path: &Path) -> bool {
@@ -466,13 +491,15 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
 }
 
 /// macOS leaves `._*` AppleDouble files on FAT volumes; Linux-based players trip on them.
-fn remove_apple_double(root: &Path) -> Result<()> {
-    fn walk(dir: &Path) -> std::io::Result<()> {
+fn remove_apple_double(root: &Path, recursive: bool) -> Result<()> {
+    fn walk(dir: &Path, recursive: bool) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
-                walk(&path)?;
+                if recursive {
+                    walk(&path, recursive)?;
+                }
             } else if entry.file_name().to_string_lossy().starts_with("._") {
                 fsname::remove_file(&path)?;
             }
@@ -480,7 +507,7 @@ fn remove_apple_double(root: &Path) -> Result<()> {
         Ok(())
     }
     if root.is_dir() {
-        walk(root)?;
+        walk(root, recursive)?;
     }
     Ok(())
 }

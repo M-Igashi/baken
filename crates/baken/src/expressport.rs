@@ -124,6 +124,7 @@ fn print_report(plan: &Plan, r: &Report) {
         (r.transcoded, "audio files transcoded"),
         (r.kept, "audio files already on the stick"),
         (r.anlz_files, "analysis files written"),
+        (r.anlz_unchanged, "analysis files already up to date"),
         (
             r.anlz_generated,
             "tracks with analysis computed from the audio",

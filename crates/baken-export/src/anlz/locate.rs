@@ -7,6 +7,7 @@
 use super::section::AnlzFile;
 use crate::collection::Track;
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -91,33 +92,42 @@ fn pqtz_summary(file: &AnlzFile) -> (u32, u32, u16) {
 
 impl AnlzIndex {
     /// Scan `roots` (two directory levels deep, as both rekordbox layouts are).
+    /// The files are read in parallel: a large library has tens of thousands,
+    /// and reading them one by one was most of a re-run.
     pub fn build(roots: &[PathBuf]) -> Result<Self> {
-        let mut idx = AnlzIndex::default();
+        let mut dats = Vec::new();
         for root in roots {
             for level1 in std::fs::read_dir(root)?.flatten() {
                 let Ok(level2) = std::fs::read_dir(level1.path()) else {
                     continue;
                 };
-                for dir in level2.flatten() {
-                    let dat = dir.path().join("ANLZ0000.DAT");
-                    let Ok(data) = std::fs::read(&dat) else {
-                        continue;
-                    };
-                    let Ok(file) = AnlzFile::parse(&data) else {
-                        continue;
-                    };
-                    let Some(path) = file.path() else { continue };
-                    let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
-                    let (beats, first_beat_ms, first_tempo_x100) = pqtz_summary(&file);
-                    idx.files += 1;
-                    idx.by_name.entry(name).or_default().push(Entry {
+                dats.extend(level2.flatten().map(|d| d.path().join("ANLZ0000.DAT")));
+            }
+        }
+        // `collect` keeps the scan order, so `find` picks the same candidate
+        // as a sequential scan would.
+        let found: Vec<(String, Entry)> = dats
+            .into_par_iter()
+            .filter_map(|dat| {
+                let file = AnlzFile::parse(&std::fs::read(&dat).ok()?).ok()?;
+                let path = file.path()?;
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(&path).to_string();
+                let (beats, first_beat_ms, first_tempo_x100) = pqtz_summary(&file);
+                Some((
+                    name,
+                    Entry {
                         dat,
                         beats,
                         first_beat_ms,
                         first_tempo_x100,
-                    });
-                }
-            }
+                    },
+                ))
+            })
+            .collect();
+        let mut idx = AnlzIndex::default();
+        for (name, entry) in found {
+            idx.files += 1;
+            idx.by_name.entry(name).or_default().push(entry);
         }
         Ok(idx)
     }
