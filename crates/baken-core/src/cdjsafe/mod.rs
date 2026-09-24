@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::rbsort::split_playlist_path;
+use crate::xmlutil::write_atomic;
 use crate::{CancelToken, Error, Progress, Result};
 
 use xml::{NewTrack, SourceTrack};
@@ -34,13 +35,26 @@ pub enum Action {
     ReencodeLossy,
 }
 
-/// A playlist entry whose file is not on disk. Skipped rather than fatal:
-/// this is the emergency stick, so everything that exists still gets written.
+/// Why a playlist entry is left out of the conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// The decoded path is not a file on disk.
+    NotFound,
+    /// `Location` is not a `file://` URL or has a bad percent-escape; the
+    /// message says which. [`SkippedTrack::location`] holds the raw value.
+    BadLocation(String),
+}
+
+/// A playlist entry whose source cannot be reached: the file is not on disk,
+/// or its `Location` cannot be decoded into a path. Skipped rather than
+/// fatal: this is the emergency stick, so everything that exists still gets
+/// written, and one hand-edited row does not stop a 300-track conversion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedTrack {
     pub name: String,
     pub track_id: String,
     pub location: String,
+    pub reason: SkipReason,
 }
 
 /// A validated playlist ready to convert. Nothing on disk has been touched yet.
@@ -75,8 +89,8 @@ impl Plan {
         format!("{}-CDJ-safe", self.playlist_name())
     }
 
-    /// Playlist entries whose files were not found on disk; they are left out
-    /// of the conversion and of the new playlist.
+    /// Playlist entries whose sources cannot be reached; they are left out of
+    /// the conversion and of the new playlist.
     pub fn skipped(&self) -> &[SkippedTrack] {
         &self.skipped
     }
@@ -104,7 +118,8 @@ pub struct Report {
     pub output_xml: PathBuf,
     /// Name of the playlist written to the XML (`<source>-CDJ-safe`).
     pub playlist_name: String,
-    /// Names of tracks skipped because their files were missing.
+    /// Names of tracks skipped because their sources could not be reached
+    /// (see [`Plan::skipped`]).
     pub skipped: Vec<String>,
 }
 
@@ -114,9 +129,10 @@ impl Report {
     }
 }
 
-/// Read `xml`, locate `playlist` (`Folder/Name`), and check which source files
-/// exist. Missing files are recorded in [`Plan::skipped`] and left out; only a
-/// playlist with no file present at all is an error.
+/// Read `xml`, locate `playlist` (`Folder/Name`), and check which sources can
+/// be reached. A file that is not on disk, or a `Location` that cannot be
+/// decoded into a path, is recorded in [`Plan::skipped`] with its reason and
+/// left out; only a playlist with nothing reachable at all is an error.
 pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
     let target = split_playlist_path(playlist);
     if target.is_empty() {
@@ -131,17 +147,24 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
     }
     let all = xml::collect_tracks(&xml_data, &track_ids)?;
 
-    let (sources, missing): (Vec<_>, Vec<_>) = all
-        .into_iter()
-        .partition(|src| Path::new(&src.location).is_file());
-    let skipped: Vec<SkippedTrack> = missing
-        .into_iter()
-        .map(|src| SkippedTrack {
-            name: src.name,
-            track_id: src.id,
-            location: src.location,
-        })
-        .collect();
+    let mut sources = Vec::with_capacity(all.len());
+    let mut skipped = Vec::new();
+    for src in all {
+        let reason = match &src.location_error {
+            Some(why) => Some(SkipReason::BadLocation(why.clone())),
+            None if !Path::new(&src.location).is_file() => Some(SkipReason::NotFound),
+            None => None,
+        };
+        match reason {
+            Some(reason) => skipped.push(SkippedTrack {
+                name: src.name,
+                track_id: src.id,
+                location: src.location,
+                reason,
+            }),
+            None => sources.push(src),
+        }
+    }
     if sources.is_empty() {
         return Err(Error::AllSourcesMissing {
             playlist: playlist.to_string(),
@@ -165,7 +188,9 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
 /// conversion failure or cancellation aborts before the XML is written; a
 /// partial USB defeats the purpose. So does a collection XML that changed
 /// since [`plan`] read it: that returns [`Error::XmlChanged`] with the MP3s
-/// left in place, and a fresh plan picks them up as plain copies.
+/// left in place, and a fresh plan picks them up as plain copies. The XML is
+/// written to a sibling temp file and renamed into place, so an interrupted
+/// run never leaves a truncated file at `output_xml`.
 pub fn convert(
     plan: &Plan,
     out_dir: &Path,
@@ -223,8 +248,7 @@ pub fn convert(
     };
     let output_bytes =
         xml::rewrite_xml(&plan.xml_data, &plan.sources, &new_tracks, &playlist_name)?;
-    fs::write(&output, output_bytes)
-        .with_context(|| format!("Failed to write {}", output.display()))?;
+    write_atomic(&output, &output_bytes)?;
 
     Ok(Report {
         tracks: plan
@@ -359,17 +383,26 @@ mod tests {
     }
 
     fn write_collection(dir: &Path, locations: &[(&str, &str)]) -> PathBuf {
+        let urls: Vec<(&str, String)> = locations
+            .iter()
+            .map(|(name, path)| (*name, format!("file://localhost{path}")))
+            .collect();
+        write_collection_raw(dir, &urls)
+    }
+
+    /// Like `write_collection`, but `Location` values are written verbatim.
+    fn write_collection_raw(dir: &Path, locations: &[(&str, String)]) -> PathBuf {
         let mut tracks = String::new();
         let mut keys = String::new();
         for (i, (name, location)) in locations.iter().enumerate() {
             tracks.push_str(&format!(
-                r#"<TRACK TrackID="{id}" Name="{name}" TotalTime="100" Location="file://localhost{location}"/>"#,
+                r#"<TRACK TrackID="{id}" Name="{name}" TotalTime="100" Location="{location}"/>"#,
                 id = i + 1
             ));
             keys.push_str(&format!(r#"<TRACK Key="{}"/>"#, i + 1));
         }
         let xml = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?><DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="{n}">{tracks}</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="1"><NODE Name="Set" Type="1" KeyType="0" Entries="{n}">{keys}</NODE></NODE></PLAYLISTS></DJ_PLAYLISTS>"#,
+            r#"<?xml version="1.0" encoding="UTF-8"?><DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="{n}">{tracks}</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="2"><NODE Name="Set" Type="1" KeyType="0" Entries="{n}">{keys}</NODE><NODE Name="Empty" Type="1" KeyType="0" Entries="0"/></NODE></PLAYLISTS></DJ_PLAYLISTS>"#,
             n = locations.len()
         );
         let path = dir.join("collection.xml");
@@ -395,7 +428,55 @@ mod tests {
         assert_eq!(plan.len(), 1);
         assert_eq!(plan.skipped().len(), 1);
         assert_eq!(plan.skipped()[0].name, "Gone");
+        assert_eq!(plan.skipped()[0].reason, SkipReason::NotFound);
         assert_eq!(plan.output_playlist_name(), "Set-CDJ-safe");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_skips_an_undecodable_location_like_a_missing_file() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-badloc-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("present.wav");
+        fs::write(&present, b"").unwrap();
+        let xml = write_collection_raw(
+            &dir,
+            &[
+                ("Present", format!("file://localhost{}", present.display())),
+                ("Hand-edited", r"C:\Music\track.mp3".to_string()),
+                ("Bad escape", "file://localhost/Music/%ZZ.mp3".to_string()),
+            ],
+        );
+
+        let plan = plan(&xml, "Set").unwrap();
+        assert_eq!(plan.len(), 1);
+        let skipped = plan.skipped();
+        assert_eq!(skipped.len(), 2);
+        assert_eq!(skipped[0].name, "Hand-edited");
+        assert_eq!(skipped[0].location, r"C:\Music\track.mp3");
+        assert!(matches!(skipped[0].reason, SkipReason::BadLocation(_)));
+        assert!(matches!(skipped[1].reason, SkipReason::BadLocation(_)));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn plan_reports_a_self_closing_playlist_as_empty() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-empty-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let xml = write_collection(&dir, &[("Present", "/nowhere.wav")]);
+
+        let err = plan(&xml, "Empty").unwrap_err();
+        assert!(
+            matches!(err, Error::EmptyPlaylist(ref p) if p == "Empty"),
+            "{err}"
+        );
+        let err = plan(&xml, "Nope").unwrap_err();
+        assert!(
+            matches!(err, Error::PlaylistNotFound(ref p) if p == "Nope"),
+            "{err}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

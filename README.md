@@ -357,7 +357,7 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 
 | Argument / Flag | Description |
 |------|-------------|
-| `<XML>` | Exported rekordbox XML (required). Sorted in place unless `--output` is given |
+| `<XML>` | Exported rekordbox XML (required). Sorted in place unless `--output` is given; the file is replaced in one step (temp file + rename), so an interrupted run never leaves a truncated XML |
 | `--playlist <PATH>` | Sort only this playlist. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`). Omitted: every TrackID-referenced playlist is sorted |
 | `--output <PATH>` (`-o`) | Write the result here instead of overwriting the input XML |
 
@@ -391,7 +391,7 @@ baken cdjsafe ~/Music/rekordbox/collection.xml \
 ### What it does
 
 1. Reads the target playlist from your exported `collection.xml`.
-2. Converts every track whose file exists to the CDJ-safe profile. Tracks whose files are missing on disk are listed as skipped and left out (the emergency stick still gets everything that is there); only a playlist with no file present at all is an error. Profile: — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
+2. Converts every track whose file exists to the CDJ-safe profile. Tracks whose files are missing on disk, or whose `Location` is not a decodable `file://` URL (a hand-edited row), are listed as skipped with the reason and left out (the emergency stick still gets everything that is there); only a playlist with nothing reachable at all is an error. Profile: — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
 
    | Source | Action |
    |---|---|
@@ -403,7 +403,7 @@ baken cdjsafe ~/Music/rekordbox/collection.xml \
 3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**, grouped in a `CDJ-safe (MP3)/<playlist>-CDJ-safe` folder. The `-CDJ-safe` suffix keeps the imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
 4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
 
-If any track fails to convert, **no XML is written** — a partial USB defeats the point. The same applies if the collection XML changed while the transcodes ran (a rekordbox export made mid-run): the MP3s already converted are kept and the command tells you to re-run, which only copies them.
+If any track fails to convert, **no XML is written** — a partial USB defeats the point. The XML is written through a temp file and a rename, so an interrupted run never leaves a truncated file either. The same applies if the collection XML changed while the transcodes ran (a rekordbox export made mid-run): the MP3s already converted are kept and the command tells you to re-run, which only copies them.
 
 ### Importing back into rekordbox
 

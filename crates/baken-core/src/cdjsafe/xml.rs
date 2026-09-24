@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::name::QName;
@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::location::decode_location;
 use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, playlist_node_attrs};
+use crate::Error;
 
 /// Name of the Type=0 folder NODE that holds the CDJ-safe playlist.
 pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
@@ -25,7 +26,12 @@ const COMMENT_MARKER: &str = "[cdjsafe]";
 pub struct SourceTrack {
     pub id: String,
     pub name: String,
+    /// Filesystem path decoded from `Location`. When `location_error` is set
+    /// this is the raw attribute value instead, and `plan` skips the track.
     pub location: String,
+    /// Why `Location` could not be decoded: not a `file://` URL, or a bad
+    /// percent-escape. One hand-edited row must not stop the whole playlist.
+    pub location_error: Option<String>,
     pub has_total_time: bool,
     attrs: Vec<(String, String)>,
     children: Vec<Event<'static>>,
@@ -46,6 +52,7 @@ impl SourceTrack {
             id: String::new(),
             name: String::new(),
             location: location.to_string(),
+            location_error: None,
             has_total_time: true,
             attrs: Vec::new(),
             children: Vec::new(),
@@ -66,7 +73,9 @@ const RECOMPUTED: &[&str] = &[
 
 /// Pass 1: find the target playlist (path under ROOT), return its TrackID
 /// list in playlist order and the maximum numeric TrackID in the collection.
-pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>, u64)> {
+/// rekordbox writes a playlist with no tracks self-closing (`<NODE .../>`);
+/// that is found with an empty list, not reported as missing.
+pub fn find_playlist(xml_data: &[u8], target: &[String]) -> crate::Result<(Vec<String>, u64)> {
     let mut reader = Reader::from_reader(xml_data);
     reader.config_mut().trim_text(false);
 
@@ -91,15 +100,8 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                 "NODE" if in_playlists => {
                     let (name, ty, key_type) = playlist_node_attrs(&e)?;
                     path_stack.push(name);
-                    if ty == "1" && path_stack.len() > 1 && path_stack[1..] == target[..] {
-                        if key_type != "0" {
-                            bail!(
-                                "Playlist '{}' is not a TrackID-referenced playlist (KeyType={}). \
-                                 Only KeyType=\"0\" playlists are supported.",
-                                target.join("/"),
-                                key_type
-                            );
-                        }
+                    if is_target_playlist(&path_stack, &ty, target) {
+                        check_key_type(&key_type, target)?;
                         capture = Some(Vec::new());
                     }
                 }
@@ -116,7 +118,15 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                         capture.as_mut().unwrap().push(k);
                     }
                 }
-                "NODE" if in_playlists => {} // self-closing NODE: nothing to match
+                "NODE" if in_playlists => {
+                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
+                    path_stack.push(name);
+                    if is_target_playlist(&path_stack, &ty, target) {
+                        check_key_type(&key_type, target)?;
+                        found = Some(Vec::new());
+                    }
+                    path_stack.pop();
+                }
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
@@ -130,18 +140,37 @@ pub fn find_playlist(xml_data: &[u8], target: &[String]) -> Result<(Vec<String>,
                 }
                 _ => {}
             },
-            Err(e) => bail!(
-                "XML parse error at byte {}: {}",
-                reader.buffer_position(),
-                e
-            ),
+            Err(e) => {
+                return Err(anyhow!(
+                    "XML parse error at byte {}: {}",
+                    reader.buffer_position(),
+                    e
+                )
+                .into())
+            }
             _ => {}
         }
     }
 
     match found {
         Some(ids) => Ok((ids, max_id)),
-        None => bail!("Playlist not found: {}", target.join("/")),
+        None => Err(Error::PlaylistNotFound(target.join("/"))),
+    }
+}
+
+/// Whether the NODE just pushed onto `path_stack` is the playlist at `target`.
+fn is_target_playlist(path_stack: &[String], ty: &str, target: &[String]) -> bool {
+    ty == "1" && path_stack.len() > 1 && path_stack[1..] == target[..]
+}
+
+fn check_key_type(key_type: &str, target: &[String]) -> crate::Result<()> {
+    if key_type == "0" {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedPlaylistType {
+            path: target.join("/"),
+            key_type: key_type.to_string(),
+        })
     }
 }
 
@@ -244,12 +273,15 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
         }
         attrs.push((attr.key.as_ref().to_string(), attr.value.into_owned()));
     }
-    let location = decode_location(&location_raw)
-        .with_context(|| format!("Track '{}' (TrackID {})", name, id))?;
+    let (location, location_error) = match decode_location(&location_raw) {
+        Ok(path) => (path, None),
+        Err(e) => (location_raw, Some(e.to_string())),
+    };
     Ok(SourceTrack {
         id,
         name,
         location,
+        location_error,
         has_total_time,
         attrs,
         children: Vec::new(),
@@ -451,8 +483,55 @@ mod tests {
     }
 
     #[test]
-    fn find_playlist_missing_errors() {
-        assert!(find_playlist(SAMPLE_XML.as_bytes(), &["Nope".to_string()]).is_err());
+    fn find_playlist_missing_is_typed() {
+        let err = find_playlist(SAMPLE_XML.as_bytes(), &["Nope".to_string()]).unwrap_err();
+        assert!(
+            matches!(err, Error::PlaylistNotFound(ref p) if p == "Nope"),
+            "{err}"
+        );
+    }
+
+    // rekordbox 7 writes a playlist with no tracks as a self-closing NODE
+    // (seen in a real export: `<NODE Name="CUE Analysis Playlist (1)"
+    // Type="1" KeyType="0" Entries="0"/>`), and a folder with no children too.
+    const EMPTY_NODES_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="1">
+    <TRACK TrackID="4" Name="Hand-edited" TotalTime="100" Location="C:\Music\track.mp3"/>
+  </COLLECTION>
+  <PLAYLISTS>
+    <NODE Type="0" Name="ROOT" Count="3">
+      <NODE Name="CUE Analysis Playlist (1)" Type="1" KeyType="0" Entries="0"/>
+      <NODE Name="ByPath" Type="1" KeyType="1" Entries="0"/>
+      <NODE Type="0" Name="Empty folder" Count="0"/>
+    </NODE>
+  </PLAYLISTS>
+</DJ_PLAYLISTS>
+"#;
+
+    #[test]
+    fn a_self_closing_playlist_is_found_empty_not_missing() {
+        let target = vec!["CUE Analysis Playlist (1)".to_string()];
+        let (ids, max_id) = find_playlist(EMPTY_NODES_XML.as_bytes(), &target).unwrap();
+        assert!(ids.is_empty());
+        assert_eq!(max_id, 4);
+    }
+
+    #[test]
+    fn a_self_closing_playlist_still_has_to_be_track_id_based() {
+        let err = find_playlist(EMPTY_NODES_XML.as_bytes(), &["ByPath".to_string()]).unwrap_err();
+        assert!(
+            matches!(err, Error::UnsupportedPlaylistType { ref key_type, .. } if key_type == "1"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_undecodable_location_is_kept_with_its_reason() {
+        let tracks = collect_tracks(EMPTY_NODES_XML.as_bytes(), &["4".to_string()]).unwrap();
+        assert_eq!(tracks[0].location, r"C:\Music\track.mp3");
+        let why = tracks[0].location_error.as_deref().unwrap();
+        assert!(why.contains("Unsupported Location URL"), "{why}");
     }
 
     #[test]
