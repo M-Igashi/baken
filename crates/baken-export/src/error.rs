@@ -17,7 +17,7 @@ fn searched_paths(paths: &[PathBuf]) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("My Settings not found (MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT, DEVSETTING.DAT). Searched: {}. Open rekordbox Preferences > DJ System > My Settings once so rekordbox writes them, or pass --settings-dir at a directory holding the four files; the PIONEER folder of any stick rekordbox exported has them.", searched_paths(searched))]
+    #[error("My Settings not found (MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT). Searched: {}. In rekordbox, switch to EXPORT mode and open Preferences > DJ System > My Settings once so rekordbox writes them, or pass --settings-dir at a directory holding the files; the PIONEER folder of any stick rekordbox exported has them. Or pass --no-settings to write the stick without them, so the player keeps its own settings.", searched_paths(searched))]
     SettingsNotFound { searched: Vec<PathBuf> },
 
     #[error("Playlist not found: {0}")]

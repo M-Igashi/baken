@@ -22,6 +22,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         playlists: args.playlist.clone(),
         anlz_roots: args.anlz_dir.clone(),
         settings_dir: args.settings_dir.clone(),
+        no_settings: args.no_settings,
         device_name: args.device_name.clone(),
         cdjsafe: args.cdjsafe,
         generate_analysis: args.generate_analysis,
@@ -65,11 +66,25 @@ fn print_plan(plan: &Plan) {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    println!(
-        "{} My Settings from {}",
-        style("▸").cyan(),
-        plan.settings_dir.display()
-    );
+    match &plan.settings_dir {
+        Some(dir) => println!(
+            "{} My Settings from {}{}",
+            style("▸").cyan(),
+            dir.display(),
+            if plan
+                .settings_files
+                .contains(&baken_export::settings::OPTIONAL)
+            {
+                ""
+            } else {
+                " (without DEVSETTING.DAT, which is optional)"
+            }
+        ),
+        None => println!(
+            "{} No My Settings: the player keeps its own",
+            style("▸").cyan()
+        ),
+    }
     if plan.cdjsafe {
         println!(
             "{} CDJ-safe mode: every track becomes 320 kbps CBR MP3",

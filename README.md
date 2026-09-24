@@ -434,7 +434,7 @@ baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
 
 ## Direct USB Export (`baken expressport`) — beta
 
-*Added in v3.5.0 as a beta. The implementation is complete (design record: [#115](https://github.com/M-Igashi/baken/issues/115)) and byte-checked against real rekordbox exports, but no player has read a stick written by `baken` yet. What would end the beta, and how to help with a stick and a player, is in [#116](https://github.com/M-Igashi/baken/issues/116). Use a spare stick.*
+*Added in v3.5.0 as a beta. The implementation is complete (design record: [#115](https://github.com/M-Igashi/baken/issues/115)) and byte-checked against real rekordbox exports, and a CDJ-2000NXS2 has read a first stick written by `baken`. What would end the beta, and how to help with a stick and a player, is in [#116](https://github.com/M-Igashi/baken/issues/116). Use a spare stick.*
 
 `expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read.
 
@@ -448,13 +448,13 @@ baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --pla
 - Waveforms are copied, not computed: every track should have been analysed in rekordbox once, and its `.DAT`/`.EXT`/`.2EX` files are copied from rekordbox's local analysis cache (`~/Library/Pioneer/rekordbox/share/PIONEER/USBANLZ`, or `PIONEER/Master/share/PIONEER/USBANLZ` on a library drive). On the way the path is rewritten, the cue sections are filled from the XML and the phrase analysis is masked exactly as rekordbox does at export time. Tracks with no analysis are listed and left out.
 - `--generate-analysis` computes the analysis files from the audio instead, for tracks rekordbox has never seen (a Mixxx or Traktor library converted to `collection.xml`, or a machine without rekordbox). The beat grid and the cues come from the XML as always; the waveforms are decoded and measured by `baken` ([#147](https://github.com/M-Igashi/baken/issues/147)). The scrolling waveform reproduces rekordbox's own to the pixel on the tracks it was checked against; the colour, three-band and preview waveforms are close approximations. Phrase analysis cannot be generated and is left out. Tracks that do have a rekordbox analysis are still copied, because copying is exact.
 - Audio is copied only when missing or of a different size, so re-running after a playlist change is quick. `export.pdb` is rebuilt every run.
-- The four My Settings files are copied from rekordbox's settings directory and are **required**: a stick that resets the player to factory settings is not an export.
+- The My Settings files `MYSETTING.DAT`, `MYSETTING2.DAT` and `DJMMYSETTING.DAT` are copied from rekordbox's settings directory and are **required** unless `--no-settings` is given, which writes none so the player keeps its own settings (what a DJ without rekordbox usually wants from a club's CDJs). rekordbox writes them once Preferences > DJ System > My Settings has been opened, a page that only exists in EXPORT mode. `DEVSETTING.DAT` is copied too when it is there; players write their own, and a real rekordbox 7 export does not always carry it.
 - `--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players.
 
 ### Usage
 
 ```
-baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR>] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--prune] [--dry-run]
+baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--prune] [--dry-run]
 ```
 
 | Flag | Description |
@@ -462,7 +462,8 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 | `--device <DIR>` | Root of the stick (required) |
 | `--playlist <PATH>` | Playlist to export; repeatable. Omitted: every TrackID-referenced playlist |
 | `--anlz-dir <DIR>` | rekordbox analysis directory when auto-detection fails |
-| `--settings-dir <DIR>` | Directory holding the four `*SETTING.DAT` files (default: rekordbox's own) |
+| `--settings-dir <DIR>` | Directory holding the `*SETTING.DAT` files (default: rekordbox's own) |
+| `--no-settings` | Write no My Settings; the player keeps its own settings |
 | `--device-name <NAME>` | Name shown on the player (default: the stick's directory name) |
 | `--generate-analysis` | Compute the analysis files from the audio for tracks with no rekordbox analysis (grid and cues still from the XML; no phrase data) |
 | `--cdjsafe` | 320 kbps CBR MP3 for every track (needs ffmpeg) |
@@ -471,7 +472,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 
 ### Notes
 
-- **A rekordbox install is normally required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) needs `--generate-analysis` for the waveforms (see [#145](https://github.com/M-Igashi/baken/issues/145) and [#147](https://github.com/M-Igashi/baken/issues/147)) and `--settings-dir` pointing at the four `*SETTING.DAT` files from any stick rekordbox once exported; nothing in the XML can stand in for the settings.
+- **A rekordbox install is normally required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) needs `--generate-analysis` for the waveforms (see [#145](https://github.com/M-Igashi/baken/issues/145) and [#147](https://github.com/M-Igashi/baken/issues/147)) and either `--settings-dir` pointing at the `*SETTING.DAT` files from any stick rekordbox once exported, or `--no-settings`; nothing in the XML can stand in for the settings.
 - Built into the binaries; `cargo install baken --no-default-features` leaves it out.
 - Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
 - Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
