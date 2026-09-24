@@ -39,25 +39,6 @@ pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
 /// Files whose True Peak is within this distance of the target are left alone
 const MIN_EFFECTIVE_GAIN: f64 = 0.05;
 
-/// Smallest raise worth a lossy re-encode, and the reason a processed library
-/// stays processed (issue #138).
-///
-/// A lossy file moves in whole [`GAIN_STEP`] steps, and a lowering is rounded
-/// up so the result stays under the ceiling, so everything this tool touches
-/// lands somewhere inside the step below it. Any floor smaller than one step
-/// reads that leftover back as "needs a re-encode" on the next analysis: at
-/// 1.0 dB that was a third of every library, offered up for another lossy
-/// generation on every later run, forever. One full step is the only value
-/// that cannot do that, and a file already within a step of the ceiling is
-/// not worth a generation of loss to move by less than that.
-///
-/// A consequence worth stating: [`decide_gain`] can no longer return
-/// [`GainMethod::Mp3Reencode`] or [`GainMethod::AacReencode`], because a raise
-/// of one step or more is native by definition. The variants, the apply path
-/// behind them and the `--reencode` flag stay for now so the published API
-/// does not break in a bug-fix release; retiring them is a separate change.
-pub const MIN_REENCODE_GAIN: f64 = GAIN_STEP;
-
 /// Processing method for the file
 #[derive(Debug, Clone, PartialEq)]
 pub enum GainMethod {
@@ -65,14 +46,8 @@ pub enum GainMethod {
     FfmpegLossless,
     /// MP3 files with enough headroom for lossless gain (1.5dB steps)
     Mp3Lossless,
-    /// MP3 files requiring re-encode for precise gain. Never produced by
-    /// [`decide`] any more; see [`MIN_REENCODE_GAIN`].
-    Mp3Reencode,
     /// AAC/M4A files with enough headroom for lossless gain (1.5dB steps)
     AacLossless,
-    /// AAC/M4A files requiring re-encode for precise gain. Never produced by
-    /// [`decide`] any more; see [`MIN_REENCODE_GAIN`].
-    AacReencode,
     /// No processing needed (already at the target)
     None,
 }
@@ -95,9 +70,9 @@ pub enum GainMode {
 pub enum Codec {
     /// FLAC, WAV, AIFF, ALAC: exact gain via ffmpeg.
     Lossless,
-    /// Native 1.5 dB steps via mp3rgain, or a re-encode.
+    /// Native 1.5 dB steps via mp3rgain.
     Mp3,
-    /// Native 1.5 dB steps via mp3rgain, or a re-encode.
+    /// Native 1.5 dB steps via mp3rgain.
     Aac,
 }
 
@@ -166,13 +141,6 @@ impl AudioAnalysis {
         }
     }
 
-    pub fn requires_reencode(&self) -> bool {
-        matches!(
-            self.gain_method,
-            GainMethod::Mp3Reencode | GainMethod::AacReencode
-        )
-    }
-
     pub fn needs_gain(&self) -> bool {
         !matches!(self.gain_method, GainMethod::None)
     }
@@ -182,19 +150,18 @@ impl GainMethod {
     /// Container format label for the file ("MP3" / "AAC" / "Lossless").
     pub fn format_label(&self) -> &'static str {
         match self {
-            GainMethod::Mp3Lossless | GainMethod::Mp3Reencode => "MP3",
-            GainMethod::AacLossless | GainMethod::AacReencode => "AAC",
+            GainMethod::Mp3Lossless => "MP3",
+            GainMethod::AacLossless => "AAC",
             GainMethod::FfmpegLossless => "Lossless",
             GainMethod::None => "-",
         }
     }
 
-    /// Processing method label for reports ("ffmpeg" / "native" / "re-encode").
+    /// Processing method label for reports ("ffmpeg" / "native").
     pub fn method_label(&self) -> &'static str {
         match self {
             GainMethod::FfmpegLossless => "ffmpeg",
             GainMethod::Mp3Lossless | GainMethod::AacLossless => "native",
-            GainMethod::Mp3Reencode | GainMethod::AacReencode => "re-encode",
             GainMethod::None => "none",
         }
     }
@@ -384,18 +351,16 @@ fn decide_gain(
         // the ceiling. A re-encode just to make a file quieter is never worth it.
         return native(-((-headroom / GAIN_STEP).ceil() as i32));
     }
-    // Raising: whole steps natively. Anything under one step is left where it
-    // is, since MIN_REENCODE_GAIN is one full step; see there for why a lossy
-    // re-encode is never the right answer for a sub-step raise.
+    // Raising: whole steps natively, and anything under one step is left where
+    // it is (issue #138). Everything this tool touches lands inside the step
+    // below the ceiling, so a smaller floor would read that leftover back as
+    // work on the next run, and nothing is worth a lossy generation to move a
+    // file by less than a step.
     let steps = (headroom / GAIN_STEP).floor() as i32;
     if steps >= 1 {
         native(steps)
-    } else if headroom < MIN_REENCODE_GAIN {
-        (GainMethod::None, 0.0, 0)
-    } else if is_aac {
-        (GainMethod::AacReencode, headroom, 0)
     } else {
-        (GainMethod::Mp3Reencode, headroom, 0)
+        (GainMethod::None, 0.0, 0)
     }
 }
 

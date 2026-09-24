@@ -279,41 +279,9 @@ fn restore_tags(temp_path: &Path, tags: Option<&Tags>) -> Result<()> {
     })
 }
 
-#[derive(Clone, Copy)]
 enum LossyFormat {
     Mp3,
     Aac,
-}
-
-impl LossyFormat {
-    fn temp_ext(self) -> &'static str {
-        match self {
-            LossyFormat::Mp3 => "tmp.mp3",
-            LossyFormat::Aac => "tmp.m4a",
-        }
-    }
-
-    fn default_bitrate(self) -> &'static str {
-        match self {
-            LossyFormat::Mp3 => "320k",
-            LossyFormat::Aac => "256k",
-        }
-    }
-
-    fn encoders(self) -> &'static [&'static str] {
-        match self {
-            LossyFormat::Mp3 => &["libmp3lame"],
-            // Tries libfdk_aac first (higher quality), falls back to built-in aac.
-            LossyFormat::Aac => &["libfdk_aac", "aac"],
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            LossyFormat::Mp3 => "MP3",
-            LossyFormat::Aac => "AAC",
-        }
-    }
 }
 
 /// Apply lossless gain to MP3/AAC files using mp3rgain library (1.5dB steps)
@@ -329,49 +297,6 @@ fn apply_gain_native(file_path: &Path, gain_steps: i32, format: LossyFormat) -> 
             .map(|_| ())
             .context("mp3rgain failed to apply AAC gain"),
     }
-}
-
-fn apply_gain_reencode(
-    file_path: &Path,
-    gain_db: f64,
-    bitrate_kbps: Option<u32>,
-    format: LossyFormat,
-) -> Result<()> {
-    let temp_path = file_path.with_extension(format.temp_ext());
-    let bitrate = bitrate_kbps
-        .map(|kbps| format!("{}k", kbps))
-        .unwrap_or_else(|| format.default_bitrate().to_string());
-    let volume_arg = format!("volume={}dB", gain_db);
-    let label = format.label();
-    // Same reason as the lossless path: the re-encode is an ffmpeg re-mux and
-    // would drop the binary metadata DJ software writes (issue #117).
-    let tags = tags::read(file_path);
-
-    for encoder in format.encoders() {
-        // CBR-only: adding -q:a would force libmp3lame to VBR and override -b:a.
-        // -c:v copy keeps the original cover art bytes; the muxer defaults would
-        // re-encode it to PNG (MP3) or fail outright on h264 (M4A) — issue #77.
-        let output = crate::tools::ffmpeg()
-            .args(["-y", "-i"])
-            .arg(file_path)
-            .args(["-af", &volume_arg, "-c:a", encoder, "-b:a", &bitrate])
-            .args(["-c:v", "copy"])
-            .arg(&temp_path)
-            .output()
-            .with_context(|| format!("Failed to execute ffmpeg for {} re-encode", label))?;
-
-        if output.status.success() {
-            restore_tags(&temp_path, tags.as_ref())?;
-            return fs::rename(&temp_path, file_path).context("Failed to rename processed file");
-        }
-
-        let _ = fs::remove_file(&temp_path);
-    }
-
-    Err(anyhow!(
-        "ffmpeg {} re-encode failed with all available encoders",
-        label
-    ))
 }
 
 pub fn process_file(
@@ -402,18 +327,6 @@ pub fn process_file(
         GainMethod::AacLossless => {
             apply_gain_native(file_path, analysis.lossless_gain_steps, LossyFormat::Aac)
         }
-        GainMethod::Mp3Reencode => apply_gain_reencode(
-            file_path,
-            analysis.effective_gain,
-            analysis.bitrate_kbps,
-            LossyFormat::Mp3,
-        ),
-        GainMethod::AacReencode => apply_gain_reencode(
-            file_path,
-            analysis.effective_gain,
-            analysis.bitrate_kbps,
-            LossyFormat::Aac,
-        ),
         GainMethod::None => Ok(()),
     }
 }
