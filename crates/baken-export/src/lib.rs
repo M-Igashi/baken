@@ -20,11 +20,14 @@ use anlz::generate::decode::Pcm;
 use anlz::hash::anlz_dir;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind, Mp3Audio};
+use anlz::section::AnlzFile;
 use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Condvar, Mutex};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -328,31 +331,66 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
             err,
         })?;
 
-    for (i, pt) in plan.tracks.iter().enumerate() {
-        if cancel.is_cancelled() {
-            report.cancelled = true;
-            return Ok(report);
-        }
-        match export_track(plan, pt, &mut report) {
-            Ok(mut dt) => {
-                let dest = device_path(&plan.device, &dt.usb_path);
-                dt.file_size = std::fs::metadata(&dest)
-                    .map(|m| m.len())
-                    .unwrap_or(dt.file_size);
-                wanted.insert(dest);
-                for kind in FileKind::ALL {
-                    wanted.insert(device_path(
-                        &plan.device,
-                        &format!("{}/ANLZ0000.{}", dt.anlz_dir, kind.extension()),
-                    ));
+    let ahead = Ahead::new(total);
+    let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<Prepared>)>();
+    std::thread::scope(|s| {
+        for _ in 0..ahead.workers {
+            let tx = tx.clone();
+            let ahead = &ahead;
+            s.spawn(move || {
+                while let Some(i) = ahead.take() {
+                    // a panic (a decoder on a broken file) fails that track
+                    // instead of leaving the writer waiting for it forever
+                    let prepared = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                        prepare(plan, &plan.tracks[i])
+                    }))
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("preparing the track panicked")));
+                    if tx.send((i, prepared)).is_err() {
+                        break;
+                    }
                 }
-                exported.push(dt);
-            }
-            Err(e) => report
-                .failures
-                .push((pt.device.track.name.clone(), e.to_string())),
+            });
         }
-        progress.on_file_done(i + 1, total, &pt.source);
+        drop(tx);
+        let _stop = StopOnDrop(&ahead);
+        let mut ready = BTreeMap::new();
+        for (i, pt) in plan.tracks.iter().enumerate() {
+            if cancel.is_cancelled() {
+                report.cancelled = true;
+                break;
+            }
+            let prepared = loop {
+                if let Some(p) = ready.remove(&i) {
+                    break p;
+                }
+                let (j, p) = rx.recv().expect("every track is prepared once");
+                ready.insert(j, p);
+            };
+            match prepared.and_then(|p| write_track(plan, pt, p, &mut report)) {
+                Ok(mut dt) => {
+                    let dest = device_path(&plan.device, &dt.usb_path);
+                    dt.file_size = std::fs::metadata(&dest)
+                        .map(|m| m.len())
+                        .unwrap_or(dt.file_size);
+                    wanted.insert(dest);
+                    for kind in FileKind::ALL {
+                        wanted.insert(device_path(
+                            &plan.device,
+                            &format!("{}/ANLZ0000.{}", dt.anlz_dir, kind.extension()),
+                        ));
+                    }
+                    exported.push(dt);
+                }
+                Err(e) => report
+                    .failures
+                    .push((pt.device.track.name.clone(), e.to_string())),
+            }
+            progress.on_file_done(i + 1, total, &pt.source);
+            ahead.written(i + 1);
+        }
+    });
+    if report.cancelled {
+        return Ok(report);
     }
 
     let date = build::today();
@@ -397,7 +435,142 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     Ok(report)
 }
 
-fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Result<DeviceTrack> {
+/// Hands out track indices to the workers that prepare tracks ahead of the
+/// writer, at most `window` beyond the last track written, so a slow stick
+/// does not pile up prepared tracks and at most `workers` files are decoded
+/// at a time. Two workers already hide the decoding behind the copy (352
+/// generated tracks on an SSD image: 128 s to 54 s); four gained another
+/// 5 to 10 s there, which a stick writing slower than that image would not
+/// show, and every decoding worker holds a whole track as f32 (#171).
+struct Ahead {
+    workers: usize,
+    window: usize,
+    total: usize,
+    state: Mutex<(usize, usize, bool)>, // next, written, stopped
+    moved: Condvar,
+}
+
+impl Ahead {
+    fn new(total: usize) -> Self {
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .clamp(1, 2)
+            .min(total.max(1));
+        Ahead {
+            workers,
+            window: workers * 2,
+            total,
+            state: Mutex::new((0, 0, false)),
+            moved: Condvar::new(),
+        }
+    }
+
+    fn take(&self) -> Option<usize> {
+        let mut st = self.state.lock().unwrap();
+        loop {
+            let (next, written, stopped) = *st;
+            if stopped || next >= self.total {
+                return None;
+            }
+            if next < written + self.window {
+                st.0 += 1;
+                return Some(next);
+            }
+            st = self.moved.wait(st).unwrap();
+        }
+    }
+
+    fn written(&self, n: usize) {
+        self.state.lock().unwrap().1 = n;
+        self.moved.notify_all();
+    }
+
+    fn stop(&self) {
+        self.state.lock().unwrap().2 = true;
+        self.moved.notify_all();
+    }
+}
+
+/// Releases the workers however the writer leaves, so the scope can end.
+struct StopOnDrop<'a>(&'a Ahead);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// A track's analysis files and final `DeviceTrack`, computed from local
+/// files only so that it can run ahead of the stick writes (issue #160).
+struct Prepared {
+    files: Vec<(FileKind, AnlzFile)>,
+    device: DeviceTrack,
+    generated: bool,
+}
+
+fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
+    let Some(entry) = &pt.anlz else {
+        // `--cdjsafe` sets `PVBR` from the transcoded file when it is written
+        let mp3 = if is_mp3(&pt.source) && !plan.cdjsafe {
+            Some(rewrite::mp3_audio(&pt.source)?)
+        } else {
+            None
+        };
+        let pcm = generate::decode::decode(&pt.source)?;
+        let files = generate::build_files(
+            &pt.device.track,
+            &pt.device.usb_path,
+            &pcm,
+            mp3.map(|m| m.frames),
+        );
+        return Ok(Prepared {
+            files: FileKind::ALL.into_iter().zip(files).collect(),
+            device: with_measured(&pt.device, &pcm, mp3),
+            generated: true,
+        });
+    };
+    let bpm = pt
+        .device
+        .track
+        .tempos
+        .first()
+        .map(|t| t.bpm)
+        .unwrap_or(pt.device.track.average_bpm);
+    let mut files = Vec::new();
+    for kind in FileKind::ALL {
+        let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
+            if kind != FileKind::TwoEx {
+                anyhow::bail!(
+                    "analysis file .{} missing next to {}",
+                    kind.extension(),
+                    entry.dat.display()
+                );
+            }
+            continue;
+        };
+        rewrite::prepare(
+            &mut file,
+            kind,
+            &pt.device.usb_path,
+            &pt.device.track.cues,
+            bpm,
+        );
+        files.push((kind, file));
+    }
+    Ok(Prepared {
+        files,
+        device: pt.device.clone(),
+        generated: false,
+    })
+}
+
+/// Everything that touches the stick, one track at a time in plan order.
+fn write_track(
+    plan: &Plan,
+    pt: &PlanTrack,
+    mut prepared: Prepared,
+    report: &mut Report,
+) -> anyhow::Result<DeviceTrack> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
@@ -420,75 +593,29 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         report.copied += 1;
     }
 
-    let mp3 = if plan.cdjsafe {
-        Some(rewrite::mp3_audio(&dest)?)
-    } else {
-        None
-    };
-    let anlz_dest = device_path(&plan.device, &pt.device.anlz_dir);
-    std::fs::create_dir_all(&anlz_dest)?;
-    let bpm = pt
-        .device
-        .track
-        .tempos
-        .first()
-        .map(|t| t.bpm)
-        .unwrap_or(pt.device.track.average_bpm);
-    let Some(entry) = &pt.anlz else {
-        let mp3 = match mp3 {
-            Some(m) => Some(m),
-            None if is_mp3(&dest) => Some(rewrite::mp3_audio(&dest)?),
-            None => None,
-        };
-        let pcm = generate::decode::decode(&pt.source)?;
-        let files = generate::build_files(
-            &pt.device.track,
-            &pt.device.usb_path,
-            &pcm,
-            mp3.map(|m| m.frames),
-        );
-        for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
-            write_anlz(
-                &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
-                &file.to_bytes(),
-                report,
-            )?;
-        }
-        report.anlz_generated += 1;
-        return Ok(with_measured(&pt.device, &pcm, mp3));
-    };
-    for kind in FileKind::ALL {
-        let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
-            if kind != FileKind::TwoEx {
-                anyhow::bail!(
-                    "analysis file .{} missing next to {}",
-                    kind.extension(),
-                    entry.dat.display()
-                );
-            }
-            continue;
-        };
-        rewrite::prepare(
-            &mut file,
-            kind,
-            &pt.device.usb_path,
-            &pt.device.track.cues,
-            bpm,
-        );
-        if let Some(mp3) = mp3 {
+    if plan.cdjsafe {
+        let frames = rewrite::mp3_audio(&dest)?.frames;
+        for (kind, file) in &mut prepared.files {
             match kind {
-                FileKind::Dat => rewrite::set_cbr_pvbr(&mut file, mp3.frames),
-                FileKind::Ext => rewrite::strip_pvb2(&mut file),
+                FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
+                FileKind::Ext => rewrite::strip_pvb2(file),
                 FileKind::TwoEx => {}
             }
         }
+    }
+    let anlz_dest = device_path(&plan.device, &pt.device.anlz_dir);
+    std::fs::create_dir_all(&anlz_dest)?;
+    for (kind, file) in &prepared.files {
         write_anlz(
             &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
             &file.to_bytes(),
             report,
         )?;
     }
-    Ok(pt.device.clone())
+    if prepared.generated {
+        report.anlz_generated += 1;
+    }
+    Ok(prepared.device)
 }
 
 /// Write an analysis file unless the stick already holds exactly these bytes.
@@ -628,6 +755,42 @@ mod tests {
             channels: 2,
             samples: vec![0.0; 44100 * 2 * 401 / 2],
         }
+    }
+
+    /// `--cdjsafe` builds a generated track without `PVBR` frames and sets them
+    /// once the transcoded file is on the stick; that must equal building with them.
+    #[test]
+    fn cdjsafe_pvbr_set_late_equals_pvbr_built_with_frames() {
+        let mut late = AnlzFile {
+            header_tail: [0; 16],
+            sections: vec![generate::assemble::pvbr(None)],
+        };
+        rewrite::set_cbr_pvbr(&mut late, 19698);
+        assert_eq!(
+            late.sections[0].bytes,
+            generate::assemble::pvbr(Some(19698)).bytes
+        );
+    }
+
+    #[test]
+    fn ahead_hands_out_every_index_once_within_the_window() {
+        let ahead = Ahead::new(20);
+        let mut got = Vec::new();
+        while got.len() < ahead.window {
+            got.push(ahead.take().unwrap());
+        }
+        ahead.written(3);
+        for _ in 0..3 {
+            got.push(ahead.take().unwrap());
+        }
+        ahead.written(20);
+        while let Some(i) = ahead.take() {
+            got.push(i);
+        }
+        assert_eq!(got, (0..20).collect::<Vec<_>>());
+        let stopped = Ahead::new(5);
+        stopped.stop();
+        assert_eq!(stopped.take(), None);
     }
 
     #[test]
