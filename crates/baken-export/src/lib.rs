@@ -75,6 +75,9 @@ pub struct Plan {
     pub anlz_roots: Vec<PathBuf>,
     pub anlz_files_indexed: usize,
     pub device: PathBuf,
+    /// `false` when the device is a directory on the disk of its parent, such
+    /// as an empty mount point with no stick mounted on it.
+    pub volume_root: bool,
     pub device_name: String,
     pub cdjsafe: bool,
     pub prune: bool,
@@ -240,6 +243,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         anlz_roots,
         anlz_files_indexed: index.files,
         device: opts.device.clone(),
+        volume_root: is_volume_root(&opts.device),
         device_name,
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
@@ -280,6 +284,27 @@ fn select_playlists(library: &Library, names: &[String]) -> Result<Vec<usize>> {
     Ok(out)
 }
 
+#[cfg(unix)]
+fn is_volume_root(dir: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(dir) = std::fs::canonicalize(dir) else {
+        return true;
+    };
+    let Some(parent) = dir.parent() else {
+        return true;
+    };
+    match (std::fs::metadata(&dir), std::fs::metadata(parent)) {
+        (Ok(d), Ok(p)) => d.dev() != p.dev(),
+        _ => true,
+    }
+}
+
+/// Not checked on Windows, where a stick is a drive letter rather than a mount point.
+#[cfg(not(unix))]
+fn is_volume_root(_: &Path) -> bool {
+    true
+}
+
 fn device_path(device: &Path, usb_path: &str) -> PathBuf {
     device.join(usb_path.trim_start_matches('/'))
 }
@@ -289,6 +314,18 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     let total = plan.tracks.len();
     let mut exported: Vec<DeviceTrack> = Vec::with_capacity(total);
     let mut wanted: HashSet<PathBuf> = HashSet::new();
+
+    // Before the first track, so a stick that is not mounted, read-only or gone
+    // stops the run with a reason instead of failing every track (issue #165).
+    let rb_dir = plan.device.join("PIONEER/rekordbox");
+    let probe = rb_dir.join(".baken-write-test");
+    std::fs::create_dir_all(&rb_dir)
+        .and_then(|()| std::fs::write(&probe, b""))
+        .and_then(|()| std::fs::remove_file(&probe))
+        .map_err(|err| Error::DeviceWrite {
+            path: rb_dir.clone(),
+            err,
+        })?;
 
     for (i, pt) in plan.tracks.iter().enumerate() {
         if cancel.is_cancelled() {
@@ -326,9 +363,11 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         &date,
     );
     report.tracks_in_database = exported.len();
-    let rb_dir = plan.device.join("PIONEER/rekordbox");
-    std::fs::create_dir_all(&rb_dir)?;
-    std::fs::write(rb_dir.join("export.pdb"), pdb::write(&model))?;
+    let pdb_path = rb_dir.join("export.pdb");
+    std::fs::write(&pdb_path, pdb::write(&model)).map_err(|err| Error::DeviceWrite {
+        path: pdb_path,
+        err,
+    })?;
 
     if let Some(dir) = &plan.settings_dir {
         settings::copy_all(dir, &plan.settings_files, &plan.device)?;

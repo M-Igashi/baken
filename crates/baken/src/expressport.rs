@@ -50,6 +50,13 @@ fn print_plan(plan: &Plan) {
         style(plan.device.display()).bold(),
         style(&plan.device_name).bold()
     );
+    if !plan.volume_root {
+        println!(
+            "{} {} is not the root of a mounted volume. If the stick is not mounted there, this writes to your own disk; a player only reads a library at the root of a stick.",
+            style("⚠").yellow(),
+            plan.device.display()
+        );
+    }
     println!(
         "{} Playlists: {}",
         style("▸").cyan(),
