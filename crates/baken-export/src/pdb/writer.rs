@@ -126,7 +126,11 @@ fn tables(e: &Export) -> Vec<Table> {
     );
     t[17].rows = fixed_rows(CATEGORY_ROWS.iter().map(|r| r.to_vec()).collect());
     t[18].rows = fixed_rows(SORT_ROWS.iter().map(|r| r.to_vec()).collect());
-    t[19].rows = fixed_rows(vec![rows::history_property(&e.export_date, &e.device_name)]);
+    t[19].rows = fixed_rows(vec![rows::history_property(
+        e.tracks.len() as u32,
+        &e.export_date,
+        &e.device_name,
+    )]);
     t
 }
 
