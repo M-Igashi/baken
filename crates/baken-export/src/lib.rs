@@ -441,8 +441,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
 /// at a time. Two workers already hide the decoding behind the copy (352
 /// generated tracks on an SSD image: 128 s to 54 s); four gained another
 /// 5 to 10 s there, which a stick writing slower than that image would not
-/// show, and a long track can take gigabytes to analyse (peak 4.5 GB
-/// sequential, 4.6 to 5.0 GB with two workers, 5.1 GB with four).
+/// show, and every decoding worker holds a whole track as f32 (#171).
 struct Ahead {
     workers: usize,
     window: usize,
