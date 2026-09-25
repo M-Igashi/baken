@@ -16,9 +16,10 @@ pub mod settings;
 pub use error::{Error, Result};
 
 use anlz::generate;
+use anlz::generate::decode::Pcm;
 use anlz::hash::anlz_dir;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
-use anlz::rewrite::{self, FileKind};
+use anlz::rewrite::{self, FileKind, Mp3Audio};
 use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
@@ -419,8 +420,8 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         report.copied += 1;
     }
 
-    let frames = if plan.cdjsafe {
-        Some(rewrite::mp3_audio_frames(&dest)?)
+    let mp3 = if plan.cdjsafe {
+        Some(rewrite::mp3_audio(&dest)?)
     } else {
         None
     };
@@ -434,13 +435,18 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         .map(|t| t.bpm)
         .unwrap_or(pt.device.track.average_bpm);
     let Some(entry) = &pt.anlz else {
-        let frames = match frames {
-            Some(f) => Some(f),
-            None if is_mp3(&dest) => Some(rewrite::mp3_audio_frames(&dest)?),
+        let mp3 = match mp3 {
+            Some(m) => Some(m),
+            None if is_mp3(&dest) => Some(rewrite::mp3_audio(&dest)?),
             None => None,
         };
         let pcm = generate::decode::decode(&pt.source)?;
-        let files = generate::build_files(&pt.device.track, &pt.device.usb_path, &pcm, frames);
+        let files = generate::build_files(
+            &pt.device.track,
+            &pt.device.usb_path,
+            &pcm,
+            mp3.map(|m| m.frames),
+        );
         for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
             write_anlz(
                 &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
@@ -449,7 +455,7 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
             )?;
         }
         report.anlz_generated += 1;
-        return Ok(pt.device.clone());
+        return Ok(with_measured(&pt.device, &pcm, mp3));
     };
     for kind in FileKind::ALL {
         let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
@@ -469,9 +475,9 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
             &pt.device.track.cues,
             bpm,
         );
-        if let Some(frames) = frames {
+        if let Some(mp3) = mp3 {
             match kind {
-                FileKind::Dat => rewrite::set_cbr_pvbr(&mut file, frames),
+                FileKind::Dat => rewrite::set_cbr_pvbr(&mut file, mp3.frames),
                 FileKind::Ext => rewrite::strip_pvb2(&mut file),
                 FileKind::TwoEx => {}
             }
@@ -497,6 +503,43 @@ fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result
         }
     }
     Ok(())
+}
+
+/// Fill in what the XML left at 0 from the audio a generated-analysis track
+/// was just decoded from (#167); a value rekordbox wrote always stays. The
+/// rules follow what rekordbox writes: MP3 the audio-frame rate, lossless the
+/// PCM rate (`1411`, `2116`, `1536`), length truncated to whole seconds.
+fn with_measured(dt: &DeviceTrack, pcm: &Pcm, mp3: Option<Mp3Audio>) -> DeviceTrack {
+    use pdb::rows::{FILE_TYPE_AIFF, FILE_TYPE_ALAC, FILE_TYPE_FLAC, FILE_TYPE_WAV};
+    let mut dt = dt.clone();
+    let secs = pcm.duration_ms() / 1000.0;
+    if pcm.sample_rate == 0 || secs <= 0.0 {
+        return dt;
+    }
+    if dt.sample_rate == 0 {
+        dt.sample_rate = pcm.sample_rate;
+    }
+    if dt.bitrate == 0 {
+        let lossless = [
+            FILE_TYPE_FLAC,
+            FILE_TYPE_WAV,
+            FILE_TYPE_AIFF,
+            FILE_TYPE_ALAC,
+        ]
+        .contains(&dt.file_type);
+        dt.bitrate = match mp3.and_then(|m| m.kbps()) {
+            Some(kbps) => kbps,
+            None if lossless => {
+                (pcm.sample_rate as u64 * dt.sample_depth as u64 * pcm.channels as u64 / 1000)
+                    as u32
+            }
+            None => (dt.file_size as f64 * 8.0 / secs / 1000.0).round() as u32,
+        };
+    }
+    if dt.track.total_time == 0 {
+        dt.track.total_time = secs as u32;
+    }
+    dt
 }
 
 fn is_mp3(path: &Path) -> bool {
@@ -558,4 +601,71 @@ fn remove_apple_double(root: &Path, recursive: bool) -> Result<()> {
         walk(root, recursive)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pdb::rows::{FILE_TYPE_FLAC, FILE_TYPE_M4A, FILE_TYPE_MP3, FILE_TYPE_WAV};
+
+    fn track(file_type: u16, sample_depth: u16) -> DeviceTrack {
+        DeviceTrack {
+            track: collection::Track::default(),
+            usb_path: String::new(),
+            anlz_dir: String::new(),
+            file_size: 8_000_000,
+            sample_depth,
+            file_type,
+            bitrate: 0,
+            sample_rate: 0,
+        }
+    }
+
+    /// 200.5 seconds of stereo at 44.1 kHz.
+    fn pcm() -> Pcm {
+        Pcm {
+            sample_rate: 44100,
+            channels: 2,
+            samples: vec![0.0; 44100 * 2 * 401 / 2],
+        }
+    }
+
+    #[test]
+    fn measured_values_fill_only_what_the_xml_left_at_zero() {
+        let wav = with_measured(&track(FILE_TYPE_WAV, 24), &pcm(), None);
+        assert_eq!(
+            (wav.sample_rate, wav.bitrate, wav.track.total_time),
+            (44100, 2116, 200)
+        );
+        let flac = with_measured(&track(FILE_TYPE_FLAC, 16), &pcm(), None);
+        assert_eq!(flac.bitrate, 1411);
+
+        let mp3 = Mp3Audio {
+            frames: 7656,
+            bytes: 7656 * 1045,
+            sample_rate: 44100,
+        };
+        assert_eq!(
+            with_measured(&track(FILE_TYPE_MP3, 16), &pcm(), Some(mp3)).bitrate,
+            320
+        );
+        // 8 MB over 200.5 s
+        assert_eq!(
+            with_measured(&track(FILE_TYPE_M4A, 16), &pcm(), None).bitrate,
+            319
+        );
+
+        let mut from_xml = track(FILE_TYPE_MP3, 16);
+        from_xml.sample_rate = 48000;
+        from_xml.bitrate = 256;
+        from_xml.track.total_time = 199;
+        let kept = with_measured(&from_xml, &pcm(), Some(mp3));
+        assert_eq!(
+            (kept.sample_rate, kept.bitrate, kept.track.total_time),
+            (48000, 256, 199)
+        );
+
+        let silent = with_measured(&track(FILE_TYPE_FLAC, 16), &Pcm::default(), None);
+        assert_eq!((silent.sample_rate, silent.bitrate), (0, 0));
+    }
 }

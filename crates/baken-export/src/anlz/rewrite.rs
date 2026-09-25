@@ -57,9 +57,30 @@ pub fn strip_pvb2(file: &mut AnlzFile) {
     file.remove(b"PVB2");
 }
 
-/// Count the MPEG audio frames of an MP3, skipping the ID3v2 tag and a
+/// The MPEG audio frames of an MP3.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Mp3Audio {
+    pub frames: u32,
+    /// Bytes of those frames, tags excluded.
+    pub bytes: u64,
+    pub sample_rate: u32,
+}
+
+impl Mp3Audio {
+    /// Average bitrate of the audio frames in kbps: the nominal rate for CBR,
+    /// which is what rekordbox writes, however large the tags are.
+    pub fn kbps(&self) -> Option<u32> {
+        if self.frames == 0 || self.sample_rate == 0 {
+            return None;
+        }
+        let secs = self.frames as f64 * 1152.0 / self.sample_rate as f64;
+        Some((self.bytes as f64 * 8.0 / secs / 1000.0).round() as u32)
+    }
+}
+
+/// Walk the MPEG audio frames of an MP3, skipping the ID3v2 tag and a
 /// Xing/Info header frame the way rekordbox does for its `PVBR` trailer.
-pub fn mp3_audio_frames(path: &Path) -> Result<u32> {
+pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mut pos = 0usize;
     if data.starts_with(b"ID3") && data.len() > 10 {
@@ -73,7 +94,7 @@ pub fn mp3_audio_frames(path: &Path) -> Result<u32> {
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
     ];
     const RATES: [u32; 4] = [44100, 48000, 32000, 0];
-    let mut frames = 0u32;
+    let mut audio = Mp3Audio::default();
     let mut first = true;
     while pos + 4 <= data.len() {
         let h = &data[pos..pos + 4];
@@ -82,7 +103,7 @@ pub fn mp3_audio_frames(path: &Path) -> Result<u32> {
         let bitrate = BITRATES[(h[2] >> 4) as usize];
         let rate = RATES[((h[2] >> 2) & 3) as usize];
         if !(sync && mpeg1_layer3) || bitrate == 0 || rate == 0 {
-            if frames == 0 {
+            if audio.frames == 0 {
                 pos += 1; // junk before the first frame
                 continue;
             }
@@ -97,15 +118,44 @@ pub fn mp3_audio_frames(path: &Path) -> Result<u32> {
                 continue;
             }
         }
-        frames += 1;
+        audio.frames += 1;
+        audio.bytes += len as u64;
+        audio.sample_rate = rate;
         pos += len;
     }
-    Ok(frames)
+    Ok(audio)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mp3_audio_excludes_tags_and_the_info_frame() {
+        let frame = |padding: bool| {
+            let mut f = vec![0u8; 1044 + padding as usize];
+            f[..4].copy_from_slice(&[0xff, 0xfb, 0xe0 | ((padding as u8) << 1), 0]);
+            f
+        };
+        let tag_size = 200_000usize; // an embedded cover
+        let mut data = b"ID3\x03\x00\x00".to_vec();
+        data.extend((0..4).rev().map(|i| ((tag_size >> (7 * i)) & 0x7f) as u8));
+        data.resize(10 + tag_size, 0);
+        let mut info = frame(false);
+        info[36..40].copy_from_slice(b"Info");
+        data.extend(info);
+        for i in 0..1000 {
+            data.extend(frame(i % 9 != 0));
+        }
+        let path = std::env::temp_dir().join(format!("baken-mp3-audio-{}.mp3", std::process::id()));
+        std::fs::write(&path, &data).unwrap();
+        let audio = mp3_audio(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(audio.frames, 1000);
+        assert_eq!(audio.sample_rate, 44100);
+        assert_eq!(audio.kbps(), Some(320));
+        assert_eq!(Mp3Audio::default().kbps(), None);
+    }
 
     #[test]
     fn cbr_trailer() {
