@@ -242,6 +242,11 @@ fn pdb_from_fixture_collection_round_trips() {
             if pg[0x1b] == 0x24 {
                 let n = pg[0x18] as usize + 0x100 * (pg[0x19] & 1) as usize;
                 *counts.entry(ty).or_insert(0) += n;
+                if ty == 19 {
+                    // the history property row carries the track count (CDJ-3000 "Songs")
+                    let c = u32::from_le_bytes(pg[0x2c..0x30].try_into().unwrap());
+                    assert_eq!(c as usize, tracks.len());
+                }
                 // every row offset must point inside the heap and be 4-aligned
                 for r in 0..n {
                     let base = 4096 - (r / 16) * 36;

@@ -9,6 +9,22 @@ fn u32s(out: &mut Vec<u8>, vals: &[u32]) {
     }
 }
 
+fn align4(n: usize) -> usize {
+    (n + 3) & !3
+}
+
+/// Where an encoded string goes when the row so far is `at` bytes long.
+/// rekordbox packs ASCII strings but starts every UTF-16 string on a 4-byte
+/// boundary of the row (every track, artist and album row of the reference
+/// export). The stick a CDJ-2000NXS2 froze on had them unaligned (#116).
+fn string_at(at: usize, encoded: &[u8]) -> usize {
+    if encoded[0] == 0x90 {
+        align4(at)
+    } else {
+        at
+    }
+}
+
 /// genres (0x01), labels (0x04): `id, name`.
 pub fn named(id: u32, name: &str) -> Vec<u8> {
     let mut r = Vec::new();
@@ -23,16 +39,7 @@ pub fn artist(position_in_page: usize, id: u32, name: &str) -> Vec<u8> {
     r.extend_from_slice(&0x60u16.to_le_bytes());
     r.extend_from_slice(&((position_in_page as u16) * 0x20).to_le_bytes());
     u32s(&mut r, &[id]);
-    r.extend_from_slice(&[0x03, 0x0a]);
-    r.extend(encode(name));
-    pad_plus_8(r)
-}
-
-/// artists and albums are allocated `align4(len) + 8` bytes by rekordbox.
-fn pad_plus_8(mut r: Vec<u8>) -> Vec<u8> {
-    let n = ((r.len() + 3) & !3) + 8;
-    r.resize(n, 0);
-    r
+    with_name(r, name)
 }
 
 /// albums (0x03): `0x80, index_shift, 0, artist_id, id, 0, 0x03, name_offset, name`.
@@ -41,9 +48,20 @@ pub fn album(position_in_page: usize, id: u32, artist_id: u32, name: &str) -> Ve
     r.extend_from_slice(&0x80u16.to_le_bytes());
     r.extend_from_slice(&((position_in_page as u16) * 0x20).to_le_bytes());
     u32s(&mut r, &[0, artist_id, id, 0]);
-    r.extend_from_slice(&[0x03, 0x16]);
-    r.extend(encode(name));
-    pad_plus_8(r)
+    with_name(r, name)
+}
+
+/// The `0x03, name_offset, name` tail of artists and albums, allocated
+/// `align4(header) + align4(name) + 4` bytes like rekordbox does.
+fn with_name(mut r: Vec<u8>, name: &str) -> Vec<u8> {
+    let name = encode(name);
+    let header = r.len() + 2;
+    let at = string_at(header, &name);
+    r.extend_from_slice(&[0x03, at as u8]);
+    r.resize(at, 0);
+    r.extend_from_slice(&name);
+    r.resize(align4(header) + align4(name.len()) + 4, 0);
+    r
 }
 
 /// keys (0x05): `id, id, name`.
@@ -91,16 +109,19 @@ pub fn column(id: u16, code: u16, name: &str) -> Vec<u8> {
     r
 }
 
-/// history (0x13): the single "property" row rekordbox writes into a fresh
-/// export: `0x0280, 0, 0, export_date, 0x19, 0x1e, "1000", device_name`,
-/// zero-padded to 40 bytes.
-pub fn history_property(export_date: &str, device_name: &str) -> Vec<u8> {
+/// history (0x13): the single "property" row rekordbox writes into an
+/// export: `0x0280, track_count, 0, export_date, 0x19, 0x1e, "1000",
+/// device_name`, zero-padded to 40 bytes. The count is what a CDJ-3000 shows
+/// as Songs (587 on the reference export, 0 on an empty one).
+pub fn history_property(track_count: u32, export_date: &str, device_name: &str) -> Vec<u8> {
     let mut r = Vec::new();
-    u32s(&mut r, &[0x0280, 0, 0]);
+    u32s(&mut r, &[0x0280, track_count, 0]);
     r.extend(encode(export_date));
     r.extend_from_slice(&[0x19, 0x1e]);
     r.extend(encode("1000"));
-    r.extend(encode(device_name));
+    let name = encode(device_name);
+    r.resize(string_at(r.len(), &name), 0);
+    r.extend(name);
     if r.len() < 40 {
         r.resize(40, 0);
     }
@@ -223,17 +244,21 @@ impl TrackRow {
             &self.file_path,
         ];
         let encoded: Vec<Vec<u8>> = strings.iter().map(|s| encode(s)).collect();
-        let mut off = 0x88u16;
+        let mut offsets = Vec::with_capacity(encoded.len());
+        let mut off = 0x88;
         for e in &encoded {
-            r.extend_from_slice(&off.to_le_bytes());
-            off += e.len() as u16;
+            off = string_at(off, e);
+            r.extend_from_slice(&(off as u16).to_le_bytes());
+            offsets.push(off);
+            off += e.len();
         }
         debug_assert_eq!(r.len(), 0x88);
-        // rekordbox allocates 0x88 + sum(align4(string)) + 4 per track row
-        // but packs the strings contiguously; pad to the same allocation.
-        let alloc = 0x88 + encoded.iter().map(|e| (e.len() + 3) & !3).sum::<usize>() + 4;
-        for e in encoded {
-            r.extend(e);
+        // rekordbox allocates 0x88 + sum(align4(string)) + 4 per track row,
+        // which always covers the padding before UTF-16 strings.
+        let alloc = 0x88 + encoded.iter().map(|e| align4(e.len())).sum::<usize>() + 4;
+        for (e, at) in encoded.iter().zip(offsets) {
+            r.resize(at, 0);
+            r.extend_from_slice(e);
         }
         r.resize(alloc, 0);
         r
@@ -251,10 +276,22 @@ mod tests {
         assert_eq!(named(1, "Techno"), hex("010000000f546563686e6f"));
         let a = artist(1, 2, "tk_elektron");
         assert_eq!(&a[..10], &hex("6000200002000000030a")[..]);
-        assert_eq!(a.len(), 32); // 22 bytes of content -> align4 + 8, matches the fixture offsets
+        assert_eq!(a.len(), 28); // the next row of the reference export starts 28 bytes later
         assert_eq!(
             &album(1, 2, 4, "x")[..22],
             &hex("80002000000000000400000002000000000000000316")[..]
+        );
+        // UTF-16 names start on a 4-byte boundary: whole rows from the reference export
+        assert_eq!(
+            artist(10, 11, "Rødhåd"),
+            hex("600040010b000000030c0000901000005200f80064006800e500640000000000")
+        );
+        assert_eq!(
+            album(2, 153, 0, "atöm.04"),
+            hex(concat!(
+                "800040000000000000000000990000000000000003180000",
+                "9012000061007400f6006d002e0030003400000000000000"
+            ))
         );
         assert_eq!(
             &playlist_node(0, 1, 3, false, "HT-70min")[..20],
@@ -264,11 +301,16 @@ mod tests {
             &column(1, 0x80, "\u{fffa}GENRE\u{fffb}")[..8],
             &hex("0100800090120000")[..]
         );
-        let h = history_property("2024-11-16", "");
+        let h = history_property(0, "2024-11-16", "");
         assert_eq!(h.len(), 40);
         assert_eq!(
             &h[..31],
             &hex("80020000000000000000000017323032342d31312d3136191e0b3130303003")[..]
+        );
+        // the reference export's row, 587 tracks
+        assert_eq!(
+            &history_property(587, "2025-04-11", "")[..8],
+            &hex("800200004b020000")[..]
         );
     }
 
@@ -290,6 +332,36 @@ mod tests {
             super::super::string::decode(&r, title_off).unwrap().0,
             "Unreal"
         );
+    }
+
+    #[test]
+    fn track_row_aligns_utf16_strings() {
+        let t = TrackRow {
+            title: "American Boy 🅴".into(),
+            filename: "01. Crazy In Love.mp3".into(),
+            file_path: "/Contents/Beyoncé; JAŸ-Z/Crazy In Love/01. Crazy In Love.mp3".into(),
+            comment: "2008".into(),
+            ..Default::default()
+        };
+        let r = t.encode(0);
+        let offsets: Vec<usize> = (0..21)
+            .map(|k| u16::from_le_bytes(r[0x5e + 2 * k..0x60 + 2 * k].try_into().unwrap()) as usize)
+            .collect();
+        let mut end = 0x88;
+        for &off in &offsets {
+            let (_, len) = super::super::string::decode(&r, off).unwrap();
+            if r[off] == 0x90 {
+                assert_eq!(off % 4, 0);
+                assert!(r[end..off].iter().all(|&b| b == 0));
+            } else {
+                assert_eq!(off, end, "ASCII strings stay packed");
+            }
+            end = off + len;
+        }
+        assert!(end <= r.len());
+        let text = |k: usize| super::super::string::decode(&r, offsets[k]).unwrap().0;
+        assert_eq!(text(17), "American Boy 🅴");
+        assert_eq!(text(20), t.file_path);
     }
 
     fn hex(s: &str) -> Vec<u8> {
