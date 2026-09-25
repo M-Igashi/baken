@@ -15,6 +15,19 @@ fn searched_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+/// What an error writing to the stick most likely means. Only errors about the
+/// stick as a whole get a hint; EIO has no `ErrorKind` of its own.
+fn device_hint(e: &std::io::Error) -> &'static str {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        PermissionDenied => ". Check that the stick is mounted there: an empty mount point usually belongs to root.",
+        ReadOnlyFilesystem => ". The stick is mounted read-only.",
+        StorageFull => ". The stick is full.",
+        _ if cfg!(unix) && e.raw_os_error() == Some(5) => ". The stick did not answer: check that it is plugged in and mounted. On Linux, a stick pulled out without unmounting leaves its mount behind; unmount it and mount it again.",
+        _ => "",
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("My Settings not found (MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT). Searched: {}. In rekordbox, switch to EXPORT mode and open Preferences > DJ System > My Settings once so rekordbox writes them, or pass --settings-dir at a directory holding the files; the PIONEER folder of any stick rekordbox exported has them. Or pass --no-settings to write the stick without them, so the player keeps its own settings.", searched_paths(searched))]
@@ -37,6 +50,10 @@ pub enum Error {
 
     #[error("Device path is not a directory: {}", .0.display())]
     DeviceNotFound(PathBuf),
+
+    // `err`, not `source`: as a source, anyhow would print the OS message a second time.
+    #[error("Cannot write to the stick: {}: {err}{}", path.display(), device_hint(err))]
+    DeviceWrite { path: PathBuf, err: std::io::Error },
 
     #[error("operation cancelled")]
     Cancelled,
