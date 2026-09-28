@@ -47,12 +47,6 @@ pub const COLORS: [(u8, &str, u32); 8] = [
     (8, "Purple", 0x660099),
 ];
 
-/// Camelot key names in the fixed order of the `keys` table (type 0x05); id = index + 1.
-pub const KEYS: [&str; 24] = [
-    "1A", "1B", "2A", "2B", "3A", "3B", "4A", "4B", "5A", "5B", "6A", "6B", "7A", "7B", "8A", "8B",
-    "9A", "9B", "10A", "10B", "11A", "11B", "12A", "12B",
-];
-
 /// Table 0x11: browse category configuration (defaults).
 pub const CATEGORY_ROWS: [[u8; 8]; 22] = [
     [0x01, 0x00, 0x01, 0x00, 0x63, 0x01, 0x00, 0x00],
