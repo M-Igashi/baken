@@ -8,7 +8,7 @@ body:
         > [!WARNING]
         > **This issue is public and permanent.** Do not include your name, email address, phone number, postal address, Apple ID, or any order or receipt number. Paths you paste usually contain your home folder name, which is your real name on most machines: replace it with `[redacted]` before posting.
         >
-        > Anything personal belongs at <baken@tyna.ninja> instead, never here.
+        > Anything personal belongs in the private form at <https://baken.ravers.workers.dev/support> instead, never here.
   - type: dropdown
     id: product
     attributes:
@@ -26,6 +26,8 @@ body:
         - headroom (loudness gain)
         - rbsort (Key + BPM playlist sort)
         - cdjsafe (CDJ-safe MP3 transcode)
+        - expressport (USB export, beta)
+        - Mac Tune-up (Mac app only)
         - Not sure
     validations:
       required: true
@@ -34,7 +36,7 @@ body:
     attributes:
       label: Version
       description: The Mac app shows it under Bake'n Deck > About. The command-line tool prints it with `baken --version`.
-      placeholder: "3.3.2"
+      placeholder: "4.2.0"
     validations:
       required: true
   - type: input
