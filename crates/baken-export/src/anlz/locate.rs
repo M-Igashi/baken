@@ -132,17 +132,19 @@ impl AnlzIndex {
         Ok(idx)
     }
 
+    /// rekordbox's analysis of `track`: a same-named file whose beat grid
+    /// agrees with the XML's first `TEMPO` (first beat within 2 ms, same BPM),
+    /// preferring one whose length also matches `TotalTime`. A track without a
+    /// `TEMPO` only takes a file without a grid. Anything else is another
+    /// file's analysis (issue #180), so `None`.
     pub fn find(&self, track: &Track) -> Option<&Entry> {
         let cands = self.by_name.get(track.file_name())?;
-        if cands.len() == 1 {
-            return cands.first();
-        }
-        let first = track.tempos.first();
+        let Some(t) = track.tempos.first() else {
+            return cands.iter().find(|e| e.beats == 0);
+        };
         let grid_match = |e: &&Entry| {
-            first.is_some_and(|t| {
-                (t.inizio * 1000.0).round() as i64 - e.first_beat_ms as i64 <= 2
-                    && ((t.bpm * 100.0).round() as u16) == e.first_tempo_x100
-            })
+            ((t.inizio * 1000.0).round() as i64 - e.first_beat_ms as i64).abs() <= 2
+                && (t.bpm * 100.0).round() as u16 == e.first_tempo_x100
         };
         let duration_match = |e: &&Entry| {
             e.first_tempo_x100 > 0
@@ -155,8 +157,11 @@ impl AnlzIndex {
             .iter()
             .find(|e| grid_match(e) && duration_match(e))
             .or_else(|| cands.iter().find(grid_match))
-            .or_else(|| cands.iter().find(duration_match))
-            .or_else(|| cands.first())
+    }
+
+    /// Whether any analysis file carries `track`'s file name, matching or not.
+    pub fn has_name(&self, track: &Track) -> bool {
+        self.by_name.contains_key(track.file_name())
     }
 }
 
@@ -166,5 +171,84 @@ pub fn read_optional(path: &Path) -> Result<Option<AnlzFile>> {
         Ok(d) => Ok(Some(AnlzFile::parse(&d)?)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collection::Tempo;
+
+    /// 126 BPM, `beats` beats from `first_beat_ms`.
+    fn entry(dir: &str, first_beat_ms: u32, beats: u32) -> Entry {
+        Entry {
+            dat: PathBuf::from(dir).join("ANLZ0000.DAT"),
+            beats,
+            first_beat_ms,
+            first_tempo_x100: if beats == 0 { 0 } else { 12600 },
+        }
+    }
+
+    fn index(entries: Vec<Entry>) -> AnlzIndex {
+        let mut idx = AnlzIndex::default();
+        idx.by_name.insert("x.aif".into(), entries);
+        idx
+    }
+
+    fn track(first_beat_s: Option<f64>, total_time: u32) -> Track {
+        Track {
+            location: "/Music/x.aif".into(),
+            total_time,
+            tempos: first_beat_s
+                .map(|inizio| Tempo {
+                    inizio,
+                    bpm: 126.0,
+                    metro: "4/4".into(),
+                    battito: 1,
+                })
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn picked<'a>(idx: &'a AnlzIndex, t: &Track) -> Option<&'a str> {
+        idx.find(t).and_then(|e| e.dat.parent()?.to_str())
+    }
+
+    /// Two analysed copies of one file, grids one beat apart (#180, point 1):
+    /// the later grid comes first in scan order and must not win.
+    #[test]
+    fn a_later_first_beat_is_not_a_match() {
+        let idx = index(vec![entry("late", 475, 999), entry("early", 0, 1000)]);
+        assert_eq!(picked(&idx, &track(Some(0.0), 476)), Some("early"));
+        assert_eq!(picked(&idx, &track(Some(0.475), 475)), Some("late"));
+        assert_eq!(picked(&idx, &track(Some(0.002), 476)), Some("early"));
+    }
+
+    /// A single candidate is checked like any other (point 2), and nothing
+    /// that fails the check is taken as a fallback (point 3).
+    #[test]
+    fn a_candidate_that_disagrees_with_the_xml_is_never_taken() {
+        let one = index(vec![entry("stale", 475, 999)]);
+        assert_eq!(picked(&one, &track(Some(0.0), 476)), None);
+        let two = index(vec![entry("a", 475, 999), entry("b", 900, 999)]);
+        assert_eq!(picked(&two, &track(Some(0.0), 476)), None);
+        assert!(two.has_name(&track(Some(0.0), 476)));
+    }
+
+    #[test]
+    fn duration_breaks_a_tie_between_matching_grids() {
+        let idx = index(vec![entry("edit", 0, 400), entry("full", 0, 1000)]);
+        assert_eq!(picked(&idx, &track(Some(0.0), 476)), Some("full"));
+        assert_eq!(picked(&idx, &track(Some(0.0), 190)), Some("edit"));
+    }
+
+    #[test]
+    fn a_track_without_tempo_only_takes_an_analysis_without_a_grid() {
+        let gridded = index(vec![entry("grid", 0, 1000)]);
+        assert_eq!(picked(&gridded, &track(None, 476)), None);
+        let bare = index(vec![entry("grid", 0, 1000), entry("bare", 0, 0)]);
+        assert_eq!(picked(&bare, &track(None, 476)), Some("bare"));
     }
 }
