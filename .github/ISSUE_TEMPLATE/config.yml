@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: No GitHub account? Use the web form
+    url: https://baken.ravers.workers.dev/support/new
+    about: Files a report here for you and gives you a private link to follow the thread and reply. No account, no email address needed.
+  - name: Anything personal, or a purchase question
+    url: https://baken.ravers.workers.dev/support
+    about: App Store receipts, refunds and anything else that identifies you belong in a private inbox, not on this public tracker.
+  - name: Security vulnerability
+    url: https://github.com/M-Igashi/baken/security/advisories/new
+    about: Report privately through GitHub security advisories. Please do not open a public issue.
