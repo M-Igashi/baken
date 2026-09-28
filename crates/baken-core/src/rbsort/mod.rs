@@ -3,6 +3,7 @@
 mod camelot;
 mod xml;
 
+pub use camelot::parse_key;
 pub use xml::SortedPlaylist;
 
 use std::path::Path;

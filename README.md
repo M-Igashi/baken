@@ -329,9 +329,8 @@ Step-by-step, with the sort rules, a comparison against single-column sort and t
 
 ### Workflow
 
-1. **Set key display to Alphanumeric (1A..12B notation)** in rekordbox: *Preferences > View > Key display format > Alphanumeric*.
-2. **Export**: *File > Export Collection in xml format*. Always save to the same path, e.g. `~/Music/rekordbox/collection.xml`.
-3. **Run rbsort** on that file. It is sorted in place:
+1. **Export**: *File > Export Collection in xml format*. Always save to the same path, e.g. `~/Music/rekordbox/collection.xml`. Either key display format works (*Preferences > View > Key display format*, Classic or Alphanumeric); the order is the same.
+2. **Run rbsort** on that file. It is sorted in place:
    ```bash
    baken rbsort ~/Music/rekordbox/collection.xml
 
@@ -341,11 +340,11 @@ Step-by-step, with the sort rules, a comparison against single-column sort and t
    # Keep the export untouched and write elsewhere
    baken rbsort ~/Music/rekordbox/collection.xml -o ~/Music/rekordbox/sorted.xml
    ```
-4. **One-time setup**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select that same file.
-5. **Restart rekordbox** (it only re-reads the XML on startup) and open the **`rekordbox xml` tree** in the left sidebar. It is a *separate* tree from your main library — switch to it from the sidebar icon column on the far left. It mirrors your `Playlists` folder structure, every playlist already in Key+BPM order: `1A` (lowest BPM) → `1B` → `2A` → … → `12B` (highest BPM).
-6. **Use it**: drag any playlist from the `rekordbox xml` tree into your main `Playlists` (it lands as a new playlist; your original is unchanged), switch to *EXPORT* mode, plug in your USB / SD, then **right-click the playlist → Export Playlist**. CDJs read tracks in playlist order by default — your Key+BPM sort plays back on the deck in that exact order.
+3. **One-time setup**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select that same file.
+4. **Restart rekordbox** (it only re-reads the XML on startup) and open the **`rekordbox xml` tree** in the left sidebar. It is a *separate* tree from your main library — switch to it from the sidebar icon column on the far left. It mirrors your `Playlists` folder structure, every playlist already in Key+BPM order: `1A` (lowest BPM) → `1B` → `2A` → … → `12B` (highest BPM).
+5. **Use it**: drag any playlist from the `rekordbox xml` tree into your main `Playlists` (it lands as a new playlist; your original is unchanged), switch to *EXPORT* mode, plug in your USB / SD, then **right-click the playlist → Export Playlist**. CDJs read tracks in playlist order by default — your Key+BPM sort plays back on the deck in that exact order.
 
-**Keeping it in sync**: whenever your playlists change, repeat steps 2, 3 and the restart. The file path never changes, so the Imported Library setting keeps pointing at the freshly sorted export and the `rekordbox xml` tree stays an always-sorted copy of your library.
+**Keeping it in sync**: whenever your playlists change, repeat steps 1, 2 and the restart. The file path never changes, so the Imported Library setting keeps pointing at the freshly sorted export and the `rekordbox xml` tree stays an always-sorted copy of your library.
 
 > The sorted playlists live **only** in the `rekordbox xml` tree, not in your main `Playlists`. If you only see unsorted originals, you're looking at the local library — switch sidebar trees.
 
@@ -365,13 +364,13 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 
 - **Primary**: Alphanumeric key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
 - **Secondary**: BPM ascending within each key group
-- Tracks with no Alphanumeric key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
+- Tracks with no key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
 
 See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*. The same walk-through, with the workflow around it, is at [baken.ravers.workers.dev/sort](https://baken.ravers.workers.dev/sort).
 
 ### Notes
 
-- Requires the `Tonality` field to be exported as 1A..12B (rekordbox's "Alphanumeric" key display format). Non-matching values (e.g. `Am`, `C#`) are silently sorted last.
+- The `Tonality` field may be in either of rekordbox's key display formats: Alphanumeric (`8A`) or Classic (`Am`, `F#m`, `Db`). A Classic key sorts at its Alphanumeric position (`Am` with `8A`, `C` with `8B`). Anything else is sorted last.
 - Only `KeyType="0"` (TrackID-referenced) playlists are sorted. In all-playlists mode, other playlists pass through unchanged; for a single target, `rbsort` errors out.
 - Only the order of `<TRACK Key="…"/>` references changes. Playlist names, folder structure, `Count`/`Entries` attributes, whitespace and everything else in the XML are preserved byte-for-byte, so running `rbsort` twice on the same file is a no-op.
 - `baken rbsort` does **not** require ffmpeg — only the `headroom` and `cdjsafe` subcommands do.
@@ -444,7 +443,7 @@ baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --pla
 
 ### How it works
 
-- Title, artist, BPM, key, colour, rating, playlists, beat grid and cues all come from the XML.
+- Title, artist, BPM, key, colour, rating, playlists, beat grid and cues all come from the XML. The key may be in either key display format (Classic `Am` or Alphanumeric `8A`); up to 4.1.1 a Classic key was left blank on the stick.
 - Waveforms are copied, not computed: every track should have been analysed in rekordbox once, and its `.DAT`/`.EXT`/`.2EX` files are copied from rekordbox's local analysis cache (`~/Library/Pioneer/rekordbox/share/PIONEER/USBANLZ`, or `PIONEER/Master/share/PIONEER/USBANLZ` on a library drive). On the way the path is rewritten, the cue sections are filled from the XML and the phrase analysis is masked exactly as rekordbox does at export time. Tracks with no analysis are listed and left out.
 - `--generate-analysis` computes the analysis files from the audio instead, for tracks rekordbox has never seen (a Mixxx or Traktor library converted to `collection.xml`, or a machine without rekordbox). The beat grid and the cues come from the XML as always, so a track whose XML has no `TEMPO` gets no beat grid (the plan says how many; the player then detects the BPM while playing, and quantize and beat sync cannot use it); the waveforms are decoded and measured by `baken` ([#147](https://github.com/M-Igashi/baken/issues/147)). The scrolling waveform reproduces rekordbox's own to the pixel on the tracks it was checked against; the colour, three-band and preview waveforms are close approximations. Phrase analysis cannot be generated and is left out. Tracks that do have a rekordbox analysis are still copied, because copying is exact.
 - Audio is copied only when missing or of a different size, so re-running after a playlist change is quick. `export.pdb` is rebuilt every run.

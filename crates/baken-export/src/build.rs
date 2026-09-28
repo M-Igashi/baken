@@ -1,9 +1,10 @@
 //! From the planned tracks and playlists to the `export.pdb` model.
 
 use crate::collection::{Library, Track};
-use crate::pdb::fixed::{COLORS, KEYS};
+use crate::pdb::fixed::COLORS;
 use crate::pdb::rows::{self, TrackRow};
 use crate::pdb::{Export, ExportPlaylist};
+use baken_core::rbsort::parse_key;
 use std::collections::HashMap;
 
 /// A track as it will exist on the stick.
@@ -115,11 +116,8 @@ pub fn build(
             }
             entry.0
         };
-        let key_id = KEYS
-            .iter()
-            .position(|k| *k == t.tonality.trim())
-            .map(|p| p as u32 + 1)
-            .unwrap_or(0);
+        // The keys table is in Alphanumeric order, so a Classic "Am" is id 15 ("8A").
+        let key_id = parse_key(&t.tonality).map_or(0, |i| i as u32 + 1);
         let color_id = t
             .colour
             .and_then(|rgb| COLORS.iter().find(|(_, _, c)| *c == rgb))
@@ -259,6 +257,17 @@ mod tests {
             file_type_for("WAV File", "no-extension"),
             rows::FILE_TYPE_WAV
         );
+    }
+
+    #[test]
+    fn key_ids_follow_the_keys_table() {
+        use crate::pdb::fixed::KEYS;
+        for (i, k) in KEYS.iter().enumerate() {
+            assert_eq!(parse_key(k), Some(i as u8));
+        }
+        // #116: a Classic export (Cm, Ab) left every key_id at 0.
+        assert_eq!(KEYS[parse_key("Cm").unwrap() as usize], "5A");
+        assert_eq!(KEYS[parse_key("Ab").unwrap() as usize], "4B");
     }
 
     #[test]

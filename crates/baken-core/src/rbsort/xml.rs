@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::camelot::parse_camelot;
+use super::camelot::parse_key;
 use crate::xmlutil::{get_attr, playlist_node_attrs, write_atomic};
 
 #[derive(Debug, Clone, Default)]
@@ -188,7 +188,7 @@ fn record_collection_track(
         let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
         match attr.key.as_ref() {
             "TrackID" => id = Some(val()?),
-            "Tonality" => camelot = parse_camelot(&val()?),
+            "Tonality" => camelot = parse_key(&val()?),
             "AverageBpm" => bpm = val()?.parse::<f64>().ok().filter(|v| *v > 0.0),
             _ => {}
         }
@@ -312,7 +312,7 @@ mod tests {
 
     fn meta(camelot: &str, bpm: f64) -> TrackMeta {
         TrackMeta {
-            camelot: parse_camelot(camelot),
+            camelot: parse_key(camelot),
             bpm: Some(bpm),
         }
     }
@@ -439,9 +439,9 @@ mod tests {
     #[test]
     fn scans_collection_tracks_with_children() {
         let (col, playlists) = scan_xml(NESTED_TRACK_XML.as_bytes()).unwrap();
-        assert_eq!(col.get("1").and_then(|m| m.camelot), parse_camelot("1A"));
+        assert_eq!(col.get("1").and_then(|m| m.camelot), parse_key("1A"));
         assert_eq!(col.get("1").and_then(|m| m.bpm), Some(120.0));
-        assert_eq!(col.get("2").and_then(|m| m.camelot), parse_camelot("1A"));
+        assert_eq!(col.get("2").and_then(|m| m.camelot), parse_key("1A"));
         assert_eq!(col.get("2").and_then(|m| m.bpm), Some(128.0));
         let sorted = sort_tracks(&playlists[0].track_ids, &col);
         assert_eq!(sorted, vec!["1", "2"]); // 120 BPM before 128 within 1A
