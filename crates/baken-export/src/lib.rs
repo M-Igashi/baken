@@ -12,6 +12,7 @@ mod error;
 pub mod layout;
 pub mod pdb;
 pub mod settings;
+pub mod volume;
 
 pub use error::{Error, Result};
 
@@ -79,6 +80,13 @@ pub struct Plan {
     /// `false` when the device is a directory on the disk of its parent, such
     /// as an empty mount point with no stick mounted on it.
     pub volume_root: bool,
+    /// Filesystem of the stick; `None` where it cannot be read, and when the
+    /// device is not a volume root.
+    pub filesystem: Option<volume::FileSystem>,
+    /// Partition table of the disk the stick's volume is on, best effort. A
+    /// caller that cannot run `diskutil` or `lsblk` (a sandboxed app) can set
+    /// it itself before showing [`Plan::format_warnings`].
+    pub partition_table: Option<volume::PartitionTable>,
     pub device_name: String,
     pub cdjsafe: bool,
     pub prune: bool,
@@ -97,6 +105,11 @@ impl Plan {
             .iter()
             .filter(|t| t.anlz.is_none() && t.device.track.tempos.is_empty())
             .count()
+    }
+
+    /// What the stick's filesystem or partition table rules out (issue #184).
+    pub fn format_warnings(&self) -> Vec<volume::FormatWarning> {
+        volume::warnings(self.filesystem.as_ref(), self.partition_table)
     }
 
     pub fn playlist_names(&self) -> Vec<&str> {
@@ -242,6 +255,12 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 .map(|n| n.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "USB".into());
+    let volume_root = is_volume_root(&opts.device);
+    let (filesystem, partition_table) = if volume_root {
+        volume::probe(&opts.device)
+    } else {
+        (None, None)
+    };
     Ok(Plan {
         library,
         tracks,
@@ -252,7 +271,9 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         anlz_roots,
         anlz_files_indexed: index.files,
         device: opts.device.clone(),
-        volume_root: is_volume_root(&opts.device),
+        volume_root,
+        filesystem,
+        partition_table,
         device_name,
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,

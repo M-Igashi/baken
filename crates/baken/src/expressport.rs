@@ -57,6 +57,9 @@ fn print_plan(plan: &Plan) {
             plan.device.display()
         );
     }
+    for w in plan.format_warnings() {
+        println!("{} {w}", style("⚠").yellow());
+    }
     println!(
         "{} Playlists: {}",
         style("▸").cyan(),
