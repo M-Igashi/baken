@@ -51,11 +51,11 @@ Sorting by *BPM* aligns BPM but scatters the Key grouping:
 | 5 | A  | **1A** | 130 |
 | 6 | D  | **2B** | 130 |
 
-Key walks `1A → 2A → 2B → 2A → 1A → 2B` — a tour of the Camelot wheel that doesn't follow harmonic adjacency.
+Key walks `1A → 2A → 2B → 2A → 1A → 2B` — a walk around the key wheel that doesn't follow harmonic adjacency.
 
 ## rbsort (multi-column: Key → BPM)
 
-`rbsort` produces a compound sort: Camelot Key ascending as the primary key, BPM ascending as the tiebreaker within each Key group:
+`rbsort` produces a compound sort: Alphanumeric key ascending as the primary key, BPM ascending as the tiebreaker within each Key group:
 
 | # | Track | Key | BPM |
 |---|---|---|---|
@@ -66,7 +66,7 @@ Key walks `1A → 2A → 2B → 2A → 1A → 2B` — a tour of the Camelot whee
 | 5 | F  | 2B  | 124 |
 | 6 | D  | 2B  | 130 |
 
-Key groups walk `1A → 2A → 2B` (Camelot ascending) and BPM rises monotonically inside each group. This is the ordering a harmonic warm-up set typically wants.
+Key groups walk `1A → 2A → 2B` (Alphanumeric ascending) and BPM rises monotonically inside each group. This is the ordering a harmonic warm-up set typically wants.
 
 ## Summary
 

@@ -14,7 +14,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | Subcommand | The gap it fills | What it does |
 |---|---|---|
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
-| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Camelot Key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
+| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Alphanumeric key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes a whole playlist to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
 | [`baken expressport`](#direct-usb-export-baken-expressport--beta) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings (beta since v3.5.0) |
 
@@ -321,7 +321,7 @@ A lossy file within one step of the ceiling can only be moved by re-encoding it,
 
 ## rekordbox Playlist Sorter (`baken rbsort`)
 
-rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported rekordbox XML and rewrites every playlist in it so its tracks run **Camelot Key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
+rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported rekordbox XML and rewrites every playlist in it so its tracks run **Alphanumeric key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
 
 This is the same idea as `baken headroom` applied to playlist order: rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
 
@@ -363,9 +363,9 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 
 ### Sort Rules
 
-- **Primary**: Camelot Key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
+- **Primary**: Alphanumeric key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
 - **Secondary**: BPM ascending within each key group
-- Tracks with no Camelot key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
+- Tracks with no Alphanumeric key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
 
 See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*. The same walk-through, with the workflow around it, is at [baken.ravers.workers.dev/sort](https://baken.ravers.workers.dev/sort).
 
