@@ -9,9 +9,19 @@ pub const SAFE_SAMPLE_RATE: u32 = 44100;
 
 #[derive(Debug, Clone)]
 pub struct SourceInfo {
+    /// ffprobe's container name: `mp3`, `wav`, `aiff`, `flac`, `ogg`, or
+    /// `mov,mp4,m4a,3gp,3g2,mj2` for every MP4 flavour.
+    pub container: String,
     pub codec: String,
+    /// The stream's fourcc in an MP4 (`mp4a`, `alac`, `drms` for FairPlay).
+    pub codec_tag: String,
+    /// ffprobe's codec profile: `LC`, `HE-AAC`… for AAC.
+    pub profile: Option<String>,
     pub sample_rate: u32,
     pub bitrate_kbps: Option<u32>,
+    /// Bits per sample of PCM, FLAC and ALAC; `None` for lossy codecs.
+    pub bit_depth: Option<u32>,
+    pub channels: u32,
 }
 
 impl SourceInfo {
@@ -34,12 +44,18 @@ impl SourceInfo {
 #[derive(Debug, Deserialize)]
 struct ProbeStream {
     codec_name: Option<String>,
+    codec_tag_string: Option<String>,
+    profile: Option<String>,
     sample_rate: Option<String>,
+    channels: Option<u32>,
+    bits_per_sample: Option<u32>,
+    bits_per_raw_sample: Option<String>,
     bit_rate: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ProbeFormat {
+    format_name: Option<String>,
     bit_rate: Option<String>,
 }
 
@@ -66,11 +82,11 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
         .context("Failed to execute ffprobe. Is ffmpeg installed?")?;
 
     if !output.status.success() {
-        bail!(
-            "ffprobe failed for {}: {}",
-            path.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match stderr.trim() {
+            "" => bail!("ffprobe could not read {}", path.display()),
+            why => bail!("ffprobe could not read {}: {why}", path.display()),
+        }
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -82,8 +98,21 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
         .first()
         .ok_or_else(|| anyhow!("No audio stream in {}", path.display()))?;
 
+    // FLAC and ALAC carry their depth in bits_per_raw_sample; PCM in bits_per_sample.
+    let bit_depth = stream
+        .bits_per_raw_sample
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .or(stream.bits_per_sample)
+        .filter(|&b| b > 0);
+
     Ok(SourceInfo {
+        container: probe.format.format_name.clone().unwrap_or_default(),
         codec: stream.codec_name.clone().unwrap_or_default(),
+        codec_tag: stream.codec_tag_string.clone().unwrap_or_default(),
+        profile: stream.profile.clone(),
+        bit_depth,
+        channels: stream.channels.unwrap_or(0),
         sample_rate: stream
             .sample_rate
             .as_deref()

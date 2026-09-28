@@ -3,34 +3,9 @@
 //! characters like rekordbox does, and collisions get a `-1`, `-2` suffix.
 
 use crate::collection::Track;
-use baken_core::cdjsafe::sanitize_filename;
+use baken_core::cdjsafe::stick_path;
 use std::collections::HashSet;
 use std::path::Path;
-
-const MAX_STEM: usize = 43;
-
-fn component(s: &str, fallback: &str) -> String {
-    let s = s.trim();
-    if s.is_empty() {
-        fallback.to_string()
-    } else {
-        sanitize_filename(s)
-    }
-}
-
-fn split_ext(name: &str) -> (&str, &str) {
-    match name.rfind('.') {
-        Some(i) if i > 0 => (&name[..i], &name[i..]),
-        _ => (name, ""),
-    }
-}
-
-fn truncate_chars(s: &str, n: usize) -> &str {
-    match s.char_indices().nth(n) {
-        Some((i, _)) => &s[..i],
-        None => s,
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct Layout {
@@ -40,23 +15,12 @@ pub struct Layout {
 impl Layout {
     /// USB-relative path for `track`, unique within this layout.
     pub fn assign(&mut self, track: &Track) -> String {
-        let dir = format!(
-            "/Contents/{}/{}",
-            component(&track.artist, "UnknownArtist"),
-            component(&track.album, "UnknownAlbum")
-        );
-        let (stem, ext) = split_ext(track.file_name());
-        let stem = component(stem, "track");
-        let ext = sanitize_filename(ext);
-        let mut candidate = format!("{dir}/{}{ext}", truncate_chars(&stem, MAX_STEM));
+        let path =
+            |suffix: &str| stick_path(&track.artist, &track.album, track.file_name(), suffix);
+        let mut candidate = path("");
         let mut n = 1;
         while !self.used.insert(candidate.to_lowercase()) {
-            // rekordbox keeps stem + suffix within the same limit
-            let suffix = format!("-{n}");
-            candidate = format!(
-                "{dir}/{}{suffix}{ext}",
-                truncate_chars(&stem, MAX_STEM - suffix.len())
-            );
+            candidate = path(&format!("-{n}"));
             n += 1;
         }
         candidate

@@ -33,6 +33,8 @@ pub struct SourceTrack {
     /// percent-escape. One hand-edited row must not stop the whole playlist.
     pub location_error: Option<String>,
     pub has_total_time: bool,
+    pub artist: String,
+    pub album: String,
     attrs: Vec<(String, String)>,
     children: Vec<Event<'static>>,
 }
@@ -54,6 +56,8 @@ impl SourceTrack {
             location: location.to_string(),
             location_error: None,
             has_total_time: true,
+            artist: String::new(),
+            album: String::new(),
             attrs: Vec::new(),
             children: Vec::new(),
         }
@@ -252,24 +256,27 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
     let mut attrs = Vec::new();
     let mut name = String::new();
     let mut location_raw = String::new();
+    let mut artist = String::new();
+    let mut album = String::new();
     let mut has_total_time = false;
     for attr in e.attributes() {
         let attr = attr?;
-        match attr.key.as_ref() {
-            "Name" => {
-                #[allow(deprecated)]
-                {
-                    name = attr.unescape_value()?.into_owned();
-                }
+        let field = match attr.key.as_ref() {
+            "Name" => Some(&mut name),
+            "Location" => Some(&mut location_raw),
+            "Artist" => Some(&mut artist),
+            "Album" => Some(&mut album),
+            "TotalTime" => {
+                has_total_time = true;
+                None
             }
-            "Location" => {
-                #[allow(deprecated)]
-                {
-                    location_raw = attr.unescape_value()?.into_owned();
-                }
+            _ => None,
+        };
+        if let Some(field) = field {
+            #[allow(deprecated)]
+            {
+                *field = attr.unescape_value()?.into_owned();
             }
-            "TotalTime" => has_total_time = true,
-            _ => {}
         }
         attrs.push((attr.key.as_ref().to_string(), attr.value.into_owned()));
     }
@@ -283,6 +290,8 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
         location,
         location_error,
         has_total_time,
+        artist,
+        album,
         attrs,
         children: Vec::new(),
     })
