@@ -178,9 +178,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             };
             let entry = index.find(track);
             if entry.is_none() && !opts.generate_analysis {
+                let reason = if index.has_name(track) {
+                    "the rekordbox analysis found for this file name does not match the XML's beat grid (export the XML again after changing the grid, or pass --generate-analysis)"
+                } else {
+                    "no rekordbox analysis found (analyse it in rekordbox first, or pass --generate-analysis)"
+                };
                 skipped.push(Skipped {
                     name: track.name.clone(),
-                    reason: "no rekordbox analysis found (analyse it in rekordbox first, or pass --generate-analysis)".into(),
+                    reason: reason.into(),
                 });
                 continue;
             }
