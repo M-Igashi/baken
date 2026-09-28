@@ -7,5 +7,6 @@ pub mod grid;
 pub mod waveform;
 
 pub use assemble::build_files;
-pub use decode::{decode, decode_with, Pcm};
+pub use decode::decode_with;
 pub use grid::{beats, pqt2_empty, pqtz, Beat};
+pub use waveform::{measure, Measured, Meter};

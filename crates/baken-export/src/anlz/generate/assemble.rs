@@ -1,8 +1,7 @@
 //! Whole `.DAT`, `.EXT` and `.2EX` files from decoded audio and the XML track.
 
-use super::decode::Pcm;
 use super::grid;
-use super::waveform;
+use super::waveform::{self, Measured};
 use crate::anlz::cues::{self, Kind};
 use crate::anlz::section::{section, AnlzFile, Section};
 use crate::collection::Track;
@@ -33,10 +32,10 @@ fn file(sections: Vec<Section>) -> AnlzFile {
 pub fn build_files(
     track: &Track,
     usb_path: &str,
-    pcm: &Pcm,
+    audio: &Measured,
     mp3_audio_frames: Option<u32>,
 ) -> [AnlzFile; 3] {
-    let waves = waveform::analyze(pcm);
+    let waves = waveform::analyze(audio);
     let bpm = track
         .tempos
         .first()
@@ -44,7 +43,7 @@ pub fn build_files(
         .unwrap_or(track.average_bpm);
     let mut dat = vec![
         pvbr(mp3_audio_frames),
-        grid::pqtz(&track.tempos, pcm.duration_ms()),
+        grid::pqtz(&track.tempos, audio.duration_ms()),
     ];
     dat.extend(waves.dat_sections());
     dat.extend(cues::sections(Kind::Dat, &track.cues, bpm));
@@ -75,11 +74,9 @@ mod tests {
 
     #[test]
     fn section_order_matches_rekordbox() {
-        let pcm = Pcm {
-            sample_rate: 44100,
-            channels: 2,
-            samples: vec![0.1; 44100 * 2],
-        };
+        let mut meter = waveform::Meter::new(44100, 2);
+        meter.push(&[0.1; 44100 * 2]);
+        let audio = meter.finish();
         let track = Track {
             tempos: vec![Tempo {
                 inizio: 0.1,
@@ -96,7 +93,7 @@ mod tests {
             total_time: 1,
             ..Default::default()
         };
-        let [dat, ext, two] = build_files(&track, "/Contents/A/B/c.mp3", &pcm, Some(38));
+        let [dat, ext, two] = build_files(&track, "/Contents/A/B/c.mp3", &audio, Some(38));
         assert_eq!(
             tags(&dat),
             ["PPTH", "PVBR", "PQTZ", "PWAV", "PWV2", "PCOB", "PCOB"]
