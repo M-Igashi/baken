@@ -154,6 +154,10 @@ fn print_report(plan: &Plan, r: &Report) {
             "tracks with analysis computed from the audio",
         ),
         (r.pruned, "stale files removed"),
+        (
+            r.apple_double_kept,
+            "._ files the system did not let baken remove",
+        ),
         (r.failures.len(), "tracks failed (left out of the database)"),
     ] {
         if count > 0 {

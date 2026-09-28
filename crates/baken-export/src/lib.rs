@@ -134,6 +134,10 @@ pub struct Report {
     /// Tracks whose analysis files were generated from the audio.
     pub anlz_generated: usize,
     pub pruned: usize,
+    /// AppleDouble `._` files left on the stick because the system refused to
+    /// remove them: inside the App Sandbox the `._X` of a file the app wrote
+    /// cannot be unlinked while `X` exists (issue #192).
+    pub apple_double_kept: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
     pub tracks_in_database: usize,
@@ -445,17 +449,16 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     // Only files written in this run can have gained an AppleDouble file, so
     // the two big trees are walked only when something was written into them.
     if report.copied + report.transcoded > 0 || plan.prune {
-        remove_apple_double(&plan.device.join("Contents"), true)?;
+        remove_apple_double(&plan.device.join("Contents"), true, &mut report)?;
     }
     if report.anlz_files > 0 || plan.prune {
-        remove_apple_double(&plan.device.join("PIONEER/USBANLZ"), true)?;
+        remove_apple_double(&plan.device.join("PIONEER/USBANLZ"), true, &mut report)?;
     }
-    remove_apple_double(&plan.device.join("PIONEER"), false)?;
-    remove_apple_double(&rb_dir, false)?;
+    remove_apple_double(&plan.device.join("PIONEER"), false, &mut report)?;
+    remove_apple_double(&rb_dir, false, &mut report)?;
     for dir in ["Contents", "PIONEER"] {
-        match std::fs::remove_file(plan.device.join(format!("._{dir}"))) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
-            _ => {}
+        if remove_sidecar(&plan.device.join(format!("._{dir}")))? {
+            report.apple_double_kept += 1;
         }
     }
     Ok(report)
@@ -703,9 +706,14 @@ fn is_mp3(path: &Path) -> bool {
 /// Remove what `keep` does not name. Paths are compared in NFC: on macOS 26
 /// `read_dir` lists an ExFAT or FAT stick's names in NFD whatever form they
 /// were written in, and the stick is written in the XML's NFC (issue #154).
+///
+/// A `._X` AppleDouble file is decided by its `X`: left alone while `X` stays,
+/// since a sandboxed caller may not remove it then (issue #192), and removed
+/// once `X` is gone, unless the volume already dropped it together with `X`.
 fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
     fn walk(dir: &Path, keep: &HashSet<PathBuf>, removed: &mut usize) -> std::io::Result<bool> {
         let mut empty = true;
+        let mut sidecars = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -715,11 +723,18 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
                 } else {
                     empty = false;
                 }
+            } else if let Some(name) = entry.file_name().to_string_lossy().strip_prefix("._") {
+                sidecars.push((path.clone(), dir.join(name)));
             } else if keep.contains(&fsname::nfc(&path)) {
                 empty = false;
             } else {
                 fsname::remove_file(&path)?;
                 *removed += 1;
+            }
+        }
+        for (sidecar, of) in sidecars {
+            if of.symlink_metadata().is_ok() || remove_sidecar(&sidecar)? {
+                empty = false;
             }
         }
         Ok(empty)
@@ -733,25 +748,41 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
 }
 
 /// macOS leaves `._*` AppleDouble files on FAT volumes; Linux-based players trip on them.
-fn remove_apple_double(root: &Path, recursive: bool) -> Result<()> {
-    fn walk(dir: &Path, recursive: bool) -> std::io::Result<()> {
+/// Those the system refuses to remove are counted in `report.apple_double_kept`.
+fn remove_apple_double(root: &Path, recursive: bool, report: &mut Report) -> Result<()> {
+    fn walk(dir: &Path, recursive: bool, kept: &mut usize) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
                 if recursive {
-                    walk(&path, recursive)?;
+                    walk(&path, recursive, kept)?;
                 }
-            } else if entry.file_name().to_string_lossy().starts_with("._") {
-                fsname::remove_file(&path)?;
+            } else if entry.file_name().to_string_lossy().starts_with("._")
+                && remove_sidecar(&path)?
+            {
+                *kept += 1;
             }
         }
         Ok(())
     }
     if root.is_dir() {
-        walk(root, recursive)?;
+        walk(root, recursive, &mut report.apple_double_kept)?;
     }
     Ok(())
+}
+
+/// Remove an AppleDouble file; `Ok(true)` when the system refused. Inside the
+/// App Sandbox every file the app writes carries `com.apple.quarantine`, which
+/// FAT stores in `._X`, and unlinking `._X` while `X` exists is refused as an
+/// attribute change on `X` (issue #192). Already gone is fine: it goes with `X`.
+fn remove_sidecar(path: &Path) -> std::io::Result<bool> {
+    match fsname::remove_file(path) {
+        Ok(()) => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Ok(true),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]
@@ -781,6 +812,40 @@ mod tests {
             frames: 44100 * 401 / 2,
             ..Default::default()
         }
+    }
+
+    /// On a plain filesystem `._X` stays when `X` is removed, so prune has to
+    /// remove it itself, and must leave the `._X` of a kept `X` alone (#192).
+    #[test]
+    fn prune_decides_a_sidecar_by_its_file() {
+        let root = std::env::temp_dir().join(format!("baken-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let files = [
+            "Artist/Album/kept.wav",
+            "Artist/Album/._kept.wav",
+            "Artist/Album/gone.wav",
+            "Artist/Album/._gone.wav",
+            "Artist/Old/gone.flac",
+            "Artist/Old/._gone.flac",
+            "Artist/._Old",
+            "Orphan/._nothing.wav",
+        ];
+        for f in files {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+        }
+        let keep = HashSet::from([root.join("Artist/Album/kept.wav")]);
+        assert_eq!(prune_tree(&root, &keep).unwrap(), 2);
+        let mut left: Vec<_> = files
+            .iter()
+            .filter(|f| root.join(f).exists())
+            .copied()
+            .collect();
+        left.sort();
+        assert_eq!(left, ["Artist/Album/._kept.wav", "Artist/Album/kept.wav"]);
+        assert!(!root.join("Artist/Old").exists() && !root.join("Orphan").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// `--cdjsafe` builds a generated track without `PVBR` frames and sets them
