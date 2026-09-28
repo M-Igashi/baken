@@ -1,4 +1,5 @@
-//! Decode the default audio track of a file to interleaved f32 with symphonia.
+//! Decode the default audio track of a file to interleaved f32 with symphonia,
+//! one buffer at a time.
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
@@ -8,35 +9,6 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
-
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Pcm {
-    pub sample_rate: u32,
-    pub channels: usize,
-    /// Interleaved samples.
-    pub samples: Vec<f32>,
-}
-
-impl Pcm {
-    pub fn frames(&self) -> usize {
-        self.samples.len() / self.channels.max(1)
-    }
-
-    pub fn duration_ms(&self) -> f64 {
-        self.frames() as f64 * 1000.0 / self.sample_rate.max(1) as f64
-    }
-}
-
-/// Decode the whole file into memory.
-pub fn decode(path: &Path) -> Result<Pcm> {
-    let mut pcm = Pcm::default();
-    decode_with(path, |chunk, rate, channels| {
-        pcm.sample_rate = rate;
-        pcm.channels = channels;
-        pcm.samples.extend_from_slice(chunk);
-    })?;
-    Ok(pcm)
-}
 
 /// Decode the file, handing every decoded buffer to `sink` as interleaved f32
 /// together with the sample rate and channel count. Fails when those change
@@ -123,15 +95,16 @@ mod tests {
     fn decodes_a_generated_wav() {
         let path = std::env::temp_dir().join(format!("baken-decode-{}.wav", std::process::id()));
         write_wav(&path, 44100, 2, 44100);
-        let pcm = decode(&path).unwrap();
+        let mut samples = Vec::new();
+        let mut spec = (0, 0);
+        decode_with(&path, |chunk, rate, channels| {
+            spec = (rate, channels);
+            samples.extend_from_slice(chunk);
+        })
+        .unwrap();
         let _ = std::fs::remove_file(&path);
-        assert_eq!(pcm.sample_rate, 44100);
-        assert_eq!(pcm.channels, 2);
-        assert_eq!(pcm.samples.len(), 88200);
-        assert_eq!(pcm.frames(), 44100);
-        assert!((pcm.duration_ms() - 1000.0).abs() < 1e-9);
-        assert!(
-            (pcm.samples[2 * 10] - (0.5f64.sin() * 16000.0) as i16 as f32 / 32768.0).abs() < 1e-6
-        );
+        assert_eq!(spec, (44100, 2));
+        assert_eq!(samples.len(), 88200);
+        assert!((samples[2 * 10] - (0.5f64.sin() * 16000.0) as i16 as f32 / 32768.0).abs() < 1e-6);
     }
 }

@@ -16,7 +16,7 @@ pub mod settings;
 pub use error::{Error, Result};
 
 use anlz::generate;
-use anlz::generate::decode::Pcm;
+use anlz::generate::Measured;
 use anlz::hash::AnlzSlots;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind, Mp3Audio};
@@ -440,11 +440,11 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
             None if is_mp3(&dest) => Some(rewrite::mp3_audio(&dest)?),
             None => None,
         };
-        let pcm = generate::decode::decode(&pt.source)?;
+        let audio = generate::measure(&pt.source)?;
         let files = generate::build_files(
             &pt.device.track,
             &pt.device.usb_path,
-            &pcm,
+            &audio,
             mp3.map(|m| m.frames),
         );
         for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
@@ -455,7 +455,7 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
             )?;
         }
         report.anlz_generated += 1;
-        return Ok(with_measured(&pt.device, &pcm, mp3));
+        return Ok(with_measured(&pt.device, &audio, mp3));
     };
     for kind in FileKind::ALL {
         let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
@@ -509,15 +509,15 @@ fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result
 /// was just decoded from (#167); a value rekordbox wrote always stays. The
 /// rules follow what rekordbox writes: MP3 the audio-frame rate, lossless the
 /// PCM rate (`1411`, `2116`, `1536`), length truncated to whole seconds.
-fn with_measured(dt: &DeviceTrack, pcm: &Pcm, mp3: Option<Mp3Audio>) -> DeviceTrack {
+fn with_measured(dt: &DeviceTrack, audio: &Measured, mp3: Option<Mp3Audio>) -> DeviceTrack {
     use pdb::rows::{FILE_TYPE_AIFF, FILE_TYPE_ALAC, FILE_TYPE_FLAC, FILE_TYPE_WAV};
     let mut dt = dt.clone();
-    let secs = pcm.duration_ms() / 1000.0;
-    if pcm.sample_rate == 0 || secs <= 0.0 {
+    let secs = audio.duration_ms() / 1000.0;
+    if audio.sample_rate == 0 || secs <= 0.0 {
         return dt;
     }
     if dt.sample_rate == 0 {
-        dt.sample_rate = pcm.sample_rate;
+        dt.sample_rate = audio.sample_rate;
     }
     if dt.bitrate == 0 {
         let lossless = [
@@ -530,7 +530,7 @@ fn with_measured(dt: &DeviceTrack, pcm: &Pcm, mp3: Option<Mp3Audio>) -> DeviceTr
         dt.bitrate = match mp3.and_then(|m| m.kbps()) {
             Some(kbps) => kbps,
             None if lossless => {
-                (pcm.sample_rate as u64 * dt.sample_depth as u64 * pcm.channels as u64 / 1000)
+                (audio.sample_rate as u64 * dt.sample_depth as u64 * audio.channels as u64 / 1000)
                     as u32
             }
             None => (dt.file_size as f64 * 8.0 / secs / 1000.0).round() as u32,
@@ -623,22 +623,23 @@ mod tests {
     }
 
     /// 200.5 seconds of stereo at 44.1 kHz.
-    fn pcm() -> Pcm {
-        Pcm {
+    fn audio() -> Measured {
+        Measured {
             sample_rate: 44100,
             channels: 2,
-            samples: vec![0.0; 44100 * 2 * 401 / 2],
+            frames: 44100 * 401 / 2,
+            ..Default::default()
         }
     }
 
     #[test]
     fn measured_values_fill_only_what_the_xml_left_at_zero() {
-        let wav = with_measured(&track(FILE_TYPE_WAV, 24), &pcm(), None);
+        let wav = with_measured(&track(FILE_TYPE_WAV, 24), &audio(), None);
         assert_eq!(
             (wav.sample_rate, wav.bitrate, wav.track.total_time),
             (44100, 2116, 200)
         );
-        let flac = with_measured(&track(FILE_TYPE_FLAC, 16), &pcm(), None);
+        let flac = with_measured(&track(FILE_TYPE_FLAC, 16), &audio(), None);
         assert_eq!(flac.bitrate, 1411);
 
         let mp3 = Mp3Audio {
@@ -647,12 +648,12 @@ mod tests {
             sample_rate: 44100,
         };
         assert_eq!(
-            with_measured(&track(FILE_TYPE_MP3, 16), &pcm(), Some(mp3)).bitrate,
+            with_measured(&track(FILE_TYPE_MP3, 16), &audio(), Some(mp3)).bitrate,
             320
         );
         // 8 MB over 200.5 s
         assert_eq!(
-            with_measured(&track(FILE_TYPE_M4A, 16), &pcm(), None).bitrate,
+            with_measured(&track(FILE_TYPE_M4A, 16), &audio(), None).bitrate,
             319
         );
 
@@ -660,13 +661,13 @@ mod tests {
         from_xml.sample_rate = 48000;
         from_xml.bitrate = 256;
         from_xml.track.total_time = 199;
-        let kept = with_measured(&from_xml, &pcm(), Some(mp3));
+        let kept = with_measured(&from_xml, &audio(), Some(mp3));
         assert_eq!(
             (kept.sample_rate, kept.bitrate, kept.track.total_time),
             (48000, 256, 199)
         );
 
-        let silent = with_measured(&track(FILE_TYPE_FLAC, 16), &Pcm::default(), None);
+        let silent = with_measured(&track(FILE_TYPE_FLAC, 16), &Measured::default(), None);
         assert_eq!((silent.sample_rate, silent.bitrate), (0, 0));
     }
 }

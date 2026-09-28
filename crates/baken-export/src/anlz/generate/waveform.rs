@@ -11,9 +11,13 @@
 //! covering samples `[round(i * rate / 150), round((i + 1) * rate / 150))` of
 //! the mono mix `(L + R) / 2`. The previews (400, 100 and 1200 columns) are
 //! aggregates of those columns.
+//!
+//! Tracks are measured as they are decoded ([`Meter`]), so only the columns
+//! are ever held, a few MB for a whole track (issue #171).
 
-use super::decode::Pcm;
+use super::decode::decode_with;
 use crate::anlz::section::{section, Section};
+use std::path::Path;
 
 /// Preview and detail waveforms of one track.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -118,8 +122,8 @@ impl Biquad {
 }
 
 /// Per-column measurements at 150 columns per second.
-#[derive(Default, Clone)]
-struct Column {
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Column {
     peak: f64,
     white: f64,
     band: [f64; 3],
@@ -127,35 +131,109 @@ struct Column {
     samples: u32,
 }
 
-fn measure(pcm: &Pcm) -> Vec<Column> {
-    let channels = pcm.channels.max(1);
-    let frames = pcm.samples.len() / channels;
-    let rate = pcm.sample_rate as f64;
-    let n = ((frames as f64 * COLUMNS_PER_SECOND / rate).ceil() as usize).max(1);
-    let mut columns = vec![Column::default(); n];
-    let mut white = Biquad::lowpass(WHITENESS_LOWPASS_HZ, rate);
-    let mut low = Biquad::lowpass(LOW_HZ, rate);
-    let mut mid_hp = Biquad::highpass(MID_LOW_HZ, rate);
-    let mut mid_lp = Biquad::lowpass(MID_HIGH_HZ, rate);
-    let mut high = Biquad::highpass(HIGH_HZ, rate);
-    let mut col = 0usize;
-    let mut next_edge = (rate / COLUMNS_PER_SECOND).round() as usize;
-    for (i, frame) in pcm.samples.chunks_exact(channels).enumerate() {
-        while i >= next_edge && col + 1 < n {
-            col += 1;
-            next_edge = ((col + 1) as f64 * rate / COLUMNS_PER_SECOND).round() as usize;
-        }
-        let x = frame.iter().map(|&s| s as f64).sum::<f64>() / channels as f64;
-        let c = &mut columns[col];
-        c.peak = c.peak.max(x.abs());
-        c.white = c.white.max(white.step(x).abs());
-        c.band[0] = c.band[0].max(low.step(x).abs());
-        c.band[1] = c.band[1].max(mid_lp.step(mid_hp.step(x)).abs());
-        c.band[2] = c.band[2].max(high.step(x).abs());
-        c.sumsq += x * x;
-        c.samples += 1;
+/// A decoded track reduced to its columns and the numbers the rest of the
+/// analysis needs.
+#[derive(Debug, Clone, Default)]
+pub struct Measured {
+    pub sample_rate: u32,
+    pub channels: usize,
+    pub frames: u64,
+    pub(crate) columns: Vec<Column>,
+}
+
+impl Measured {
+    pub fn duration_ms(&self) -> f64 {
+        self.frames as f64 * 1000.0 / self.sample_rate.max(1) as f64
     }
-    columns
+}
+
+/// Measures interleaved audio into columns as it arrives.
+pub struct Meter {
+    sample_rate: u32,
+    rate: f64,
+    channels: usize,
+    frames: u64,
+    /// Finished columns; `current` is the one being filled.
+    columns: Vec<Column>,
+    current: Column,
+    next_edge: u64,
+    /// Whiteness low-pass, low, mid high-pass, mid low-pass, high.
+    filters: [Biquad; 5],
+}
+
+impl Meter {
+    pub fn new(sample_rate: u32, channels: usize) -> Self {
+        let rate = sample_rate.max(1) as f64;
+        Meter {
+            sample_rate,
+            rate,
+            channels,
+            frames: 0,
+            columns: Vec::new(),
+            current: Column::default(),
+            next_edge: (rate / COLUMNS_PER_SECOND).round() as u64,
+            filters: [
+                Biquad::lowpass(WHITENESS_LOWPASS_HZ, rate),
+                Biquad::lowpass(LOW_HZ, rate),
+                Biquad::highpass(MID_LOW_HZ, rate),
+                Biquad::lowpass(MID_HIGH_HZ, rate),
+                Biquad::highpass(HIGH_HZ, rate),
+            ],
+        }
+    }
+
+    pub fn push(&mut self, interleaved: &[f32]) {
+        let channels = self.channels.max(1);
+        // locals, so the per-sample state stays in registers
+        let [mut white, mut low, mut mid_hp, mut mid_lp, mut high] = self.filters;
+        let (mut frames, mut next_edge) = (self.frames, self.next_edge);
+        let mut c = std::mem::take(&mut self.current);
+        for frame in interleaved.chunks_exact(channels) {
+            while frames >= next_edge {
+                self.columns.push(std::mem::take(&mut c));
+                next_edge = ((self.columns.len() + 1) as f64 * self.rate / COLUMNS_PER_SECOND)
+                    .round() as u64;
+            }
+            let x = frame.iter().map(|&s| s as f64).sum::<f64>() / channels as f64;
+            c.peak = c.peak.max(x.abs());
+            c.white = c.white.max(white.step(x).abs());
+            c.band[0] = c.band[0].max(low.step(x).abs());
+            c.band[1] = c.band[1].max(mid_lp.step(mid_hp.step(x)).abs());
+            c.band[2] = c.band[2].max(high.step(x).abs());
+            c.sumsq += x * x;
+            c.samples += 1;
+            frames += 1;
+        }
+        self.current = c;
+        self.filters = [white, low, mid_hp, mid_lp, high];
+        (self.frames, self.next_edge) = (frames, next_edge);
+    }
+
+    /// `ceil(frames * 150 / rate)` columns: a last column that starts at
+    /// the end of the audio stays empty.
+    pub fn finish(mut self) -> Measured {
+        let n = ((self.frames as f64 * COLUMNS_PER_SECOND / self.rate).ceil() as usize).max(1);
+        self.columns.push(self.current);
+        debug_assert!(self.columns.len() <= n);
+        self.columns.resize(n, Column::default());
+        Measured {
+            sample_rate: self.sample_rate,
+            channels: self.channels,
+            frames: self.frames,
+            columns: self.columns,
+        }
+    }
+}
+
+/// Decode `path` and measure it on the way.
+pub fn measure(path: &Path) -> anyhow::Result<Measured> {
+    let mut meter: Option<Meter> = None;
+    decode_with(path, |chunk, rate, channels| {
+        meter
+            .get_or_insert_with(|| Meter::new(rate, channels))
+            .push(chunk)
+    })?;
+    Ok(meter.map(Meter::finish).unwrap_or_default())
 }
 
 /// `floor(31.5 * (peak / track peak)^2)`, rekordbox's height rule.
@@ -191,8 +269,8 @@ fn ranges(n: usize, parts: usize) -> impl Iterator<Item = std::ops::Range<usize>
     })
 }
 
-pub fn analyze(pcm: &Pcm) -> Waveforms {
-    let columns = measure(pcm);
+pub fn analyze(audio: &Measured) -> Waveforms {
+    let columns = &audio.columns;
     let n = columns.len();
     let track_peak = columns.iter().map(|c| c.peak).fold(0.0, f64::max);
 
@@ -418,20 +496,27 @@ fn detail_section(tag: &[u8; 4], entry_bytes: u32, unknown: u32, data: &[u8]) ->
 mod tests {
     use super::*;
 
-    fn tone(rate: u32, seconds: f64, hz: f64, amp: f64) -> Pcm {
+    fn tone_samples(rate: u32, seconds: f64, hz: f64, amp: f64) -> Vec<f32> {
         let frames = (rate as f64 * seconds) as usize;
-        let samples = (0..frames)
+        (0..frames)
             .flat_map(|i| {
                 let v =
                     (amp * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin()) as f32;
                 [v, v]
             })
-            .collect();
-        Pcm {
-            sample_rate: rate,
-            channels: 2,
-            samples,
+            .collect()
+    }
+
+    fn metered(rate: u32, channels: usize, chunks: &[&[f32]]) -> Measured {
+        let mut m = Meter::new(rate, channels);
+        for c in chunks {
+            m.push(c);
         }
+        m.finish()
+    }
+
+    fn tone(rate: u32, seconds: f64, hz: f64, amp: f64) -> Measured {
+        metered(rate, 2, &[&tone_samples(rate, seconds, hz, amp)])
     }
 
     #[test]
@@ -467,13 +552,24 @@ mod tests {
         assert!(bright.pwv7[20][2] > bright.pwv7[20][0]);
     }
 
+    /// Decoders hand over buffers of any size; the result must not depend on them.
+    #[test]
+    fn chunked_input_measures_like_one_buffer() {
+        for (rate, seconds) in [(44100, 1.3), (32000, 0.77), (22050, 0.5)] {
+            let s = tone_samples(rate, seconds, 330.0, 0.6);
+            let whole = analyze(&metered(rate, 2, &[&s]));
+            let pieces: Vec<&[f32]> = s.chunks(2 * 777).collect();
+            let chunked = metered(rate, 2, &pieces);
+            assert_eq!(chunked.frames as usize, s.len() / 2);
+            assert_eq!(analyze(&chunked), whole);
+            let expected = (s.len() as f64 / 2.0 * 150.0 / rate as f64).ceil() as usize;
+            assert_eq!(whole.pwv3.len(), expected);
+        }
+    }
+
     #[test]
     fn silence_is_zero() {
-        let w = analyze(&Pcm {
-            sample_rate: 44100,
-            channels: 1,
-            samples: vec![0.0; 44100],
-        });
+        let w = analyze(&metered(44100, 1, &[&[0.0; 44100]]));
         assert!(w.pwv3.iter().all(|&b| b == 0xe0));
         assert!(w.pwv7.iter().all(|b| *b == [0, 0, 0]));
         assert_eq!(w.gains, GAIN_FLOOR);
