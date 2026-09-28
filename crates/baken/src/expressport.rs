@@ -162,4 +162,12 @@ fn print_report(plan: &Plan, r: &Report) {
         style("•").dim(),
         plan.device.display()
     );
+    if !plan.settings_files.is_empty() {
+        println!(
+            "  {} {} My Settings files in {}/PIONEER/",
+            style("•").dim(),
+            plan.settings_files.len(),
+            plan.device.display()
+        );
+    }
 }
