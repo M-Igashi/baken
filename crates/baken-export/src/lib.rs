@@ -17,7 +17,7 @@ pub use error::{Error, Result};
 
 use anlz::generate;
 use anlz::generate::decode::Pcm;
-use anlz::hash::anlz_dir;
+use anlz::hash::AnlzSlots;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind, Mp3Audio};
 use baken_core::{fsname, CancelToken, Progress};
@@ -155,6 +155,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     let mut skipped = Vec::new();
     let mut tracks = Vec::new();
     let mut layout = layout::Layout::default();
+    let mut anlz_slots = AnlzSlots::default();
     for &pi in &selected {
         for &tid in &library.playlists[pi].track_ids {
             if !seen.insert(tid) {
@@ -206,9 +207,11 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                     layout::sample_depth(&source),
                 )
             };
+            let (anlz_dir, anlz_index) = anlz_slots.assign(&usb_path);
             tracks.push(PlanTrack {
                 device: DeviceTrack {
-                    anlz_dir: anlz_dir(&usb_path),
+                    anlz_dir,
+                    anlz_index,
                     usb_path,
                     track: track.clone(),
                     file_size: meta.len(),
@@ -341,10 +344,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                     .unwrap_or(dt.file_size);
                 wanted.insert(dest);
                 for kind in FileKind::ALL {
-                    wanted.insert(device_path(
-                        &plan.device,
-                        &format!("{}/ANLZ0000.{}", dt.anlz_dir, kind.extension()),
-                    ));
+                    wanted.insert(device_path(&plan.device, &dt.anlz_path(kind.extension())));
                 }
                 exported.push(dt);
             }
@@ -449,7 +449,7 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
         );
         for (kind, file) in FileKind::ALL.iter().zip(files.iter()) {
             write_anlz(
-                &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
+                &device_path(&plan.device, &pt.device.anlz_path(kind.extension())),
                 &file.to_bytes(),
                 report,
             )?;
@@ -483,7 +483,7 @@ fn export_track(plan: &Plan, pt: &PlanTrack, report: &mut Report) -> anyhow::Res
             }
         }
         write_anlz(
-            &anlz_dest.join(format!("ANLZ0000.{}", kind.extension())),
+            &device_path(&plan.device, &pt.device.anlz_path(kind.extension())),
             &file.to_bytes(),
             report,
         )?;
@@ -613,6 +613,7 @@ mod tests {
             track: collection::Track::default(),
             usb_path: String::new(),
             anlz_dir: String::new(),
+            anlz_index: 0,
             file_size: 8_000_000,
             sample_depth,
             file_type,
