@@ -83,6 +83,28 @@ impl Ids {
     }
 }
 
+/// The keys table holds each key the way the XML spells it, because rekordbox
+/// writes the names it displays and the player prints them as they are: a
+/// Classic export shows `Cm`, an Alphanumeric one `5A`. Only keys a track uses
+/// are listed, in wheel order (`1A` first), the first spelling seen first.
+fn key_rows(tracks: &[DeviceTrack]) -> Vec<(u32, String)> {
+    let mut names: Vec<(u8, String)> = Vec::new();
+    for dt in tracks {
+        let name = dt.track.tonality.trim();
+        if let Some(i) = parse_key(name) {
+            if !names.iter().any(|(_, n)| n == name) {
+                names.push((i, name.to_string()));
+            }
+        }
+    }
+    names.sort_by_key(|(i, _)| *i);
+    names
+        .into_iter()
+        .enumerate()
+        .map(|(id, (_, name))| (id as u32 + 1, name))
+        .collect()
+}
+
 /// Playlists to include, as indices into `library.playlists` (leaf playlists only).
 pub fn build(
     library: &Library,
@@ -98,6 +120,7 @@ pub fn build(
     let mut album_rows: Vec<(u32, String)> = Vec::new();
     let mut track_ids: HashMap<u64, u32> = HashMap::new();
     let mut rows_out = Vec::with_capacity(tracks.len());
+    let keys = key_rows(tracks);
 
     for (i, dt) in tracks.iter().enumerate() {
         let t = &dt.track;
@@ -116,8 +139,10 @@ pub fn build(
             }
             entry.0
         };
-        // The keys table is in Alphanumeric order, so a Classic "Am" is id 15 ("8A").
-        let key_id = parse_key(&t.tonality).map_or(0, |i| i as u32 + 1);
+        let key_id = keys
+            .iter()
+            .find(|(_, n)| n == t.tonality.trim())
+            .map_or(0, |(id, _)| *id);
         let color_id = t
             .colour
             .and_then(|rgb| COLORS.iter().find(|(_, _, c)| *c == rgb))
@@ -214,6 +239,7 @@ pub fn build(
         albums: albums_out,
         genres: genres.rows,
         labels: labels.rows,
+        keys,
         playlists,
         device_name: device_name.to_string(),
         export_date: export_date.to_string(),
@@ -259,15 +285,39 @@ mod tests {
         );
     }
 
+    fn keyed(tonality: &[&str]) -> Vec<DeviceTrack> {
+        tonality
+            .iter()
+            .map(|k| DeviceTrack {
+                track: Track {
+                    tonality: k.to_string(),
+                    ..Default::default()
+                },
+                usb_path: String::new(),
+                anlz_dir: String::new(),
+                anlz_index: 0,
+                file_size: 0,
+                sample_depth: 0,
+                file_type: 0,
+                bitrate: 0,
+                sample_rate: 0,
+            })
+            .collect()
+    }
+
+    fn names(rows: &[(u32, String)]) -> Vec<(u32, &str)> {
+        rows.iter().map(|(id, n)| (*id, n.as_str())).collect()
+    }
+
     #[test]
-    fn key_ids_follow_the_keys_table() {
-        use crate::pdb::fixed::KEYS;
-        for (i, k) in KEYS.iter().enumerate() {
-            assert_eq!(parse_key(k), Some(i as u8));
-        }
-        // #116: a Classic export (Cm, Ab) left every key_id at 0.
-        assert_eq!(KEYS[parse_key("Cm").unwrap() as usize], "5A");
-        assert_eq!(KEYS[parse_key("Ab").unwrap() as usize], "4B");
+    fn keys_keep_the_xml_spelling_in_wheel_order() {
+        // #116: a Classic export has to show Cm on the player, like rekordbox's.
+        let rows = key_rows(&keyed(&["Cm", "Ab", "Cm", "", "A minor", " Abm "]));
+        assert_eq!(names(&rows), [(1, "Abm"), (2, "Ab"), (3, "Cm")]);
+        // Both spellings of one key get their own row, as on a rekordbox stick.
+        let rows = key_rows(&keyed(&["8A", "Am", "1A"]));
+        assert_eq!(names(&rows), [(1, "1A"), (2, "8A"), (3, "Am")]);
+        assert!(key_rows(&keyed(&["", "x"])).is_empty());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! sequence above every data page); colors and columns keep rekordbox's fixed
 //! 2 and 3.
 
-use super::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, KEYS, SORT_ROWS};
+use super::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
 use super::page::{header_page, index_page, DataPage, HeaderStyle, PAGE_LEN};
 use super::rows::{self, TrackRow};
 
@@ -31,6 +31,8 @@ pub struct Export {
     pub albums: Vec<(u32, u32, String)>,
     pub genres: Vec<(u32, String)>,
     pub labels: Vec<(u32, String)>,
+    /// `(id, name)`: only the keys the tracks use, spelled as in the XML.
+    pub keys: Vec<(u32, String)>,
     pub playlists: Vec<ExportPlaylist>,
     pub device_name: String,
     /// `YYYY-MM-DD`.
@@ -85,12 +87,7 @@ fn tables(e: &Export) -> Vec<Table> {
         })
         .collect();
     t[4].rows = fixed_rows(e.labels.iter().map(|(id, n)| rows::named(*id, n)).collect());
-    t[5].rows = fixed_rows(
-        KEYS.iter()
-            .enumerate()
-            .map(|(i, k)| rows::key(i as u32 + 1, k))
-            .collect(),
-    );
+    t[5].rows = fixed_rows(e.keys.iter().map(|(id, n)| rows::key(*id, n)).collect());
     t[6].style = HeaderStyle::Fixed;
     t[6].seq = Some(2);
     t[6].rows = fixed_rows(
@@ -251,7 +248,16 @@ mod tests {
             eprintln!("fixture missing, skipping");
             return;
         };
-        let out = write(&Export::default());
+        // The 587 tracks use all 24 keys, so rekordbox listed them all in wheel order.
+        let keys = (1..=12)
+            .flat_map(|n| [format!("{n}A"), format!("{n}B")])
+            .zip(1..)
+            .map(|(k, id)| (id, k))
+            .collect();
+        let out = write(&Export {
+            keys,
+            ..Default::default()
+        });
         // table pointers of ours: find keys(5), colors(6), columns(16)
         let ptr = |d: &[u8], ty: u32| -> (u32, u32, u32) {
             let n = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
@@ -358,7 +364,8 @@ mod tests {
         }
         assert_eq!(rows_seen[&0], 700);
         assert_eq!(rows_seen[&8], 700);
-        assert_eq!(rows_seen[&5], 24);
+        // No track has a key, so like rekordbox's empty export there are no key rows.
+        assert_eq!(rows_seen.get(&5).copied().unwrap_or(0), 0);
         assert_eq!(rows_seen[&19], 1);
     }
 }
