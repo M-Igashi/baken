@@ -14,11 +14,21 @@ pub struct DeviceTrack {
     pub usb_path: String,
     /// `/PIONEER/USBANLZ/Pxxx/xxxxxxxx`
     pub anlz_dir: String,
+    /// `N` of `ANLZ000N.*`: tracks whose paths hash to the same `anlz_dir`
+    /// are numbered in export order, the way rekordbox does it.
+    pub anlz_index: u16,
     pub file_size: u64,
     pub sample_depth: u16,
     pub file_type: u16,
     pub bitrate: u32,
     pub sample_rate: u32,
+}
+
+impl DeviceTrack {
+    /// `/PIONEER/USBANLZ/Pxxx/xxxxxxxx/ANLZ000N.<ext>`
+    pub fn anlz_path(&self, ext: &str) -> String {
+        format!("{}/ANLZ{:04}.{ext}", self.anlz_dir, self.anlz_index)
+    }
 }
 
 /// The extension decides, because rekordbox always writes a `Kind` that
@@ -143,7 +153,7 @@ pub fn build(
             date_added: t.date_added.clone(),
             release_date: String::new(),
             mix_name: t.mix.clone(),
-            analyze_path: format!("{}/ANLZ0000.DAT", dt.anlz_dir),
+            analyze_path: dt.anlz_path("DAT"),
             analyze_date: export_date.to_string(),
             comment: t.comments.clone(),
             title: t.name.clone(),

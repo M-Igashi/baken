@@ -477,6 +477,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 - Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
 - Format the stick as **FAT32 with an MBR partition table**. A CDJ-2000NXS2 or older reads neither exFAT nor a GPT disk and does not show such a stick at all; a CDJ-3000 also reads exFAT.
 - Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
+- Check a finished stick on a player, not by opening it in rekordbox: rekordbox rewrites a device library it opens, and even changes a stick that is only mounted while it runs. [rbsync](https://github.com/aquarazorda/rbsync) measured it deleting 768 of 5,825 playlist entries from a stick it opened and adding an `exportLibrary.db`. If that happened, run `expressport` again (it rewrites `export.pdb`) and delete `PIONEER/rekordbox/exportLibrary.db`.
 - On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.
 - Artwork is not exported yet.
 

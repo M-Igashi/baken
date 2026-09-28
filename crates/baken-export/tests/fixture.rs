@@ -2,7 +2,7 @@
 //! (`.claude/fixtures/JPHFAREKORD-20260918`, not in git). Every test returns
 //! early when the fixture is absent.
 
-use baken_export::anlz::hash::anlz_dir;
+use baken_export::anlz::hash::{anlz_dir, AnlzSlots};
 use baken_export::anlz::locate::AnlzIndex;
 use baken_export::anlz::rewrite::{prepare, FileKind};
 use baken_export::anlz::section::AnlzFile;
@@ -73,10 +73,9 @@ fn hash_matches_every_fixture_track() {
     assert!(tracks.len() > 500);
     let mismatches: Vec<_> = tracks
         .iter()
-        .filter(|(_, fp, ap)| format!("{}/ANLZ0000.DAT", anlz_dir(fp)) != *ap)
+        .filter(|(_, fp, ap)| ap.rsplit_once('/').map(|(dir, _)| dir) != Some(&anlz_dir(fp)))
         .collect();
-    // the single known exception is a directory where the player wrote ANLZ0001.DAT
-    assert!(mismatches.len() <= 1, "{mismatches:?}");
+    assert!(mismatches.is_empty(), "{mismatches:?}");
 }
 
 fn mask_pcp2_tails(data: &[u8]) -> Vec<u8> {
@@ -201,6 +200,7 @@ fn pdb_from_fixture_collection_round_trips() {
         })
         .collect();
     let mut layout = Layout::default();
+    let mut slots = AnlzSlots::default();
     let mut seen = std::collections::HashSet::new();
     let mut tracks = Vec::new();
     for &pi in &selected {
@@ -210,8 +210,10 @@ fn pdb_from_fixture_collection_round_trips() {
             }
             let t = lib.track(tid).unwrap().clone();
             let usb_path = layout.assign(&t);
+            let (anlz_dir, anlz_index) = slots.assign(&usb_path);
             tracks.push(DeviceTrack {
-                anlz_dir: anlz_dir(&usb_path),
+                anlz_dir,
+                anlz_index,
                 usb_path,
                 file_size: t.size,
                 sample_depth: 16,
@@ -222,6 +224,24 @@ fn pdb_from_fixture_collection_round_trips() {
             });
         }
     }
+    // export order numbers a shared analysis directory exactly like rekordbox (#176)
+    let theirs: HashMap<String, String> = fixture_tracks(&root)
+        .into_iter()
+        .map(|(_, fp, ap)| (fp, ap))
+        .collect();
+    let compared: Vec<_> = tracks
+        .iter()
+        .filter_map(|dt| Some((theirs.get(&dt.usb_path)?, dt.anlz_path("DAT"))))
+        .collect();
+    assert!(compared.len() > 500);
+    assert!(compared.iter().all(|(a, b)| *a == b));
+    assert_eq!(
+        compared
+            .iter()
+            .filter(|(a, _)| a.ends_with("ANLZ0001.DAT"))
+            .count(),
+        1
+    );
     let model = build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2026-09-18");
     assert_eq!(model.playlists.len(), 4);
     let bytes = baken_export::pdb::write(&model);
