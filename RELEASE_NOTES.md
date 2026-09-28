@@ -1,30 +1,34 @@
-# Bake'n Deck 4.0.2 - files you can delete again on macOS 26, and a first CDJ reading an `expressport` stick
+# Bake'n Deck 4.1.0 - `expressport` sticks laid out more like rekordbox's, and generated analysis in a few MB
 
-A patch release built from the first hardware reports in [#116](https://github.com/M-Igashi/baken/issues/116) and the macOS 26 file-name issue [#154](https://github.com/M-Igashi/baken/issues/154). A CDJ-2000NXS2 has now read a stick written by `baken expressport`: it found My Settings, listed the playlist in order and loaded tracks with their waveforms. `expressport` stays a beta until the remaining #116 tests are done.
+A minor release for `baken expressport`, built from the first hardware reports in [#116](https://github.com/M-Igashi/baken/issues/116) and from checking our writer against [rbsync](https://github.com/aquarazorda/rbsync), whose `export.pdb` has been read by a CDJ-2000NXS2 with 3,436 tracks. `expressport` stays a beta until the remaining #116 tests are done. `headroom`, `rbsort` and `cdjsafe` are unchanged.
 
 ## Highlights
 
-- **Files baken writes on macOS 26 can be deleted again** ([#154](https://github.com/M-Igashi/baken/issues/154), [#159](https://github.com/M-Igashi/baken/pull/159)). macOS 26 mounts ExFAT/FAT sticks through FSKit, which stores a name in the Unicode form it was created with, lists every name decomposed (NFD), and only deletes a file by its stored form. In 4.0.1 this meant that headroom backups and cdjsafe outputs could not be removed with `rm -rf`, that a track or `collection.xml` rewritten by headroom, rbsort or cdjsafe could no longer be removed by its listed name, and that `baken expressport` ended **every** export with `No such file or directory (os error 2)` as soon as an artist, album or file name was non-ASCII (the AppleDouble cleanup and `--prune` both tripped over it). Files baken creates next to your own now use the macOS form, and everything baken removes on a stick is removed by its stored name. The stick itself stays NFC, because that is how rekordbox writes `export.pdb` and how the player looks files up.
-- **`DEVSETTING.DAT` is optional** (`baken expressport`, [#158](https://github.com/M-Igashi/baken/pull/158)). Some rekordbox 7 installs never create it, the player writes its own, and a CDJ-2000NXS2 read a stick without it. It is copied when present and skipped when not; `MYSETTING.DAT`, `MYSETTING2.DAT` and `DJMMYSETTING.DAT` stay required. The settings files are now validated before anything is written, so a bad one no longer stops the run after the audio and `export.pdb` are already on the stick, and `--dry-run` reports it. The messages point to Preferences > DJ System > My Settings in rekordbox 7's **EXPORT mode**, the only mode that shows that page.
-- **Re-running an export after a playlist change is nearly free** (`baken expressport`, [#161](https://github.com/M-Igashi/baken/pull/161)). The local analysis cache is indexed in parallel, analysis files the stick already holds byte for byte are not written again, and the AppleDouble cleanup only walks the folders a run wrote into. On a 326-track, 18.4 GB test export, an unchanged re-run went from 5.8 s to 1.9 s (cold) and from 1.8 s to 0.6 s (warm); the first export from 34.2 s to 30.7 s.
+- **`export.pdb` strings are aligned like rekordbox's, and the track count is written** ([#168](https://github.com/M-Igashi/baken/pull/168)). rekordbox starts every UTF-16 string (any name that is not plain ASCII) on a 4-byte boundary of its row; baken packed them, some at odd offsets. A CDJ-2000NXS2 froze while drawing the ARTIST preview of a stick with non-ASCII names, and this is the prime suspect; please retest on an NXS2. The track count in the history row was 0, which a CDJ-3000 showed as `Songs 0`. Thanks to @Alex2Code for the report that found both.
+- **Tracks that share an analysis folder no longer overwrite each other** ([#176](https://github.com/M-Igashi/baken/issues/176), [#177](https://github.com/M-Igashi/baken/pull/177)). The folder under `PIONEER/USBANLZ` is a hash of the track's path modulo 200003, so two tracks can land in the same one: about one pair in 600 tracks, three in 1,100. rekordbox then writes the second track's files as `ANLZ0001.*`; baken wrote `ANLZ0000.*` for both, so one of the two tracks got the other's waveform, beat grid and cues. They are now numbered in export order, exactly as rekordbox did in the reference export.
+- **`--generate-analysis` needs a few MB instead of gigabytes** ([#171](https://github.com/M-Igashi/baken/issues/171), [#178](https://github.com/M-Igashi/baken/pull/178)). Every track used to be decoded whole into memory, and the process kept most of it: 1.8 GB for a 352-track export. The waveforms are now measured as the audio is decoded: 50 MB for the same export, with every file on the stick byte-identical to 4.0.2's.
 
 ## Other changes
 
-- `baken expressport --no-settings` writes no My Settings, so the player keeps its own. It conflicts with `--settings-dir`.
-- `baken expressport` picks the file type from the file extension. rekordbox's `Kind` is only used to tell ALAC from AAC in an `.m4a` and for unknown extensions. A FLAC that a third-party converter labelled `Kind="MP3 File"` hung the player on NOW LOADING; rekordbox's own exports always agree with the extension, so they are unaffected.
-- `baken expressport --generate-analysis` warns about tracks whose XML has no beat grid (`TEMPO`), e.g. from mixxx2rekordbox: the player shows their BPM only after detecting it while playing, and quantize and beat sync cannot use them ([#162](https://github.com/M-Igashi/baken/pull/162)).
-- Where there is no rekordbox analysis directory (Linux), the plan says so instead of printing an empty path.
-- The AppleDouble cleanup also removes `._Contents` and `._PIONEER` at the stick root.
-- README: `EXPORT mode` for My Settings, what a missing `TEMPO` means, and a note that Terminal's `rm` cannot remove the stick's NFC names on macOS 26 while Finder and `--prune` can.
+- `baken expressport --generate-analysis` fills in sample rate, bitrate and length from the audio when the XML has them as 0, following the values rekordbox itself writes: the nominal rate for MP3, the PCM rate for lossless (`1411`, `2116`), whole seconds for the length ([#169](https://github.com/M-Igashi/baken/pull/169)). A CDJ-3000 showed such 320 kbps MP3s as VBR. A value from the XML always wins.
+- `baken expressport` checks that the stick can be written before the first track, and says why when it cannot: not mounted, read-only, full, or a mount left behind on Linux after the stick was pulled ([#165](https://github.com/M-Igashi/baken/issues/165), [#166](https://github.com/M-Igashi/baken/pull/166)). The plan also warns when `--device` is not the root of a mounted volume, which would put the export on your own disk. Thanks to @sairutra for the report.
+- The report says where the My Settings files went: `PIONEER/` on the stick, not its root ([#172](https://github.com/M-Igashi/baken/issues/172), [#174](https://github.com/M-Igashi/baken/pull/174)). Thanks to @sairutra.
+- README: a CDJ-2000NXS2 or older reads only FAT32 on an MBR partition table, and does not show an exFAT or GPT stick at all ([#175](https://github.com/M-Igashi/baken/pull/175)); check a finished stick on a player, not by opening it in rekordbox, which rewrites a device library it opens.
+- CI: `dtolnay/rust-toolchain` bumped ([#164](https://github.com/M-Igashi/baken/pull/164)).
 
 ## Library users
 
-- `baken-core`: new module `fsname` (`native`, `nfc`, `replace`, `remove_file`, `remove_dir`) and a new dependency, `unicode-normalization`. Nothing is removed or renamed.
-- `baken-export`: `settings::FILES` is split into `REQUIRED` and `OPTIONAL`, `settings::files()` is new and `copy_all` takes the file list; `Options` gains `no_settings`; `Plan::settings_dir` becomes an `Option` and `Plan` gains `settings_files` and `without_grid()`; `Report` gains `anlz_unchanged`.
+- `baken-core`: no changes; the version follows the workspace.
+- `baken-export` is **not source-compatible** with 4.0.x (`baken` is its only known user):
+  - `anlz::generate::{decode, Pcm}` are removed. `measure(path)` returns a `Measured` (sample rate, channels, frame count, columns), `Meter` measures buffers as they are decoded, and `waveform::analyze` and `build_files` take `&Measured`.
+  - `DeviceTrack` gains `anlz_index` and `anlz_path(ext)`; `anlz::hash::AnlzSlots` hands out the numbers.
+  - `anlz::rewrite::mp3_audio_frames` is now `mp3_audio`, returning `Mp3Audio` (frames, bytes, sample rate, `kbps()`).
+  - `Plan` gains `volume_root`, `Error` gains `DeviceWrite`, and `pdb::rows::history_property` takes the track count.
 
 ## Upgrading
 
-No action needed. Files that 4.0.x already renamed to NFC on an FSKit disk stay as they are; Finder removes them.
+- Run `baken expressport` again onto sticks written by 4.0.x. `export.pdb` is rebuilt on every run and changed analysis files are rewritten; audio already on the stick is not copied again.
+- For #116 testers: an `ANLZ0001.*` file next to an `ANLZ0000.*` is now normal. It is baken numbering two tracks that share a folder, not the player rejecting a file.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
