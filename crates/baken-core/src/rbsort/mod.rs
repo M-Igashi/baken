@@ -1,4 +1,4 @@
-//! Camelot Key + BPM playlist sort inside an exported rekordbox XML (`baken rbsort`).
+//! Key + BPM playlist sort (Alphanumeric notation, 1A to 12B) inside an exported rekordbox XML (`baken rbsort`).
 
 mod camelot;
 mod xml;

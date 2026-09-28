@@ -14,7 +14,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | Subcommand | The gap it fills | What it does |
 |---|---|---|
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
-| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Camelot Key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
+| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Alphanumeric key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes a whole playlist to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
 | [`baken expressport`](#direct-usb-export-baken-expressport--beta) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings (beta since v3.5.0) |
 
@@ -321,7 +321,7 @@ A lossy file within one step of the ceiling can only be moved by re-encoding it,
 
 ## rekordbox Playlist Sorter (`baken rbsort`)
 
-rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported rekordbox XML and rewrites every playlist in it so its tracks run **Camelot Key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
+rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported rekordbox XML and rewrites every playlist in it so its tracks run **Alphanumeric key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
 
 This is the same idea as `baken headroom` applied to playlist order: rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
 
@@ -363,9 +363,9 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 
 ### Sort Rules
 
-- **Primary**: Camelot Key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
+- **Primary**: Alphanumeric key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
 - **Secondary**: BPM ascending within each key group
-- Tracks with no Camelot key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
+- Tracks with no Alphanumeric key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
 
 See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*. The same walk-through, with the workflow around it, is at [baken.ravers.workers.dev/sort](https://baken.ravers.workers.dev/sort).
 
@@ -487,7 +487,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 - **A rekordbox install is normally required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) needs `--generate-analysis` for the waveforms (see [#145](https://github.com/M-Igashi/baken/issues/145) and [#147](https://github.com/M-Igashi/baken/issues/147)) and either `--settings-dir` pointing at the `*SETTING.DAT` files from any stick rekordbox once exported, or `--no-settings`; nothing in the XML can stand in for the settings.
 - Built into the binaries; `cargo install baken --no-default-features` leaves it out.
 - Legacy device library only (`export.pdb`): CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) are not supported yet.
-- Format the stick as **FAT32 with an MBR partition table**. A CDJ-2000NXS2 or older reads neither exFAT nor a GPT disk and does not show such a stick at all; a CDJ-3000 also reads exFAT.
+- Format the stick as **FAT32 with an MBR partition table**. A CDJ-2000NXS2 or older reads neither exFAT nor a GPT disk and does not show such a stick at all; a CDJ-3000 also reads exFAT. (The players' manuals also list FAT16 and HFS+.) `expressport` reads the stick's filesystem and partition table before writing and warns when they rule out a player (macOS and Linux; on macOS the partition table comes from `diskutil`, on Linux from `lsblk`).
 - Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
 - Check a finished stick on a player, not by opening it in rekordbox: rekordbox rewrites a device library it opens, and even changes a stick that is only mounted while it runs. [rbsync](https://github.com/aquarazorda/rbsync) measured it deleting 768 of 5,825 playlist entries from a stick it opened and adding an `exportLibrary.db`. If that happened, run `expressport` again (it rewrites `export.pdb`) and delete `PIONEER/rekordbox/exportLibrary.db`.
 - On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.

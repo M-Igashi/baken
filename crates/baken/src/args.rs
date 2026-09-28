@@ -27,7 +27,7 @@ pub enum Command {
     /// folder as an argument). Provide paths or any flag to run in
     /// non-interactive (scriptable) mode.
     Headroom(HeadroomArgs),
-    /// Sort rekordbox playlists by Camelot Key then BPM, in place in the exported XML.
+    /// Sort rekordbox playlists by Alphanumeric key (1A to 12B) then BPM, in place in the exported XML.
     ///
     /// Every playlist keeps its name and folder position; only the track order
     /// inside each one changes. Point rekordbox's "rekordbox xml" Imported
