@@ -412,18 +412,30 @@ If any track fails to convert, **no XML is written** — a partial USB defeats t
 3. Right-click the imported tracks → **Import to Collection**. Cues and beatgrid come with them — no re-analysis needed.
 4. Export the playlist to USB in EXPORT mode as usual.
 
+### Checking a playlist first (`--check`)
+
+```sh
+baken cdjsafe ~/Music/rekordbox/collection.xml --playlist "Sets/Friday" --check
+```
+
+Probes every track and prints, per track, what a pre-NXS2 player (CDJ-2000NXS, CDJ-900NXS), a CDJ-2000NXS2 and a CDJ-3000 will do with it: ✓ within the formats the player's operating instructions list, ✗ outside them (with the reason, such as FLAC on a pre-NXS2 player, a 32-bit float WAV, or a 192 kHz file), and ? where the manual says nothing (mono or multichannel files, `WAVE_FORMAT_EXTENSIBLE` WAVs, AIFF-C, VBR MP3 without a Xing header). A summary line per player follows, such as "3 of 42 tracks will not play on a pre-NXS2 player". Nothing is written and `--out-dir` is not needed. The exit code is 1 when a player refuses a track or a track is missing or unreadable, so a script can run it before an export.
+
+The tables come from Pioneer's own operating instructions only, never from another tool's table; each one is cited in `crates/baken-core/src/cdjsafe/matrix.rs`. The CDJ-2000NXS2, for instance, lists WAV, AIFF, Apple Lossless and FLAC at up to 96 kHz from USB, while the CDJ-3000 lists MP3 and AAC at 44.1 and 48 kHz only. Every manual also says that some files do not play even in a supported format, so ✓ means "within the list", not a guarantee. `--check` only reports: a conversion still converts the whole playlist.
+
 ### Usage
 
 ```
 baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
+baken cdjsafe <XML> --playlist <PATH> --check
 ```
 
 | Argument / Flag | Description |
 |------|-------------|
 | `<XML>` | Exported rekordbox XML (required) |
 | `--playlist <PATH>` | Playlist to convert (required). Top-level: just the name; nested: `Folder/Playlist` |
-| `--out-dir <DIR>` | Directory for the MP3 files (required; created if missing) |
+| `--out-dir <DIR>` | Directory for the MP3 files (required unless `--check`; created if missing) |
 | `--output <PATH>` (`-o`) | Output XML path. Defaults to `<input-stem>-out.<ext>` next to the input |
+| `--check` | Write nothing; report what each class of player does with every track (see above) |
 
 ### Notes
 

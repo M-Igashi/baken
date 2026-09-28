@@ -78,6 +78,48 @@ pub fn sanitize_filename(name: &str) -> String {
     out
 }
 
+/// rekordbox cuts the stem of a file on the stick at this many characters.
+const MAX_STEM: usize = 43;
+
+fn component(s: &str, fallback: &str) -> String {
+    let s = s.trim();
+    if s.is_empty() {
+        fallback.to_string()
+    } else {
+        sanitize_filename(s)
+    }
+}
+
+fn split_ext(name: &str) -> (&str, &str) {
+    match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    }
+}
+
+fn truncate_chars(s: &str, n: usize) -> &str {
+    match s.char_indices().nth(n) {
+        Some((i, _)) => &s[..i],
+        None => s,
+    }
+}
+
+/// Where a rekordbox export puts a file on the stick:
+/// `/Contents/<Artist>/<Album>/<file>`, FAT32-safe names, the stem cut at 43
+/// characters. `suffix` (`-1`, `-2`…) tells apart files that would otherwise
+/// share a path; the stem is cut so that stem and suffix stay within the 43.
+pub fn stick_path(artist: &str, album: &str, file_name: &str, suffix: &str) -> String {
+    let (stem, ext) = split_ext(file_name);
+    let stem = component(stem, "track");
+    format!(
+        "/Contents/{}/{}/{}{suffix}{}",
+        component(artist, "UnknownArtist"),
+        component(album, "UnknownAlbum"),
+        truncate_chars(&stem, MAX_STEM - suffix.chars().count()),
+        sanitize_filename(ext)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,13 +1,18 @@
 //! CDJ-safe MP3 transcode of one rekordbox playlist (`baken cdjsafe`).
 //!
 //! Two phases: [`plan`] reads the XML and validates sources without touching
-//! any file; [`convert`] transcodes and writes the new XML.
+//! any file; [`convert`] transcodes and writes the new XML. [`check::check`]
+//! takes the same plan and only reports what each class of player does with
+//! every track.
 
+pub mod check;
+mod header;
 mod location;
+mod matrix;
 mod transcode;
 mod xml;
 
-pub use location::{decode_location, encode_location, sanitize_filename};
+pub use location::{decode_location, encode_location, sanitize_filename, stick_path};
 pub use transcode::{probe, transcode, SourceInfo};
 pub use xml::CDJSAFE_FOLDER_NAME;
 

@@ -241,13 +241,20 @@ pub struct CdjsafeArgs {
     pub playlist: String,
 
     /// Directory to write the CDJ-safe MP3 files into (created if missing).
-    #[arg(long, value_name = "DIR")]
-    pub out_dir: PathBuf,
+    #[arg(long, value_name = "DIR", required_unless_present = "check")]
+    pub out_dir: Option<PathBuf>,
 
     /// Output XML path. Optional — defaults to the input filename with "-out"
     /// appended to the stem, in the same directory.
-    #[arg(long, short, value_name = "PATH")]
+    #[arg(long, short, value_name = "PATH", conflicts_with = "check")]
     pub output: Option<PathBuf>,
+
+    /// Write nothing: probe every track and print what a pre-NXS2 player
+    /// (CDJ-2000NXS, CDJ-900NXS), a CDJ-2000NXS2 and a CDJ-3000 will do with
+    /// it, going by Pioneer's operating instructions. Exits with 1 when a
+    /// player refuses a track, or a track is missing or cannot be read.
+    #[arg(long, conflicts_with = "out_dir")]
+    pub check: bool,
 }
 
 #[derive(Args, Debug)]
