@@ -28,6 +28,7 @@ use collection::Library;
 use std::collections::{BTreeMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Condvar, Mutex};
 
 #[derive(Debug, Clone, Default)]
@@ -532,17 +533,94 @@ impl Drop for StopOnDrop<'_> {
     }
 }
 
-/// A track's analysis files and final `DeviceTrack`, computed from local
-/// files only so that it can run ahead of the stick writes (issue #160).
+/// A track's analysis files, audio and final `DeviceTrack`, computed ahead
+/// of the stick writes (issue #160) from local files, except that `--cdjsafe`
+/// looks at the stick once to see whether the MP3 is already there.
 struct Prepared {
     files: Vec<(FileKind, AnlzFile)>,
     device: DeviceTrack,
     generated: bool,
+    audio: Audio,
+}
+
+/// Where the audio written to the stick comes from.
+enum Audio {
+    /// The source file, byte for byte.
+    Source,
+    /// `--cdjsafe`: the MP3 encoded on the local disk ahead of the write.
+    Transcoded(TempFile),
+    /// `--cdjsafe`: already on the stick, nothing to write.
+    OnStick,
+}
+
+/// A file on the local disk, removed when dropped: a transcode that never
+/// reaches the stick (a failure, a cancel) leaves nothing behind.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(ext: &str) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        TempFile(std::env::temp_dir().join(format!(
+            "baken-expressport-{}-{}.{ext}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )))
+    }
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
+    let audio = if plan.cdjsafe {
+        cdjsafe_audio(plan, pt)?
+    } else {
+        Audio::Source
+    };
+    let mut prepared = prepare_analysis(plan, pt)?;
+    if plan.cdjsafe {
+        // `PVBR` describes the MP3 that ends up on the stick, whichever that is
+        let mp3 = match &audio {
+            Audio::Source => pt.source.clone(),
+            Audio::Transcoded(tmp) => tmp.0.clone(),
+            Audio::OnStick => device_path(&plan.device, &pt.device.usb_path),
+        };
+        let frames = rewrite::mp3_audio(&mp3)?.frames;
+        for (kind, file) in &mut prepared.files {
+            match kind {
+                FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
+                FileKind::Ext => rewrite::strip_pvb2(file),
+                FileKind::TwoEx => {}
+            }
+        }
+    }
+    prepared.audio = audio;
+    Ok(prepared)
+}
+
+/// `--cdjsafe`: the MP3 for the stick, encoded here on the worker so that the
+/// encoder never waits for the stick and the stick sees one plain copy
+/// (issue #197). A track already on the stick is kept; one that is already
+/// 320 kbps CBR MP3 goes as it is.
+fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Audio> {
+    if device_path(&plan.device, &pt.device.usb_path).is_file() {
+        return Ok(Audio::OnStick);
+    }
+    if baken_core::cdjsafe::probe(&pt.source)?.is_compatible_mp3() {
+        return Ok(Audio::Source);
+    }
+    let tmp = TempFile::new("mp3");
+    baken_core::cdjsafe::transcode(&pt.source, &tmp.0)?;
+    Ok(Audio::Transcoded(tmp))
+}
+
+/// The analysis files: rekordbox's own rewritten for the stick, or generated
+/// from the audio. `--cdjsafe` sets `PVBR` afterwards, in [`prepare`].
+fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
     let Some(entry) = &pt.anlz else {
-        // `--cdjsafe` sets `PVBR` from the transcoded file when it is written
         let mp3 = if is_mp3(&pt.source) && !plan.cdjsafe {
             Some(rewrite::mp3_audio(&pt.source)?)
         } else {
@@ -559,6 +637,7 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             files: FileKind::ALL.into_iter().zip(files).collect(),
             device: with_measured(&pt.device, &audio, mp3),
             generated: true,
+            audio: Audio::Source,
         });
     };
     let bpm = pt
@@ -593,6 +672,7 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
         files,
         device: pt.device.clone(),
         generated: false,
+        audio: Audio::Source,
     })
 }
 
@@ -600,7 +680,7 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
 fn write_track(
     plan: &Plan,
     pt: &PlanTrack,
-    mut prepared: Prepared,
+    prepared: Prepared,
     report: &mut Report,
 ) -> anyhow::Result<DeviceTrack> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
@@ -608,31 +688,19 @@ fn write_track(
         std::fs::create_dir_all(parent)?;
     }
     let existing = std::fs::metadata(&dest).ok().map(|m| m.len());
-    if plan.cdjsafe {
-        if existing.is_some() {
-            report.kept += 1;
-        } else if baken_core::cdjsafe::probe(&pt.source)?.is_compatible_mp3() {
-            copy_audio(&pt.source, &dest)?;
-            report.copied += 1;
-        } else {
-            baken_core::cdjsafe::transcode(&pt.source, &dest)?;
+    match &prepared.audio {
+        Audio::OnStick if existing.is_some() => report.kept += 1,
+        Audio::OnStick => anyhow::bail!("{} disappeared from the stick", dest.display()),
+        Audio::Transcoded(mp3) => {
+            copy_audio(&mp3.0, &dest)?;
             report.transcoded += 1;
         }
-    } else if existing == Some(pt.device.file_size) {
-        report.kept += 1;
-    } else {
-        copy_audio(&pt.source, &dest)?;
-        report.copied += 1;
-    }
-
-    if plan.cdjsafe {
-        let frames = rewrite::mp3_audio(&dest)?.frames;
-        for (kind, file) in &mut prepared.files {
-            match kind {
-                FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
-                FileKind::Ext => rewrite::strip_pvb2(file),
-                FileKind::TwoEx => {}
-            }
+        Audio::Source if !plan.cdjsafe && existing == Some(pt.device.file_size) => {
+            report.kept += 1;
+        }
+        Audio::Source => {
+            copy_audio(&pt.source, &dest)?;
+            report.copied += 1;
         }
     }
     std::fs::create_dir_all(device_path(&plan.device, &pt.device.anlz_dir))?;
@@ -907,7 +975,9 @@ mod tests {
     fn copy_audio_copies_the_bytes_and_nothing_else() {
         let dir = std::env::temp_dir().join(format!("baken-copy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let data: Vec<u8> = (0..(9usize << 20) + 12345).map(|i| (i % 251) as u8).collect();
+        let data: Vec<u8> = (0..(9usize << 20) + 12345)
+            .map(|i| (i % 251) as u8)
+            .collect();
         let src = dir.join("src.wav");
         std::fs::write(&src, &data).unwrap();
         #[cfg(target_os = "macos")]
@@ -915,7 +985,14 @@ mod tests {
             let c = std::ffi::CString::new(src.to_str().unwrap()).unwrap();
             let name = std::ffi::CString::new("ninja.tyna.test").unwrap();
             let r = unsafe {
-                libc::setxattr(c.as_ptr(), name.as_ptr(), b"1".as_ptr() as *const _, 1, 0, 0)
+                libc::setxattr(
+                    c.as_ptr(),
+                    name.as_ptr(),
+                    b"1".as_ptr() as *const _,
+                    1,
+                    0,
+                    0,
+                )
             };
             assert_eq!(r, 0);
             assert!(has_xattr(&src, "ninja.tyna.test"));
@@ -930,6 +1007,17 @@ mod tests {
         assert_eq!(std::fs::metadata(&dst).unwrap().len(), 0);
         assert!(copy_audio(&dir.join("missing.wav"), &dst).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_temp_file_goes_with_its_handle() {
+        let tmp = TempFile::new("mp3");
+        std::fs::write(&tmp.0, b"x").unwrap();
+        let path = tmp.0.clone();
+        assert!(path.is_file());
+        drop(tmp);
+        assert!(!path.exists());
+        assert_ne!(TempFile::new("mp3").0, TempFile::new("mp3").0);
     }
 
     /// `--cdjsafe` builds a generated track without `PVBR` frames and sets them
