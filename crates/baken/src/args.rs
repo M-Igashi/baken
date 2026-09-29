@@ -44,7 +44,7 @@ pub enum Command {
     /// beatgrid (TEMPO) and cue points (POSITION_MARK) verbatim. Import the XML
     /// in rekordbox and use "Import to Collection" — no re-analysis needed.
     Cdjsafe(CdjsafeArgs),
-    /// [beta] Write a rekordbox USB export straight from collection.xml:
+    /// Write a rekordbox USB export straight from collection.xml:
     /// export.pdb, the analysis files, audio and My Settings, without launching
     /// rekordbox.
     ///
