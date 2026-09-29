@@ -448,6 +448,10 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     }
     // Only files written in this run can have gained an AppleDouble file, so
     // the two big trees are walked only when something was written into them.
+    // Copying the audio without xattrs (`copy_audio`) does not make the walk
+    // unnecessary: macOS adds `com.apple.provenance` to every file a process
+    // under a third-party app (a terminal, Zed) creates, and FAT keeps that
+    // in a `._` file too (issue #196).
     if report.copied + report.transcoded > 0 || plan.prune {
         remove_apple_double(&plan.device.join("Contents"), true, &mut report)?;
     }
@@ -608,7 +612,7 @@ fn write_track(
         if existing.is_some() {
             report.kept += 1;
         } else if baken_core::cdjsafe::probe(&pt.source)?.is_compatible_mp3() {
-            std::fs::copy(&pt.source, &dest)?;
+            copy_audio(&pt.source, &dest)?;
             report.copied += 1;
         } else {
             baken_core::cdjsafe::transcode(&pt.source, &dest)?;
@@ -617,7 +621,7 @@ fn write_track(
     } else if existing == Some(pt.device.file_size) {
         report.kept += 1;
     } else {
-        std::fs::copy(&pt.source, &dest)?;
+        copy_audio(&pt.source, &dest)?;
         report.copied += 1;
     }
 
@@ -657,6 +661,46 @@ fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result
         }
     }
     Ok(())
+}
+
+/// Copy the audio of `src` to `dst`: the bytes only, no extended attributes,
+/// ACL, mode or times. `std::fs::copy` carries those over, and on a FAT stick
+/// every source xattr then becomes a `._` file next to the track. A reader
+/// thread keeps up to three 4 MiB pieces ahead of the writes, so a slow
+/// source (a NAS, an HDD) overlaps a slow stick instead of adding to it
+/// (issue #196). Returns the bytes written.
+fn copy_audio(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    use std::io::{Read, Write};
+    const PIECE: usize = 4 << 20;
+    let mut reader = std::fs::File::open(src)?;
+    let mut writer = std::fs::File::create(dst)?;
+    let (tx, rx) = mpsc::sync_channel::<std::io::Result<Vec<u8>>>(3);
+    std::thread::scope(|s| {
+        s.spawn(move || loop {
+            let mut piece = vec![0u8; PIECE];
+            let sent = match reader.read(&mut piece) {
+                Ok(0) => break,
+                Ok(n) => {
+                    piece.truncate(n);
+                    tx.send(Ok(piece))
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            };
+            if sent.is_err() {
+                break;
+            }
+        });
+        let mut written = 0u64;
+        for piece in rx {
+            let piece = piece?;
+            writer.write_all(&piece)?;
+            written += piece.len() as u64;
+        }
+        Ok(written)
+    })
 }
 
 /// Fill in what the XML left at 0 from the audio a generated-analysis track
@@ -846,6 +890,46 @@ mod tests {
         assert_eq!(left, ["Artist/Album/._kept.wav", "Artist/Album/kept.wav"]);
         assert!(!root.join("Artist/Old").exists() && !root.join("Orphan").exists());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The system may add `com.apple.provenance` to any file a process
+    /// creates, so only the named attribute tells whether the copy carried one.
+    #[cfg(target_os = "macos")]
+    fn has_xattr(path: &Path, name: &str) -> bool {
+        let c = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        let name = std::ffi::CString::new(name).unwrap();
+        unsafe { libc::getxattr(c.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) >= 0 }
+    }
+
+    /// Longer than one piece and not a multiple of it; on macOS the source
+    /// carries an xattr, which must not reach the copy (a `._` file on FAT).
+    #[test]
+    fn copy_audio_copies_the_bytes_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("baken-copy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let data: Vec<u8> = (0..(9usize << 20) + 12345).map(|i| (i % 251) as u8).collect();
+        let src = dir.join("src.wav");
+        std::fs::write(&src, &data).unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let c = std::ffi::CString::new(src.to_str().unwrap()).unwrap();
+            let name = std::ffi::CString::new("ninja.tyna.test").unwrap();
+            let r = unsafe {
+                libc::setxattr(c.as_ptr(), name.as_ptr(), b"1".as_ptr() as *const _, 1, 0, 0)
+            };
+            assert_eq!(r, 0);
+            assert!(has_xattr(&src, "ninja.tyna.test"));
+        }
+        let dst = dir.join("dst.wav");
+        assert_eq!(copy_audio(&src, &dst).unwrap(), data.len() as u64);
+        assert!(std::fs::read(&dst).unwrap() == data);
+        #[cfg(target_os = "macos")]
+        assert!(!has_xattr(&dst, "ninja.tyna.test"));
+        std::fs::write(&src, b"").unwrap();
+        assert_eq!(copy_audio(&src, &dst).unwrap(), 0);
+        assert_eq!(std::fs::metadata(&dst).unwrap().len(), 0);
+        assert!(copy_audio(&dir.join("missing.wav"), &dst).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `--cdjsafe` builds a generated track without `PVBR` frames and sets them
