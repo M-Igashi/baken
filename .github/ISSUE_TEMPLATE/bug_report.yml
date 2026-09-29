@@ -26,7 +26,7 @@ body:
         - headroom (loudness gain)
         - rbsort (Key + BPM playlist sort)
         - cdjsafe (CDJ-safe MP3 transcode)
-        - expressport (USB export, beta)
+        - expressport (USB export)
         - Mac Tune-up (Mac app only)
         - Not sure
     validations:

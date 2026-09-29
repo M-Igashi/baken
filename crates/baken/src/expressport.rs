@@ -1,4 +1,4 @@
-//! CLI wrapper for `baken expressport` (direct USB export, beta since 3.5.0).
+//! CLI wrapper for `baken expressport` (direct USB export, beta from 3.5.0 to 4.2.1).
 
 use anyhow::Result;
 use baken_core::CancelToken;
@@ -9,10 +9,6 @@ use crate::args::ExpressportArgs;
 use crate::progress::{make_progress_bar, BarProgress};
 
 pub fn run(args: &ExpressportArgs) -> Result<()> {
-    println!(
-        "{} expressport is in beta: verify the stick on a player before a gig, and use a spare stick.",
-        style("⚠").yellow()
-    );
     if args.cdjsafe {
         baken_core::check_ffmpeg()?;
     }

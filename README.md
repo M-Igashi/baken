@@ -16,7 +16,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
 | [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Alphanumeric key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes a whole playlist to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
-| [`baken expressport`](#direct-usb-export-baken-expressport--beta) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings (beta since v3.5.0) |
+| [`baken expressport`](#direct-usb-export-baken-expressport) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings |
 
 🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
 
@@ -443,9 +443,9 @@ baken cdjsafe <XML> --playlist <PATH> --check
 - Filenames are FAT32/exFAT-sanitized; collisions get a numeric suffix.
 - Requires ffmpeg (with `libmp3lame`; `soxr` resampling is used when available).
 
-## Direct USB Export (`baken expressport`) — beta
+## Direct USB Export (`baken expressport`)
 
-*Added in v3.5.0 as a beta. The implementation is complete (design record: [#115](https://github.com/M-Igashi/baken/issues/115)) and byte-checked against real rekordbox exports, and a CDJ-2000NXS2 has read a first stick written by `baken`. What would end the beta, and how to help with a stick and a player, is in [#116](https://github.com/M-Igashi/baken/issues/116). Use a spare stick.*
+*Added in v3.5.0 as a beta, out of beta since v4.3.0. The output is byte-checked against real rekordbox exports (design record: [#115](https://github.com/M-Igashi/baken/issues/115)), and testers have played sticks written by `baken` on a CDJ-3000 (firmware 3.22) and on CDJ-2000NXS2 players (1.85 and 1.87): playlists, beat grid, waveforms, cues, keys, search and My Settings, with copied and with generated analysis ([#116](https://github.com/M-Igashi/baken/issues/116), where further player reports are welcome). As with any stick, check it on a player before a gig.*
 
 `expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read.
 
