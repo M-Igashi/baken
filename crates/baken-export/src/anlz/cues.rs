@@ -9,6 +9,10 @@ use crate::collection::Cue;
 const HOT: u32 = 1;
 const MEMORY: u32 = 0;
 const NO_LOOP: u32 = 0xFFFF_FFFF;
+/// Hot cues A to H are `Num` 0..=7.
+const HOT_CUES: i32 = 8;
+/// A to C go into the `.DAT` `PCOB`, D to H into the `.EXT` one.
+const DAT_HOT_CUES: i32 = 3;
 
 fn ms(seconds: f64) -> u32 {
     (seconds * 1000.0).round() as u32
@@ -18,8 +22,12 @@ fn ms(seconds: f64) -> u32 {
 /// the XML `POSITION_MARK` order (its database order); the prev/next chain
 /// in `PCPT` then simply follows list position. Verified on a real export
 /// whose memory cues were neither ascending nor descending in time.
+/// Hot cues past H, which an XML from another tool can carry, are dropped.
 fn split(cues: &[Cue]) -> (Vec<&Cue>, Vec<&Cue>) {
-    let (mut hot, mut mem): (Vec<&Cue>, Vec<&Cue>) = cues.iter().partition(|c| c.is_hot());
+    let (mut hot, mut mem): (Vec<&Cue>, Vec<&Cue>) = cues
+        .iter()
+        .filter(|c| c.num < HOT_CUES)
+        .partition(|c| c.is_hot());
     hot.reverse();
     mem.reverse();
     (hot, mem)
@@ -76,7 +84,7 @@ pub fn pcob(list: u32, cues: &[&Cue]) -> Section {
     section(b"PCOB", 0x18, &p)
 }
 
-/// The empty `PCOB` the `.EXT` file keeps for both lists.
+/// The empty `PCOB` the `.EXT` file keeps for the memory list.
 pub fn pcob_empty(list: u32) -> Section {
     pcob(list, &[])
 }
@@ -164,13 +172,18 @@ pub enum Kind {
 }
 
 /// The cue sections of one analysis file in rekordbox's order: `PCOB` hot,
-/// `PCOB` memory, and in the `.EXT` also `PCO2` hot and `PCO2` memory.
+/// `PCOB` memory, and in the `.EXT` also `PCO2` hot and `PCO2` memory. The
+/// `.DAT` `PCOB` holds hot cues A to C and the `.EXT` one D to H (its memory
+/// list stays empty); `PCO2` lists them all. Verified on a real export with
+/// hot cues A and G.
 pub fn sections(kind: Kind, cues: &[Cue], bpm: f64) -> Vec<Section> {
     let (hot, mem) = split(cues);
+    let (dat_hot, ext_hot): (Vec<&Cue>, Vec<&Cue>) =
+        hot.iter().copied().partition(|c| c.num < DAT_HOT_CUES);
     match kind {
-        Kind::Dat => vec![pcob(HOT, &hot), pcob(MEMORY, &mem)],
+        Kind::Dat => vec![pcob(HOT, &dat_hot), pcob(MEMORY, &mem)],
         Kind::Ext => vec![
-            pcob_empty(HOT),
+            pcob(HOT, &ext_hot),
             pcob_empty(MEMORY),
             pco2(HOT, &hot, bpm),
             pco2(MEMORY, &mem, bpm),
@@ -221,6 +234,42 @@ mod tests {
             &hex("50434f3200000014000000c40000000100020000")[..]
         );
         assert_eq!(&e.bytes[20..108], &hex("50435032000000100000005800000003010003e800007648ffffffff00010000000000000000000000000000001aff0000000000000000000000000000000000000000000000000000000000000000000000000000000000")[..]);
+    }
+
+    #[test]
+    fn hot_cues_past_c_go_to_the_ext_pcob() {
+        // From the reference export, track "The Final GoodBye": hot cue A@0.048,
+        // a memory cue and hot cue G@185.805.
+        let mem = Cue {
+            name: "1.1Bars".into(),
+            start: 1.547,
+            num: -1,
+            ..Default::default()
+        };
+        let cues = [cue(0.048, 0), mem, cue(185.805, 6)];
+        let dat = sections(Kind::Dat, &cues, 155.0);
+        assert_eq!(dat[0].bytes, hex("50434f4200000018000000500000000100000001ffffffff504350540000001c00000038000000010000000000010000ffffffff010003e800000030ffffffff00000000000000000000000000000000"));
+        assert_eq!(dat[1].bytes, hex("50434f420000001800000050000000000000000100000000504350540000001c00000038000000000000000000010000ffffffff010003e80000060bffffffff00000000000000000000000000000000"));
+        let ext = sections(Kind::Ext, &cues, 155.0);
+        assert_eq!(ext[0].bytes, hex("50434f4200000018000000500000000100000001ffffffff504350540000001c00000038000000070000000000010000ffffffff010003e80002d5cdffffffff00000000000000000000000000000000"));
+        assert_eq!(ext[1].bytes, pcob_empty(MEMORY).bytes);
+        // PCO2 lists both hot cues, G first
+        let hot = &ext[2].bytes;
+        assert_eq!(&hot[16..18], &[0, 2]);
+        assert_eq!(&hot[32..36], &[0, 0, 0, 7]);
+        assert_eq!(&hot[32 + 88..36 + 88], &[0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn hot_cues_past_h_are_dropped() {
+        let cues = [cue(1.0, 7), cue(2.0, 8)];
+        let ext = sections(Kind::Ext, &cues, 0.0);
+        assert_eq!(&ext[0].bytes[18..20], &[0, 1]);
+        assert_eq!(&ext[2].bytes[16..18], &[0, 1]);
+        assert_eq!(
+            sections(Kind::Dat, &cues, 0.0)[0].bytes,
+            pcob_empty(HOT).bytes
+        );
     }
 
     #[test]
