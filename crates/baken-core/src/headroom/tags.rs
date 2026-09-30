@@ -82,8 +82,9 @@ pub fn read(path: &Path) -> Option<Tags> {
 /// Put `tags` back over a file ffmpeg has just written.
 pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
     match (Container::of(path), tags) {
-        (Some(Container::Aiff), Tags::Id3(tag)) => restore_chunk(path, tag, Container::Aiff),
-        (Some(Container::Wav), Tags::Id3(tag)) => restore_chunk(path, tag, Container::Wav),
+        (Some(c @ (Container::Aiff | Container::Wav)), Tags::Id3(tag)) => {
+            restore_chunk(path, tag, c)
+        }
         (Some(Container::Mp4), Tags::Mp4(items)) => restore_free_form(path, items),
         // A mismatch means the converted file's extension drifted from the
         // source's; leave it alone rather than write an ID3 chunk into an MP4.

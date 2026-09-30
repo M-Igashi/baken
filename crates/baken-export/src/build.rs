@@ -105,7 +105,8 @@ fn key_rows(tracks: &[DeviceTrack]) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Playlists to include, as indices into `library.playlists` (leaf playlists only).
+/// The `export.pdb` model for `tracks` and the playlists `selected` (indices
+/// into `library.playlists`, leaf playlists only) with their parent folders.
 pub fn build(
     library: &Library,
     tracks: &[DeviceTrack],

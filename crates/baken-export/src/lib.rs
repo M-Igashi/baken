@@ -249,19 +249,15 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 });
                 continue;
             }
-            let mut t = track.clone();
-            if opts.cdjsafe {
-                let stem = t
-                    .file_name()
-                    .rsplit_once('.')
-                    .map(|(s, _)| s.to_string())
-                    .unwrap_or_else(|| t.file_name().to_string());
-                t.location = format!(
-                    "{}/{stem}.mp3",
-                    t.location.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
-                );
-            }
-            let usb_path = layout.assign(&t);
+            let usb_path = if opts.cdjsafe {
+                let mp3 = Path::new(&track.location).with_extension("mp3");
+                layout.assign(&collection::Track {
+                    location: mp3.to_string_lossy().into_owned(),
+                    ..track.clone()
+                })
+            } else {
+                layout.assign(track)
+            };
             let (file_type, bitrate, sample_rate, sample_depth) = if opts.cdjsafe {
                 (pdb::rows::FILE_TYPE_MP3, 320, 44100, 16)
             } else {
@@ -446,12 +442,8 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                 ready.insert(j, p);
             };
             match prepared.and_then(|p| write_track(plan, pt, p, &mut report)) {
-                Ok(mut dt) => {
-                    let dest = device_path(&plan.device, &dt.usb_path);
-                    dt.file_size = std::fs::metadata(&dest)
-                        .map(|m| m.len())
-                        .unwrap_or(dt.file_size);
-                    wanted.insert(dest);
+                Ok(dt) => {
+                    wanted.insert(device_path(&plan.device, &dt.usb_path));
                     for kind in FileKind::ALL {
                         wanted.insert(device_path(&plan.device, &dt.anlz_path(kind.extension())));
                     }
@@ -655,7 +647,8 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
         for (kind, file) in &mut prepared.files {
             match kind {
                 FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
-                FileKind::Ext => rewrite::strip_pvb2(file),
+                // `PVB2` describes FLAC seeking; it means nothing for an MP3
+                FileKind::Ext => file.remove(b"PVB2"),
                 FileKind::TwoEx => {}
             }
         }
@@ -684,7 +677,7 @@ fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Audio> {
 /// from the audio. `--cdjsafe` sets `PVBR` afterwards, in [`prepare`].
 fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
     let Some(entry) = &pt.anlz else {
-        let mp3 = if is_mp3(&pt.source) && !plan.cdjsafe {
+        let mp3 = if pt.device.file_type == pdb::rows::FILE_TYPE_MP3 && !plan.cdjsafe {
             Some(rewrite::mp3_audio(&pt.source)?)
         } else {
             None
@@ -703,13 +696,6 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             audio: Audio::Source,
         });
     };
-    let bpm = pt
-        .device
-        .track
-        .tempos
-        .first()
-        .map(|t| t.bpm)
-        .unwrap_or(pt.device.track.average_bpm);
     let mut files = Vec::new();
     for kind in FileKind::ALL {
         let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
@@ -727,7 +713,7 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             kind,
             &pt.device.usb_path,
             &pt.device.track.cues,
-            bpm,
+            pt.device.track.grid_bpm(),
         );
         files.push((kind, file));
     }
@@ -739,11 +725,12 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
     })
 }
 
-/// Everything that touches the stick, one track at a time in plan order.
+/// Everything that touches the stick, one track at a time in plan order. The
+/// returned track carries the size of the audio file as it is on the stick.
 fn write_track(
     plan: &Plan,
     pt: &PlanTrack,
-    prepared: Prepared,
+    mut prepared: Prepared,
     report: &mut Report,
 ) -> anyhow::Result<DeviceTrack> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
@@ -751,21 +738,29 @@ fn write_track(
         std::fs::create_dir_all(parent)?;
     }
     let existing = std::fs::metadata(&dest).ok().map(|m| m.len());
-    match &prepared.audio {
-        Audio::OnStick if existing.is_some() => report.kept += 1,
-        Audio::OnStick => anyhow::bail!("{} disappeared from the stick", dest.display()),
-        Audio::Transcoded(mp3) => {
-            copy_audio(&mp3.0, &dest)?;
-            report.transcoded += 1;
-        }
-        Audio::Source if !plan.cdjsafe && existing == Some(pt.device.file_size) => {
+    prepared.device.file_size = match (&prepared.audio, existing) {
+        (Audio::OnStick, Some(size)) => {
             report.kept += 1;
+            size
         }
-        Audio::Source => {
-            copy_audio(&pt.source, &dest)?;
+        (Audio::OnStick, None) => {
+            anyhow::bail!("{} disappeared from the stick", dest.display())
+        }
+        (Audio::Transcoded(mp3), _) => {
+            let size = copy_audio(&mp3.0, &dest)?;
+            report.transcoded += 1;
+            size
+        }
+        (Audio::Source, Some(size)) if !plan.cdjsafe && size == pt.device.file_size => {
+            report.kept += 1;
+            size
+        }
+        (Audio::Source, _) => {
+            let size = copy_audio(&pt.source, &dest)?;
             report.copied += 1;
+            size
         }
-    }
+    };
     std::fs::create_dir_all(device_path(&plan.device, &pt.device.anlz_dir))?;
     for (kind, file) in &prepared.files {
         write_anlz(
@@ -871,14 +866,8 @@ fn with_measured(dt: &DeviceTrack, audio: &Measured, mp3: Option<Mp3Audio>) -> D
     dt
 }
 
-fn is_mp3(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("mp3"))
-}
-
-/// Delete files under `root` not in `keep`, then empty directories. Returns the file count.
-/// Remove what `keep` does not name. Paths are compared in NFC: on macOS 26
+/// Delete files under `root` not in `keep`, then empty directories, and return
+/// the number of files deleted. Paths are compared in NFC: on macOS 26
 /// `read_dir` lists an ExFAT or FAT stick's names in NFD whatever form they
 /// were written in, and the stick is written in the XML's NFC (issue #154).
 ///

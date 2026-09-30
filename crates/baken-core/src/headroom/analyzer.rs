@@ -2,13 +2,6 @@ use anyhow::{anyhow, Context, Result};
 use mp3rgain::bs1770::Bs1770Analyzer;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use symphonia::core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_MP3};
-use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoderOptions};
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::probe::Hint;
-use symphonia::core::formats::{FormatOptions, TrackType};
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
 
 use super::scanner;
 
@@ -183,9 +176,6 @@ struct FfprobeOutput {
     format: FfprobeFormat,
 }
 
-/// Parse the overall bitrate from ffmpeg's input dump on stderr, e.g.
-/// `  Duration: 00:03:50.32, start: 0.025057, bitrate: 320 kb/s`.
-/// Returns None for "N/A" or unexpected formatting; callers fall back to ffprobe.
 /// Codec of the first audio stream from ffmpeg's input dump
 /// ("Stream #0:0 ... Audio: alac (alac / 0x63616C61), 44100 Hz ...").
 fn parse_stderr_codec(stderr: &str) -> Option<String> {
@@ -199,6 +189,9 @@ fn parse_stderr_codec(stderr: &str) -> Option<String> {
         .map(|codec| codec.trim_end_matches(',').to_ascii_lowercase())
 }
 
+/// Parse the overall bitrate from ffmpeg's input dump on stderr, e.g.
+/// `  Duration: 00:03:50.32, start: 0.025057, bitrate: 320 kb/s`.
+/// Returns None for "N/A" or unexpected formatting; callers fall back to ffprobe.
 fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
     stderr
         .lines()
@@ -326,26 +319,16 @@ fn extract_loudnorm_json(stderr: &str, path: &Path) -> Result<LoudnormOutput> {
 
 /// Pick the method, effective gain and native step count for a measured
 /// `headroom` (target minus input True Peak; negative means the file is too loud).
-fn decide_gain(
-    headroom: f64,
-    is_lossy: bool,
-    is_aac: bool,
-    mode: GainMode,
-) -> (GainMethod, f64, i32) {
+fn decide_gain(headroom: f64, codec: Codec, mode: GainMode) -> (GainMethod, f64, i32) {
     if headroom.abs() < MIN_EFFECTIVE_GAIN || (headroom < 0.0 && mode == GainMode::BoostOnly) {
         return (GainMethod::None, 0.0, 0);
     }
-    if !is_lossy {
-        return (GainMethod::FfmpegLossless, headroom, 0);
-    }
-    let native = |steps: i32| {
-        let method = if is_aac {
-            GainMethod::AacLossless
-        } else {
-            GainMethod::Mp3Lossless
-        };
-        (method, steps as f64 * GAIN_STEP, steps)
+    let method = match codec {
+        Codec::Lossless => return (GainMethod::FfmpegLossless, headroom, 0),
+        Codec::Mp3 => GainMethod::Mp3Lossless,
+        Codec::Aac => GainMethod::AacLossless,
     };
+    let native = |steps: i32| (method.clone(), steps as f64 * GAIN_STEP, steps);
     if headroom < 0.0 {
         // Lowering: round up to the next full step so the result never exceeds
         // the ceiling. A re-encode just to make a file quieter is never worth it.
@@ -398,16 +381,6 @@ enum Conclusive {
     NonFinite { input_i: f64, input_tp: f64 },
 }
 
-fn codec_from_id(id: AudioCodecId) -> Codec {
-    if id == CODEC_ID_MP3 {
-        Codec::Mp3
-    } else if id == CODEC_ID_AAC {
-        Codec::Aac
-    } else {
-        Codec::Lossless
-    }
-}
-
 /// Overall bitrate the way ffmpeg's input dump reports it: whole file
 /// (tags included) over the decoded duration.
 fn bitrate_kbps(file_size: u64, frames: u64, sample_rate: u32) -> Option<u32> {
@@ -431,73 +404,24 @@ fn ensure_finite(input_i: f64, input_tp: f64) -> Result<()> {
 fn measure_native(path: &Path) -> Result<Measurement> {
     let file = std::fs::File::open(path).map_err(Conclusive::Unreadable)?;
     let file_size = file.metadata()?.len();
-    let stream = MediaSourceStream::new(Box::new(file), Default::default());
-    let mut hint = Hint::new();
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        hint.with_extension(ext);
-    }
-    let mut format = symphonia::default::get_probe().probe(
-        &hint,
-        stream,
-        FormatOptions::default(),
-        MetadataOptions::default(),
-    )?;
-    let track = format
-        .default_track(TrackType::Audio)
-        .ok_or_else(|| anyhow!("no audio track"))?;
-    let track_id = track.id;
-    let params = track
-        .codec_params
-        .as_ref()
-        .and_then(|p| p.audio())
-        .ok_or_else(|| anyhow!("no audio codec parameters"))?
-        .clone();
-    let codec = codec_from_id(params.codec);
-    let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
-
-    // Rate and channel count come from the first decoded buffer rather than
-    // the container: AAC parameters may not name a channel layout at all.
+    // A layout or rate change mid-stream would be fed to filters sized for the
+    // old one, so `decode` fails on it and ffmpeg measures this file instead.
     let mut analyzer: Option<Bs1770Analyzer> = None;
-    let mut sample_rate = 0;
-    let mut expected_channels = 0;
-    let mut frames: u64 = 0;
+    let (mut sample_rate, mut frames) = (0, 0u64);
     let mut samples: Vec<f64> = Vec::new();
-    loop {
-        let packet = match format.next_packet() {
-            Ok(Some(p)) => p,
-            Ok(None) => break,
-            Err(e) => return Err(e.into()),
-        };
-        if packet.track_id != track_id {
-            continue;
-        }
-        let decoded = match decoder.decode(&packet) {
-            Ok(d) => d,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(e) => return Err(e.into()),
-        };
-        let channels = decoded.spec().channels().count();
-        let analyzer = match analyzer.as_mut() {
-            // A layout or rate change mid-stream would be fed to filters
-            // sized for the old one; let ffmpeg measure this file instead.
-            Some(_) if channels != expected_channels || decoded.spec().rate() != sample_rate => {
-                return Err(anyhow!("stream parameters changed mid-file"));
-            }
-            Some(a) => a,
-            None => {
-                sample_rate = decoded.spec().rate();
-                expected_channels = channels;
-                analyzer.insert(Bs1770Analyzer::new_with_true_peak(sample_rate, channels))
-            }
-        };
-        frames += decoded.frames() as u64;
+    let extension = path.extension().and_then(|e| e.to_str());
+    let codec = crate::decode::decode(file, extension, |chunk, rate, channels| {
+        let analyzer = analyzer.get_or_insert_with(|| {
+            sample_rate = rate;
+            Bs1770Analyzer::new_with_true_peak(rate, channels)
+        });
         samples.clear();
-        decoded.copy_to_vec_interleaved(&mut samples);
+        samples.extend(chunk.iter().map(|&s| f64::from(s)));
         for frame in samples.chunks_exact(channels) {
             analyzer.add_frame(frame);
         }
-    }
+        frames += (chunk.len() / channels) as u64;
+    })?;
     let analyzer = analyzer.ok_or_else(|| anyhow!("no audio decoded"))?;
     let true_peak = analyzer
         .true_peak()
@@ -582,15 +506,10 @@ fn measure_ffmpeg(path: &Path) -> Result<Measurement> {
 /// Pure: the ceiling for this file, the headroom to it, and the method, gain
 /// and native step count that get there. Same inputs, same answer, no I/O.
 pub fn decide(measurement: &Measurement, tp_mode: TpTargetMode, gain_mode: GainMode) -> Decision {
-    let is_lossy = measurement.codec.is_lossy();
-    let target_tp = tp_mode.target_for(is_lossy, measurement.bitrate_kbps);
+    let target_tp = tp_mode.target_for(measurement.codec.is_lossy(), measurement.bitrate_kbps);
     let headroom = target_tp - measurement.input_tp;
-    let (gain_method, effective_gain, lossless_gain_steps) = decide_gain(
-        headroom,
-        is_lossy,
-        measurement.codec == Codec::Aac,
-        gain_mode,
-    );
+    let (gain_method, effective_gain, lossless_gain_steps) =
+        decide_gain(headroom, measurement.codec, gain_mode);
     Decision {
         target_tp,
         headroom,
@@ -613,6 +532,7 @@ pub fn analyze_file_with_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::tests::write_wav;
     use std::path::PathBuf;
 
     /// Test JSON extraction with GEOB/PRIV frames containing '{' and '}' characters
@@ -723,28 +643,6 @@ mod tests {
         assert_eq!(parse_stderr_codec("no streams here"), None);
     }
 
-    /// Minimal 16-bit PCM WAV: 44-byte header plus interleaved samples.
-    fn write_wav(path: &Path, rate: u32, channels: u16, samples: &[i16]) {
-        let data_len = (samples.len() * 2) as u32;
-        let mut bytes = Vec::with_capacity(44 + data_len as usize);
-        bytes.extend_from_slice(b"RIFF");
-        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
-        bytes.extend_from_slice(b"WAVEfmt ");
-        bytes.extend_from_slice(&16u32.to_le_bytes());
-        bytes.extend_from_slice(&1u16.to_le_bytes());
-        bytes.extend_from_slice(&channels.to_le_bytes());
-        bytes.extend_from_slice(&rate.to_le_bytes());
-        bytes.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
-        bytes.extend_from_slice(&(channels * 2).to_le_bytes());
-        bytes.extend_from_slice(&16u16.to_le_bytes());
-        bytes.extend_from_slice(b"data");
-        bytes.extend_from_slice(&data_len.to_le_bytes());
-        for s in samples {
-            bytes.extend_from_slice(&s.to_le_bytes());
-        }
-        std::fs::write(path, bytes).unwrap();
-    }
-
     fn temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("baken-analyzer-{}-{}", std::process::id(), name))
     }
@@ -786,18 +684,6 @@ mod tests {
         std::fs::write(&garbage, [0x5au8; 4096]).unwrap();
         assert!(measure_native(&garbage).is_err());
         std::fs::remove_file(&garbage).ok();
-    }
-
-    #[test]
-    fn codec_comes_from_the_decoded_stream_not_the_extension() {
-        use symphonia::core::codecs::audio::well_known::{
-            CODEC_ID_ALAC, CODEC_ID_FLAC, CODEC_ID_PCM_S24LE,
-        };
-        assert_eq!(codec_from_id(CODEC_ID_MP3), Codec::Mp3);
-        assert_eq!(codec_from_id(CODEC_ID_AAC), Codec::Aac);
-        assert_eq!(codec_from_id(CODEC_ID_ALAC), Codec::Lossless);
-        assert_eq!(codec_from_id(CODEC_ID_FLAC), Codec::Lossless);
-        assert_eq!(codec_from_id(CODEC_ID_PCM_S24LE), Codec::Lossless);
     }
 
     #[test]
@@ -870,7 +756,7 @@ mod tests {
     }
 
     fn steps(headroom: f64, mode: GainMode) -> (GainMethod, f64, i32) {
-        decide_gain(headroom, true, false, mode)
+        decide_gain(headroom, Codec::Mp3, mode)
     }
 
     #[test]
@@ -892,11 +778,11 @@ mod tests {
     #[test]
     fn normalize_lowers_lossless_files_precisely() {
         assert_eq!(
-            decide_gain(-0.8, false, false, GainMode::Normalize),
+            decide_gain(-0.8, Codec::Lossless, GainMode::Normalize),
             (GainMethod::FfmpegLossless, -0.8, 0)
         );
         assert_eq!(
-            decide_gain(-0.8, true, true, GainMode::Normalize),
+            decide_gain(-0.8, Codec::Aac, GainMode::Normalize),
             (GainMethod::AacLossless, -GAIN_STEP, -1)
         );
     }
@@ -925,7 +811,7 @@ mod tests {
         assert_eq!(steps(1.0, GainMode::Normalize).0, GainMethod::None);
         assert_eq!(steps(1.49, GainMode::Normalize).0, GainMethod::None);
         assert_eq!(
-            decide_gain(1.2, true, true, GainMode::Normalize).0,
+            decide_gain(1.2, Codec::Aac, GainMode::Normalize).0,
             GainMethod::None
         );
         // One full step is native, in both lossy formats.
@@ -934,12 +820,12 @@ mod tests {
             (GainMethod::Mp3Lossless, GAIN_STEP, 1)
         );
         assert_eq!(
-            decide_gain(GAIN_STEP, true, true, GainMode::Normalize),
+            decide_gain(GAIN_STEP, Codec::Aac, GainMode::Normalize),
             (GainMethod::AacLossless, GAIN_STEP, 1)
         );
         // Lossless files are still raised exactly, however small the gain.
         assert_eq!(
-            decide_gain(0.16, false, false, GainMode::Normalize),
+            decide_gain(0.16, Codec::Lossless, GainMode::Normalize),
             (GainMethod::FfmpegLossless, 0.16, 0)
         );
     }
@@ -952,13 +838,13 @@ mod tests {
     /// generation on every later run.
     #[test]
     fn a_second_pass_never_finds_anything_left_to_do() {
-        for (is_lossy, is_aac) in [(false, false), (true, false), (true, true)] {
+        for codec in [Codec::Lossless, Codec::Mp3, Codec::Aac] {
             for mode in [GainMode::Normalize, GainMode::BoostOnly] {
                 for hundredths in -1500..=1500 {
                     let headroom = f64::from(hundredths) / 100.0;
-                    let (_, gain, _) = decide_gain(headroom, is_lossy, is_aac, mode);
+                    let (_, gain, _) = decide_gain(headroom, codec, mode);
                     let left = headroom - gain;
-                    let (method, again, _) = decide_gain(left, is_lossy, is_aac, mode);
+                    let (method, again, _) = decide_gain(left, codec, mode);
                     assert_eq!(
                         method,
                         GainMethod::None,

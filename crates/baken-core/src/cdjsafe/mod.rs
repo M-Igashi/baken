@@ -24,7 +24,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::rbsort::split_playlist_path;
+use crate::rbsort::{find_playlist, split_playlist_path};
 use crate::xmlutil::write_atomic;
 use crate::{CancelToken, Error, Progress, Result};
 
@@ -146,7 +146,7 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
 
     let xml_data = fs::read(xml).with_context(|| format!("Failed to read {}", xml.display()))?;
 
-    let (track_ids, max_track_id) = xml::find_playlist(&xml_data, &target)?;
+    let (track_ids, max_track_id) = find_playlist(&xml_data, &target)?;
     if track_ids.is_empty() {
         return Err(Error::EmptyPlaylist(playlist.to_string()));
     }
@@ -244,7 +244,7 @@ pub fn convert(
     }
     ensure_xml_unchanged(plan)?;
 
-    let new_tracks = build_new_tracks(&plan.sources, &dest_paths, plan.max_track_id)?;
+    let new_tracks = build_new_tracks(&dest_paths, plan.max_track_id)?;
 
     let playlist_name = plan.output_playlist_name();
     let output = match output_xml {
@@ -326,16 +326,11 @@ fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
     }
 }
 
-fn build_new_tracks(
-    sources: &[SourceTrack],
-    dest_paths: &[PathBuf],
-    max_track_id: u64,
-) -> anyhow::Result<Vec<NewTrack>> {
-    sources
+fn build_new_tracks(dest_paths: &[PathBuf], max_track_id: u64) -> anyhow::Result<Vec<NewTrack>> {
+    dest_paths
         .iter()
-        .zip(dest_paths)
         .enumerate()
-        .map(|(i, (_, dst))| {
+        .map(|(i, dst)| {
             let size = fs::metadata(dst)
                 .with_context(|| format!("Missing output file {}", dst.display()))?
                 .len();

@@ -47,14 +47,10 @@ fn loop_ms(c: &Cue) -> u32 {
     c.end.filter(|_| c.is_loop()).map(ms).unwrap_or(NO_LOOP)
 }
 
-/// `PCOB` for the `.DAT` file (56-byte `PCPT` entries).
-pub fn pcob(list: u32, cues: &[&Cue]) -> Section {
-    pcob_with_active(list, cues, None)
-}
-
-/// `PCOB` whose entry for `active` is marked as the active loop, the way
-/// rekordbox marks one (the reference export's only loop).
-fn pcob_with_active(list: u32, cues: &[&Cue], active: Option<&Cue>) -> Section {
+/// `PCOB` (56-byte `PCPT` entries); the `.EXT` file keeps an empty one for
+/// the memory list. The entry for `active` is marked as the active loop, the
+/// way rekordbox marks one (the reference export's only loop).
+fn pcob(list: u32, cues: &[&Cue], active: Option<&Cue>) -> Section {
     let mut p = Vec::with_capacity(12 + cues.len() * 56);
     p.extend_from_slice(&list.to_be_bytes());
     p.extend_from_slice(&0u16.to_be_bytes());
@@ -97,11 +93,6 @@ fn pcob_with_active(list: u32, cues: &[&Cue], active: Option<&Cue>) -> Section {
     section(b"PCOB", 0x18, &p)
 }
 
-/// The empty `PCOB` the `.EXT` file keeps for the memory list.
-pub fn pcob_empty(list: u32) -> Section {
-    pcob(list, &[])
-}
-
 fn hot_number(c: &Cue) -> u32 {
     if c.is_hot() {
         c.num as u32 + 1
@@ -122,7 +113,7 @@ fn hot_colour(c: &Cue) -> [u8; 4] {
 }
 
 /// `PCO2` for the `.EXT` file (88-byte `PCP2` entries, longer with a comment).
-pub fn pco2(list: u32, cues: &[&Cue], bpm_for_loops: f64) -> Section {
+fn pco2(list: u32, cues: &[&Cue], bpm_for_loops: f64) -> Section {
     let mut p = Vec::new();
     p.extend_from_slice(&list.to_be_bytes());
     p.extend_from_slice(&(cues.len() as u16).to_be_bytes());
@@ -196,12 +187,12 @@ pub fn sections(kind: Kind, cues: &[Cue], bpm: f64) -> Vec<Section> {
         hot.iter().copied().partition(|c| c.num < DAT_HOT_CUES);
     match kind {
         Kind::Dat => vec![
-            pcob(HOT, &dat_hot),
-            pcob_with_active(MEMORY, &mem, active_loop(cues)),
+            pcob(HOT, &dat_hot, None),
+            pcob(MEMORY, &mem, active_loop(cues)),
         ],
         Kind::Ext => vec![
-            pcob(HOT, &ext_hot),
-            pcob_empty(MEMORY),
+            pcob(HOT, &ext_hot, None),
+            pcob(MEMORY, &[], None),
             pco2(HOT, &hot, bpm),
             pco2(MEMORY, &mem, bpm),
         ],
@@ -239,7 +230,7 @@ mod tests {
         // From the reference export, track "Unreal": hot cues B@15.280 and C@30.280.
         let cues = [cue(15.280, 1), cue(30.280, 2)];
         let (hot, _) = split(&cues);
-        let s = pcob(HOT, &hot);
+        let s = pcob(HOT, &hot, None);
         assert_eq!(
             &s.bytes[..24],
             &hex("50434f4200000018000000880000000100000002ffffffff")[..]
@@ -269,7 +260,7 @@ mod tests {
         assert_eq!(dat[1].bytes, hex("50434f420000001800000050000000000000000100000000504350540000001c00000038000000000000000000010000ffffffff010003e80000060bffffffff00000000000000000000000000000000"));
         let ext = sections(Kind::Ext, &cues, 155.0);
         assert_eq!(ext[0].bytes, hex("50434f4200000018000000500000000100000001ffffffff504350540000001c00000038000000070000000000010000ffffffff010003e80002d5cdffffffff00000000000000000000000000000000"));
-        assert_eq!(ext[1].bytes, pcob_empty(MEMORY).bytes);
+        assert_eq!(ext[1].bytes, pcob(MEMORY, &[], None).bytes);
         // PCO2 lists both hot cues, G first
         let hot = &ext[2].bytes;
         assert_eq!(&hot[16..18], &[0, 2]);
@@ -285,7 +276,7 @@ mod tests {
         assert_eq!(&ext[2].bytes[16..18], &[0, 1]);
         assert_eq!(
             sections(Kind::Dat, &cues, 0.0)[0].bytes,
-            pcob_empty(HOT).bytes
+            pcob(HOT, &[], None).bytes
         );
     }
 
@@ -296,7 +287,7 @@ mod tests {
             .map(|s| cue(*s, -1))
             .collect();
         let (_, mem) = split(&cues);
-        let s = pcob(MEMORY, &mem);
+        let s = pcob(MEMORY, &mem, None);
         // type 0, 3 cues, memory_count 2
         assert_eq!(&s.bytes[12..24], &hex("000000000000000300000002")[..]);
         let entry = |i: usize| &s.bytes[24 + 56 * i..24 + 56 * (i + 1)];
@@ -308,7 +299,7 @@ mod tests {
             150281
         );
         assert_eq!(
-            pcob_empty(MEMORY).bytes,
+            pcob(MEMORY, &[], None).bytes,
             hex("50434f4200000018000000180000000000000000ffffffff")
         );
     }
@@ -335,7 +326,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(loop_fraction(&l, 83.5), (8, 1));
-        assert_eq!(pcob(MEMORY, &[&l]).bytes[24 + 28], 2);
+        assert_eq!(pcob(MEMORY, &[&l], None).bytes[24 + 28], 2);
     }
 
     #[test]

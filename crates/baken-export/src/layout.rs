@@ -36,43 +36,25 @@ pub fn sample_depth(path: &Path) -> u16 {
         let mut head = vec![0u8; 64 * 1024];
         let n = f.read(&mut head).ok()?;
         head.truncate(n);
+        let bytes = |at: usize| -> Option<[u8; 2]> { head.get(at..at + 2)?.try_into().ok() };
         if head.starts_with(b"fLaC") {
             // STREAMINFO is the first metadata block: bits-per-sample is 5 bits at byte 12 of the block body
-            let body = &head[8..];
-            let bps = (((body[12] & 1) as u16) << 4) | ((body[13] >> 4) as u16);
-            return Some(bps + 1);
+            let [a, b] = bytes(20)?;
+            return Some(((((a & 1) as u16) << 4) | (b >> 4) as u16) + 1);
         }
-        if head.starts_with(b"FORM") && &head[8..12] == b"AIFF"
-            || head.starts_with(b"FORM") && &head[8..12] == b"AIFC"
-        {
-            let mut off = 12;
-            while off + 8 <= head.len() {
-                let len = u32::from_be_bytes(head[off + 4..off + 8].try_into().ok()?) as usize;
-                if &head[off..off + 4] == b"COMM" {
-                    return Some(u16::from_be_bytes(
-                        head[off + 14..off + 16].try_into().ok()?,
-                    ));
-                }
-                off += 8 + len + (len & 1);
-            }
+        if head.starts_with(b"FORM") && matches!(head.get(8..12), Some(b"AIFF" | b"AIFC")) {
+            let comm = chunk(&head, b"COMM", true)?;
+            return Some(u16::from_be_bytes(comm.get(6..8)?.try_into().ok()?));
         }
-        if head.starts_with(b"RIFF") && &head[8..12] == b"WAVE" {
-            let mut off = 12;
-            while off + 8 <= head.len() {
-                let len = u32::from_le_bytes(head[off + 4..off + 8].try_into().ok()?) as usize;
-                if &head[off..off + 4] == b"fmt " {
-                    return Some(u16::from_le_bytes(
-                        head[off + 22..off + 24].try_into().ok()?,
-                    ));
-                }
-                off += 8 + len + (len & 1);
-            }
+        if head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WAVE") {
+            let fmt = chunk(&head, b"fmt ", false)?;
+            return Some(u16::from_le_bytes(fmt.get(14..16)?.try_into().ok()?));
         }
         // MP4/M4A: look for an `alac` sample entry; AAC has no meaningful depth.
         if let Some(i) = head
             .windows(4)
             .position(|w| w == b"alac")
-            .filter(|_| &head[4..8] == b"ftyp")
+            .filter(|_| head.get(4..8) == Some(b"ftyp"))
         {
             // the alac box repeats its tag; the ALACSpecificConfig has bitDepth at +9 after the inner tag
             if let Some(j) = head[i + 4..].windows(4).position(|w| w == b"alac") {
@@ -83,6 +65,24 @@ pub fn sample_depth(path: &Path) -> u16 {
         None
     }
     read(path).filter(|d| (8..=32).contains(d)).unwrap_or(16)
+}
+
+/// Payload of the first RIFF/FORM chunk `id` within `buf`, if all of it is there.
+fn chunk<'a>(buf: &'a [u8], id: &[u8; 4], big_endian: bool) -> Option<&'a [u8]> {
+    let mut off = 12;
+    while off + 8 <= buf.len() {
+        let size: [u8; 4] = buf[off + 4..off + 8].try_into().ok()?;
+        let len = if big_endian {
+            u32::from_be_bytes(size)
+        } else {
+            u32::from_le_bytes(size)
+        } as usize;
+        if &buf[off..off + 4] == id {
+            return buf.get(off + 8..off + 8 + len);
+        }
+        off += 8 + len + (len & 1);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -96,6 +96,20 @@ mod tests {
             location: format!("/Volumes/X/{file}"),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_truncated_header_reports_16_instead_of_panicking() {
+        let path = std::env::temp_dir().join(format!("baken-depth-{}", std::process::id()));
+        for head in [
+            &b"fLaC\0\0"[..],
+            b"FORM\0\0\0\0AI",
+            b"RIFF\0\0\0\0WAVEfmt \x10\0\0\0",
+        ] {
+            std::fs::write(&path, head).unwrap();
+            assert_eq!(sample_depth(&path), 16);
+        }
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

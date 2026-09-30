@@ -39,21 +39,22 @@ pub struct Export {
     pub export_date: String,
 }
 
-struct Table {
+/// Encodes one row given its position in the page.
+type Row<'a> = Box<dyn Fn(usize) -> Vec<u8> + 'a>;
+
+fn row<'a>(f: impl Fn(usize) -> Vec<u8> + 'a) -> Row<'a> {
+    Box::new(f)
+}
+
+struct Table<'a> {
     ty: u32,
     style: HeaderStyle,
     /// Fixed sequence for colors/columns, otherwise taken from the counter.
     seq: Option<u32>,
-    rows: Vec<Box<dyn Fn(usize) -> Vec<u8>>>,
+    rows: Vec<Row<'a>>,
 }
 
-fn fixed_rows(rows: Vec<Vec<u8>>) -> Vec<Box<dyn Fn(usize) -> Vec<u8>>> {
-    rows.into_iter()
-        .map(|r| Box::new(move |_| r.clone()) as Box<dyn Fn(usize) -> Vec<u8>>)
-        .collect()
-}
-
-fn tables(e: &Export) -> Vec<Table> {
+fn tables(e: &Export) -> Vec<Table<'_>> {
     let mut t: Vec<Table> = (0..NUM_TABLES)
         .map(|ty| Table {
             ty,
@@ -66,68 +67,69 @@ fn tables(e: &Export) -> Vec<Table> {
     t[0].rows = e
         .tracks
         .iter()
-        .cloned()
-        .map(|tr| Box::new(move |pos| tr.encode(pos)) as Box<dyn Fn(usize) -> Vec<u8>>)
+        .map(|tr| row(move |pos| tr.encode(pos)))
         .collect();
-    t[1].rows = fixed_rows(e.genres.iter().map(|(id, n)| rows::named(*id, n)).collect());
+    t[1].rows = e
+        .genres
+        .iter()
+        .map(|(id, n)| row(move |_| rows::named(*id, n)))
+        .collect();
     t[2].rows = e
         .artists
         .iter()
-        .cloned()
-        .map(|(id, n)| {
-            Box::new(move |pos| rows::artist(pos, id, &n)) as Box<dyn Fn(usize) -> Vec<u8>>
-        })
+        .map(|(id, n)| row(move |pos| rows::artist(pos, *id, n)))
         .collect();
     t[3].rows = e
         .albums
         .iter()
-        .cloned()
-        .map(|(id, artist, n)| {
-            Box::new(move |pos| rows::album(pos, id, artist, &n)) as Box<dyn Fn(usize) -> Vec<u8>>
-        })
+        .map(|(id, artist, n)| row(move |pos| rows::album(pos, *id, *artist, n)))
         .collect();
-    t[4].rows = fixed_rows(e.labels.iter().map(|(id, n)| rows::named(*id, n)).collect());
-    t[5].rows = fixed_rows(e.keys.iter().map(|(id, n)| rows::key(*id, n)).collect());
+    t[4].rows = e
+        .labels
+        .iter()
+        .map(|(id, n)| row(move |_| rows::named(*id, n)))
+        .collect();
+    t[5].rows = e
+        .keys
+        .iter()
+        .map(|(id, n)| row(move |_| rows::key(*id, n)))
+        .collect();
     t[6].style = HeaderStyle::Fixed;
     t[6].seq = Some(2);
-    t[6].rows = fixed_rows(
-        COLORS
-            .iter()
-            .map(|(id, n, _)| rows::color(*id, n))
-            .collect(),
-    );
-    t[7].rows = fixed_rows(
-        e.playlists
-            .iter()
-            .map(|p| rows::playlist_node(p.parent, p.sort_order, p.id, p.is_folder, &p.name))
-            .collect(),
-    );
-    t[8].rows = fixed_rows(
+    t[6].rows = COLORS
+        .iter()
+        .map(|(id, n, _)| row(move |_| rows::color(*id, n)))
+        .collect();
+    t[7].rows = e
+        .playlists
+        .iter()
+        .map(|p| {
+            row(move |_| rows::playlist_node(p.parent, p.sort_order, p.id, p.is_folder, &p.name))
+        })
+        .collect();
+    t[8].rows =
         e.playlists
             .iter()
             .flat_map(|p| {
-                p.track_ids
-                    .iter()
-                    .enumerate()
-                    .map(move |(i, tid)| rows::playlist_entry(i as u32 + 1, *tid, p.id))
+                p.track_ids.iter().enumerate().map(move |(i, tid)| {
+                    row(move |_| rows::playlist_entry(i as u32 + 1, *tid, p.id))
+                })
             })
-            .collect(),
-    );
+            .collect();
     t[16].style = HeaderStyle::Fixed;
     t[16].seq = Some(3);
-    t[16].rows = fixed_rows(
-        COLUMNS
-            .iter()
-            .map(|(id, code, c)| rows::column(*id, *code, c))
-            .collect(),
-    );
-    t[17].rows = fixed_rows(CATEGORY_ROWS.iter().map(|r| r.to_vec()).collect());
-    t[18].rows = fixed_rows(SORT_ROWS.iter().map(|r| r.to_vec()).collect());
-    t[19].rows = fixed_rows(vec![rows::history_property(
-        e.tracks.len() as u32,
-        &e.export_date,
-        &e.device_name,
-    )]);
+    t[16].rows = COLUMNS
+        .iter()
+        .map(|(id, code, c)| row(move |_| rows::column(*id, *code, c)))
+        .collect();
+    t[17].rows = CATEGORY_ROWS
+        .iter()
+        .map(|r| row(move |_| r.to_vec()))
+        .collect();
+    t[18].rows = SORT_ROWS.iter().map(|r| row(move |_| r.to_vec())).collect();
+    t[19].rows = vec![row(move |_| {
+        rows::history_property(e.tracks.len() as u32, &e.export_date, &e.device_name)
+    })];
     t
 }
 

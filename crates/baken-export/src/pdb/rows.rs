@@ -1,16 +1,13 @@
 //! Row encoders for every table `expressport` writes. Layouts were read off
 //! a real rekordbox 7 export; see the fixture notes for the byte dumps.
 
+use super::page::align4;
 use super::string::encode;
 
 fn u32s(out: &mut Vec<u8>, vals: &[u32]) {
     for v in vals {
         out.extend_from_slice(&v.to_le_bytes());
     }
-}
-
-fn align4(n: usize) -> usize {
-    (n + 3) & !3
 }
 
 /// Where an encoded string goes when the row so far is `at` bytes long.

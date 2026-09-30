@@ -153,6 +153,11 @@ impl Track {
     pub fn stars(&self) -> u8 {
         (self.rating / 51).min(5) as u8
     }
+    /// BPM of the first grid segment, or `AverageBpm` without a grid; loop
+    /// lengths in the cue sections are counted in these beats.
+    pub fn grid_bpm(&self) -> f64 {
+        self.tempos.first().map_or(self.average_bpm, |t| t.bpm)
+    }
 }
 
 #[derive(Debug, Clone, Default)]

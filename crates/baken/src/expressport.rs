@@ -1,12 +1,12 @@
 //! CLI wrapper for `baken expressport` (direct USB export, beta from 3.5.0 to 4.2.1).
 
 use anyhow::Result;
-use baken_core::CancelToken;
 use baken_export::{export, plan, Options, Plan, Report};
 use console::style;
 
 use crate::args::ExpressportArgs;
-use crate::progress::{make_progress_bar, BarProgress};
+use crate::progress::with_bar;
+use crate::report::print_counts;
 
 pub fn run(args: &ExpressportArgs) -> Result<()> {
     if args.cdjsafe {
@@ -31,10 +31,9 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         return Ok(());
     }
 
-    let pb = make_progress_bar(plan.tracks.len(), "Exporting...");
-    let report = export(&plan, &BarProgress(pb.clone()), &CancelToken::new());
-    pb.finish_and_clear();
-    let report = report?;
+    let report = with_bar(plan.tracks.len(), "Exporting...", |p, c| {
+        export(&plan, p, c)
+    })?;
     print_report(&plan, &report);
     Ok(())
 }
@@ -173,7 +172,7 @@ fn print_report(plan: &Plan, r: &Report) {
         style("✓").green().bold(),
         r.tracks_in_database
     );
-    for (count, label) in [
+    print_counts(&[
         (r.copied, "audio files copied"),
         (r.transcoded, "audio files transcoded"),
         (r.kept, "audio files already on the stick"),
@@ -193,11 +192,7 @@ fn print_report(plan: &Plan, r: &Report) {
             "._ files the system did not let baken remove",
         ),
         (r.failures.len(), "tracks failed (left out of the database)"),
-    ] {
-        if count > 0 {
-            println!("  {} {} {}", style("•").dim(), count, label);
-        }
-    }
+    ]);
     println!(
         "  {} {}/PIONEER/rekordbox/export.pdb",
         style("•").dim(),

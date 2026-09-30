@@ -96,7 +96,6 @@ dependencies = [
  "console",
  "dialoguer",
  "indicatif",
- "rayon",
  "update-informer",
 ]
 
@@ -128,7 +127,6 @@ dependencies = [
  "libc",
  "quick-xml",
  "rayon",
- "symphonia",
  "thiserror",
 ]
 

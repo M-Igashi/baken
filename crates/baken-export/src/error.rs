@@ -55,9 +55,6 @@ pub enum Error {
     #[error("Cannot write to the stick: {}: {err}{}", path.display(), device_hint(err))]
     DeviceWrite { path: PathBuf, err: std::io::Error },
 
-    #[error("operation cancelled")]
-    Cancelled,
-
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

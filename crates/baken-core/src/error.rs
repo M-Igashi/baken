@@ -31,13 +31,6 @@ pub enum Error {
     #[error("None of the {count} tracks in playlist '{playlist}' were found on disk")]
     AllSourcesMissing { playlist: String, count: usize },
 
-    #[error("Source file not found for '{name}' (TrackID {track_id}): {location}")]
-    SourceNotFound {
-        name: String,
-        track_id: String,
-        location: String,
-    },
-
     #[error("{} of {total} tracks failed to convert; no XML written. A partial USB defeats the point — fix the sources above and re-run.", failures.len())]
     ConversionFailed { failures: Vec<String>, total: usize },
 

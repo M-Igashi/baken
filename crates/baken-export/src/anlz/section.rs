@@ -105,19 +105,11 @@ impl AnlzFile {
     pub fn set_path(&mut self, usb_path: &str) {
         let mut body: Vec<u8> = usb_path.encode_utf16().flat_map(u16::to_be_bytes).collect();
         body.extend_from_slice(&[0, 0]);
-        let mut bytes = Vec::with_capacity(16 + body.len());
-        bytes.extend_from_slice(b"PPTH");
-        bytes.extend_from_slice(&16u32.to_be_bytes());
-        bytes.extend_from_slice(&((16 + body.len()) as u32).to_be_bytes());
-        bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        bytes.extend_from_slice(&body);
-        let section = Section {
-            tag: *b"PPTH",
-            bytes,
-        };
+        let len = (body.len() as u32).to_be_bytes();
+        let ppth = section(b"PPTH", 16, &[&len[..], &body].concat());
         match self.find_mut(b"PPTH") {
-            Some(s) => *s = section,
-            None => self.sections.insert(0, section),
+            Some(s) => *s = ppth,
+            None => self.sections.insert(0, ppth),
         }
     }
 }

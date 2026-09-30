@@ -1,11 +1,12 @@
 use anyhow::Result;
 use baken_core::cdjsafe::check::{CheckReport, Player, TrackCheck, Verdict};
 use baken_core::cdjsafe::{self, Action, Plan, Report, SkipReason, CDJSAFE_FOLDER_NAME};
-use baken_core::{CancelToken, Error};
+use baken_core::Error;
 use console::{measure_text_width, pad_str, style, truncate_str, Alignment};
 
 use crate::args::CdjsafeArgs;
-use crate::progress::{make_progress_bar, BarProgress};
+use crate::progress::with_bar;
+use crate::report::print_counts;
 
 pub fn run(args: &CdjsafeArgs) -> Result<()> {
     baken_core::check_ffmpeg()?;
@@ -40,15 +41,9 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
         out_dir.display()
     );
 
-    let pb = make_progress_bar(plan.len(), "Converting...");
-    let result = cdjsafe::convert(
-        &plan,
-        out_dir,
-        args.output.as_deref(),
-        &BarProgress(pb.clone()),
-        &CancelToken::new(),
-    );
-    pb.finish_and_clear();
+    let result = with_bar(plan.len(), "Converting...", |p, c| {
+        cdjsafe::convert(&plan, out_dir, args.output.as_deref(), p, c)
+    });
 
     match result {
         Ok(report) => {
@@ -77,15 +72,11 @@ fn print_report(report: &Report) {
         style("✓").green().bold(),
         report.tracks.len()
     );
-    for (n, label) in [
+    print_counts(&[
         (lossless, "re-encoded from lossless sources"),
         (lossy, "re-encoded lossy→lossy (generation loss)"),
         (copied, "copied (already 320 kbps CBR MP3 @ 44.1 kHz)"),
-    ] {
-        if n > 0 {
-            println!("  {} {} {}", style("•").dim(), n, label);
-        }
-    }
+    ]);
 
     if lossy > 0 {
         println!(
@@ -157,10 +148,9 @@ fn run_check(args: &CdjsafeArgs, plan: &Plan) -> Result<()> {
         style(plan.len()).cyan(),
         style(&args.playlist).bold()
     );
-    let pb = make_progress_bar(plan.len(), "Probing...");
-    let report = cdjsafe::check::check(plan, &BarProgress(pb.clone()), &CancelToken::new());
-    pb.finish_and_clear();
-    let report = report?;
+    let report = with_bar(plan.len(), "Probing...", |p, c| {
+        cdjsafe::check::check(plan, p, c)
+    })?;
     print_check(&report);
     if report.is_flagged() {
         std::process::exit(1);

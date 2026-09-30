@@ -25,7 +25,6 @@ expressport = ["dep:baken-export"]
 baken-core.workspace = true
 baken-export = { workspace = true, optional = true }
 anyhow.workspace = true
-rayon.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = "0.12"
 console = "0.16"

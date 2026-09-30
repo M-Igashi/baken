@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::name::QName;
@@ -8,8 +8,8 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use super::location::decode_location;
-use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, playlist_node_attrs};
-use crate::Error;
+use super::transcode::{SAFE_BITRATE_KBPS, SAFE_SAMPLE_RATE};
+use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, unescaped};
 
 /// Name of the Type=0 folder NODE that holds the CDJ-safe playlist.
 pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
@@ -75,110 +75,7 @@ const RECOMPUTED: &[&str] = &[
     "Comments",
 ];
 
-/// Pass 1: find the target playlist (path under ROOT), return its TrackID
-/// list in playlist order and the maximum numeric TrackID in the collection.
-/// rekordbox writes a playlist with no tracks self-closing (`<NODE .../>`);
-/// that is found with an empty list, not reported as missing.
-pub fn find_playlist(xml_data: &[u8], target: &[String]) -> crate::Result<(Vec<String>, u64)> {
-    let mut reader = Reader::from_reader(xml_data);
-    reader.config_mut().trim_text(false);
-
-    let mut in_collection = false;
-    let mut in_playlists = false;
-    let mut max_id: u64 = 0;
-    let mut path_stack: Vec<String> = Vec::new();
-    let mut capture: Option<Vec<String>> = None;
-    let mut found: Option<Vec<String>> = None;
-
-    loop {
-        match reader.read_event() {
-            Ok(Event::Eof) => break,
-            Ok(Event::Start(e)) => match e.name().as_ref() {
-                "COLLECTION" => in_collection = true,
-                "PLAYLISTS" => in_playlists = true,
-                "TRACK" if in_collection => {
-                    if let Some(id) = get_attr(&e, "TrackID")? {
-                        max_id = max_id.max(id.parse().unwrap_or(0));
-                    }
-                }
-                "NODE" if in_playlists => {
-                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
-                    path_stack.push(name);
-                    if is_target_playlist(&path_stack, &ty, target) {
-                        check_key_type(&key_type, target)?;
-                        capture = Some(Vec::new());
-                    }
-                }
-                _ => {}
-            },
-            Ok(Event::Empty(e)) => match e.name().as_ref() {
-                "TRACK" if in_collection => {
-                    if let Some(id) = get_attr(&e, "TrackID")? {
-                        max_id = max_id.max(id.parse().unwrap_or(0));
-                    }
-                }
-                "TRACK" if capture.is_some() => {
-                    if let Some(k) = get_attr(&e, "Key")? {
-                        capture.as_mut().unwrap().push(k);
-                    }
-                }
-                "NODE" if in_playlists => {
-                    let (name, ty, key_type) = playlist_node_attrs(&e)?;
-                    path_stack.push(name);
-                    if is_target_playlist(&path_stack, &ty, target) {
-                        check_key_type(&key_type, target)?;
-                        found = Some(Vec::new());
-                    }
-                    path_stack.pop();
-                }
-                _ => {}
-            },
-            Ok(Event::End(e)) => match e.name().as_ref() {
-                "COLLECTION" => in_collection = false,
-                "PLAYLISTS" => in_playlists = false,
-                "NODE" if in_playlists => {
-                    if capture.is_some() && path_stack.len() > 1 && path_stack[1..] == target[..] {
-                        found = capture.take();
-                    }
-                    path_stack.pop();
-                }
-                _ => {}
-            },
-            Err(e) => {
-                return Err(anyhow!(
-                    "XML parse error at byte {}: {}",
-                    reader.buffer_position(),
-                    e
-                )
-                .into())
-            }
-            _ => {}
-        }
-    }
-
-    match found {
-        Some(ids) => Ok((ids, max_id)),
-        None => Err(Error::PlaylistNotFound(target.join("/"))),
-    }
-}
-
-/// Whether the NODE just pushed onto `path_stack` is the playlist at `target`.
-fn is_target_playlist(path_stack: &[String], ty: &str, target: &[String]) -> bool {
-    ty == "1" && path_stack.len() > 1 && path_stack[1..] == target[..]
-}
-
-fn check_key_type(key_type: &str, target: &[String]) -> crate::Result<()> {
-    if key_type == "0" {
-        Ok(())
-    } else {
-        Err(Error::UnsupportedPlaylistType {
-            path: target.join("/"),
-            key_type: key_type.to_string(),
-        })
-    }
-}
-
-/// Pass 2: capture the full `<TRACK>` element (attributes + children,
+/// Capture the full `<TRACK>` element (attributes + children,
 /// verbatim) for every wanted TrackID. Returned in playlist order.
 pub fn collect_tracks(xml_data: &[u8], track_ids: &[String]) -> Result<Vec<SourceTrack>> {
     let wanted: HashSet<&str> = track_ids.iter().map(String::as_str).collect();
@@ -273,10 +170,7 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
             _ => None,
         };
         if let Some(field) = field {
-            #[allow(deprecated)]
-            {
-                *field = attr.unescape_value()?.into_owned();
-            }
+            *field = unescaped(&attr)?;
         }
         attrs.push((attr.key.as_ref().to_string(), attr.value.into_owned()));
     }
@@ -297,7 +191,7 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
     })
 }
 
-/// Pass 3: stream-copy the source XML, appending the new `<TRACK>` entries to
+/// Stream-copy the source XML, appending the new `<TRACK>` entries to
 /// `<COLLECTION>` (bumping `Entries`) and a `CDJ-safe (MP3)` folder holding
 /// the new playlist under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
 pub fn rewrite_xml(
@@ -377,45 +271,41 @@ fn emit_track<W: std::io::Write>(
     src: &SourceTrack,
     new: &NewTrack,
 ) -> Result<()> {
-    let track_id = new.track_id.to_string();
-    let size = new.size.to_string();
+    let recomputed = |key: &str| -> Option<String> {
+        Some(match key {
+            "TrackID" => new.track_id.to_string(),
+            "Location" => new.location_url.clone(),
+            "Kind" => "MP3 File".into(),
+            "Size" => new.size.to_string(),
+            "BitRate" => SAFE_BITRATE_KBPS.to_string(),
+            "SampleRate" => SAFE_SAMPLE_RATE.to_string(),
+            _ => return None,
+        })
+    };
 
     let mut e = BytesStart::new("TRACK");
-    let mut comments_done = false;
     for (key, raw_value) in &src.attrs {
-        match key.as_str() {
-            "TrackID" => e.push_attribute(("TrackID", track_id.as_str())),
-            "Location" => e.push_attribute(("Location", new.location_url.as_str())),
-            "Kind" => e.push_attribute(("Kind", "MP3 File")),
-            "Size" => e.push_attribute(("Size", size.as_str())),
-            "BitRate" => e.push_attribute(("BitRate", "320")),
-            "SampleRate" => e.push_attribute(("SampleRate", "44100")),
-            "Comments" => {
-                // Append the marker to the raw (already escaped) source value.
-                let mut v = raw_value.clone();
-                if !v.is_empty() {
-                    v.push(' ');
-                }
-                v.push_str(COMMENT_MARKER);
-                push_raw_attr(&mut e, "Comments", &v);
-                comments_done = true;
+        if key == "Comments" {
+            // Append the marker to the raw (already escaped) source value.
+            let mut v = raw_value.clone();
+            if !v.is_empty() {
+                v.push(' ');
             }
-            _ => push_raw_attr(&mut e, key, raw_value),
+            v.push_str(COMMENT_MARKER);
+            push_raw_attr(&mut e, "Comments", &v);
+        } else if let Some(v) = recomputed(key) {
+            e.push_attribute((key.as_str(), v.as_str()));
+        } else {
+            push_raw_attr(&mut e, key, raw_value);
         }
     }
     // Add any recomputed attribute the source lacked.
     let present: HashSet<&str> = src.attrs.iter().map(|(k, _)| k.as_str()).collect();
-    for missing in RECOMPUTED {
-        if present.contains(missing) {
-            continue;
-        }
-        match *missing {
-            "Kind" => e.push_attribute(("Kind", "MP3 File")),
-            "Size" => e.push_attribute(("Size", size.as_str())),
-            "BitRate" => e.push_attribute(("BitRate", "320")),
-            "SampleRate" => e.push_attribute(("SampleRate", "44100")),
-            "Comments" if !comments_done => push_raw_attr(&mut e, "Comments", COMMENT_MARKER),
-            _ => {}
+    for &missing in RECOMPUTED.iter().filter(|k| !present.contains(*k)) {
+        if missing == "Comments" {
+            push_raw_attr(&mut e, missing, COMMENT_MARKER);
+        } else if let Some(v) = recomputed(missing) {
+            e.push_attribute((missing, v.as_str()));
         }
     }
 
@@ -461,6 +351,8 @@ fn emit_playlist_folder<W: std::io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rbsort::find_playlist;
+    use crate::Error;
 
     const SAMPLE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <DJ_PLAYLISTS Version="1.0.0">
@@ -489,6 +381,17 @@ mod tests {
         let (ids, max_id) = find_playlist(SAMPLE_XML.as_bytes(), &["Gig".to_string()]).unwrap();
         assert_eq!(ids, vec!["7", "1"]);
         assert_eq!(max_id, 7);
+    }
+
+    /// Two playlists at one path: the first wins, as in rbsort and expressport.
+    #[test]
+    fn find_playlist_takes_the_first_of_two_with_one_path() {
+        let xml = SAMPLE_XML.replace(
+            "    </NODE>\n  </PLAYLISTS>",
+            "      <NODE Name=\"Gig\" Type=\"1\" KeyType=\"0\" Entries=\"1\"><TRACK Key=\"3\"/></NODE>\n    </NODE>\n  </PLAYLISTS>",
+        );
+        let (ids, _) = find_playlist(xml.as_bytes(), &["Gig".to_string()]).unwrap();
+        assert_eq!(ids, vec!["7", "1"]);
     }
 
     #[test]

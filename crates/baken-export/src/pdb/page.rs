@@ -30,8 +30,8 @@ pub struct DataPage {
     heap_used: usize,
 }
 
-fn align4(n: usize) -> usize {
-    (n + 3) & !3
+pub(super) fn align4(n: usize) -> usize {
+    n.next_multiple_of(4)
 }
 
 fn dir_bytes(rows: usize) -> usize {

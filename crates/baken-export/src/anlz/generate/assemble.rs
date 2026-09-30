@@ -36,11 +36,7 @@ pub fn build_files(
     mp3_audio_frames: Option<u32>,
 ) -> [AnlzFile; 3] {
     let waves = waveform::analyze(audio);
-    let bpm = track
-        .tempos
-        .first()
-        .map(|t| t.bpm)
-        .unwrap_or(track.average_bpm);
+    let bpm = track.grid_bpm();
     let mut dat = vec![
         pvbr(mp3_audio_frames),
         grid::pqtz(&track.tempos, audio.duration_ms()),

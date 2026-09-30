@@ -1,5 +1,14 @@
 use baken_core::headroom::{AudioAnalysis, GainMethod, GAIN_STEP};
-use console::Style;
+use console::{style, Style};
+
+/// `• <count> <label>` for every count above zero.
+pub fn print_counts(counts: &[(usize, &str)]) {
+    for &(count, label) in counts {
+        if count > 0 {
+            println!("  {} {} {}", style("•").dim(), count, label);
+        }
+    }
+}
 
 pub fn print_analysis_report(analyses: &[AudioAnalysis]) {
     let header_style = Style::new().bold().cyan();
