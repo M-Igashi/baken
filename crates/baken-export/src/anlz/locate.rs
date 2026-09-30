@@ -82,7 +82,7 @@ fn pqtz_summary(file: &AnlzFile) -> (u32, u32, u16) {
         return (0, 0, 0);
     }
     let beats = u32::from_be_bytes(b[0x14..0x18].try_into().unwrap());
-    if beats == 0 || b.len() < 0x20 {
+    if beats == 0 {
         return (0, 0, 0);
     }
     let tempo = u16::from_be_bytes(b[0x1a..0x1c].try_into().unwrap());

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::camelot::parse_key;
-use crate::xmlutil::{get_attr, playlist_node_attrs, write_atomic};
+use crate::xmlutil::{get_attr, playlist_node_attrs, unescaped, write_atomic};
 
 #[derive(Debug, Clone, Default)]
 struct TrackMeta {
@@ -64,23 +64,41 @@ pub fn sort_and_write(
     Ok(sorted)
 }
 
+/// The TrackIDs of the playlist at `target` (path under ROOT) in playlist
+/// order, and the largest numeric TrackID in the collection. cdjsafe finds its
+/// playlist through this, so every subcommand resolves a path the same way.
+pub(crate) fn find_playlist(
+    xml_data: &[u8],
+    target: &[String],
+) -> crate::Result<(Vec<String>, u64)> {
+    let (collection, playlists) = scan_xml(xml_data)?;
+    let max_id = collection
+        .keys()
+        .filter_map(|id| id.parse().ok())
+        .max()
+        .unwrap_or(0);
+    Ok((find_target(playlists, target)?.track_ids, max_id))
+}
+
 fn select_targets(
     all: Vec<CollectedPlaylist>,
     target: Option<&[String]>,
 ) -> crate::Result<Vec<CollectedPlaylist>> {
     match target {
         None => Ok(all.into_iter().filter(|p| p.key_type == "0").collect()),
-        Some(path) => {
-            let matched = all.into_iter().find(|p| p.path == path);
-            match matched {
-                None => Err(Error::PlaylistNotFound(path.join("/"))),
-                Some(p) if p.key_type != "0" => Err(Error::UnsupportedPlaylistType {
-                    path: p.path.join("/"),
-                    key_type: p.key_type,
-                }),
-                Some(p) => Ok(vec![p]),
-            }
-        }
+        Some(path) => find_target(all, path).map(|p| vec![p]),
+    }
+}
+
+/// The first playlist at `path`; it has to be TrackID-referenced.
+fn find_target(all: Vec<CollectedPlaylist>, path: &[String]) -> crate::Result<CollectedPlaylist> {
+    match all.into_iter().find(|p| p.path == path) {
+        None => Err(Error::PlaylistNotFound(path.join("/"))),
+        Some(p) if p.key_type != "0" => Err(Error::UnsupportedPlaylistType {
+            path: p.path.join("/"),
+            key_type: p.key_type,
+        }),
+        Some(p) => Ok(p),
     }
 }
 
@@ -184,12 +202,10 @@ fn record_collection_track(
     let mut bpm: Option<f64> = None;
     for attr in e.attributes() {
         let attr = attr?;
-        #[allow(deprecated)]
-        let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
         match attr.key.as_ref() {
-            "TrackID" => id = Some(val()?),
-            "Tonality" => camelot = parse_key(&val()?),
-            "AverageBpm" => bpm = val()?.parse::<f64>().ok().filter(|v| *v > 0.0),
+            "TrackID" => id = Some(unescaped(&attr)?),
+            "Tonality" => camelot = parse_key(&unescaped(&attr)?),
+            "AverageBpm" => bpm = unescaped(&attr)?.parse::<f64>().ok().filter(|v| *v > 0.0),
             _ => {}
         }
     }

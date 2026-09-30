@@ -15,8 +15,8 @@
 //! Tracks are measured as they are decoded ([`Meter`]), so only the columns
 //! are ever held, a few MB for a whole track (issue #171).
 
-use super::decode::decode_with;
 use crate::anlz::section::{section, Section};
+use baken_core::decode::decode_with;
 use std::path::Path;
 
 /// Preview and detail waveforms of one track.
@@ -227,8 +227,10 @@ impl Meter {
 
 /// Decode `path` and measure it on the way.
 pub fn measure(path: &Path) -> anyhow::Result<Measured> {
+    let file = std::fs::File::open(path)?;
+    let extension = path.extension().and_then(|e| e.to_str());
     let mut meter: Option<Meter> = None;
-    decode_with(path, |chunk, rate, channels| {
+    decode_with(file, extension, |chunk, rate, channels| {
         meter
             .get_or_insert_with(|| Meter::new(rate, channels))
             .push(chunk)

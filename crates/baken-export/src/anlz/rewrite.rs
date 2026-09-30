@@ -52,11 +52,6 @@ pub fn set_cbr_pvbr(file: &mut AnlzFile, audio_frames: u32) {
     }
 }
 
-/// `PVB2` describes FLAC seeking; it has no meaning for an MP3 copy.
-pub fn strip_pvb2(file: &mut AnlzFile) {
-    file.remove(b"PVB2");
-}
-
 /// The MPEG audio frames of an MP3.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Mp3Audio {

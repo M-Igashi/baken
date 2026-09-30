@@ -48,9 +48,21 @@ struct ProbeStream {
     profile: Option<String>,
     sample_rate: Option<String>,
     channels: Option<u32>,
-    bits_per_sample: Option<u32>,
-    bits_per_raw_sample: Option<String>,
+    // ffprobe types these inconsistently (number for bits_per_sample, string
+    // for bits_per_raw_sample), so both are read untyped.
+    bits_per_sample: Option<serde_json::Value>,
+    bits_per_raw_sample: Option<serde_json::Value>,
     bit_rate: Option<String>,
+}
+
+fn parse_bits(value: &Option<serde_json::Value>) -> Option<u32> {
+    let bits = match value.as_ref()? {
+        serde_json::Value::Number(n) => n.as_u64()? as u32,
+        serde_json::Value::String(s) => s.parse().ok()?,
+        _ => return None,
+    };
+    // 0 is ffprobe's "not applicable" for bit-packed codecs like FLAC.
+    (bits > 0).then_some(bits)
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,12 +111,8 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
         .ok_or_else(|| anyhow!("No audio stream in {}", path.display()))?;
 
     // FLAC and ALAC carry their depth in bits_per_raw_sample; PCM in bits_per_sample.
-    let bit_depth = stream
-        .bits_per_raw_sample
-        .as_deref()
-        .and_then(|s| s.parse().ok())
-        .or(stream.bits_per_sample)
-        .filter(|&b| b > 0);
+    let bit_depth =
+        parse_bits(&stream.bits_per_raw_sample).or_else(|| parse_bits(&stream.bits_per_sample));
 
     Ok(SourceInfo {
         container: probe.format.format_name.clone().unwrap_or_default(),
@@ -174,4 +182,20 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
         src.display(),
         last_err
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ffprobe reports bits_per_sample as a number, bits_per_raw_sample as a
+    /// string, and 0 for bit-packed codecs like FLAC.
+    #[test]
+    fn parses_ffprobe_bit_fields() {
+        assert_eq!(parse_bits(&Some(serde_json::json!(16))), Some(16));
+        assert_eq!(parse_bits(&Some(serde_json::json!("24"))), Some(24));
+        assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
+        assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
+        assert_eq!(parse_bits(&None), None);
+    }
 }

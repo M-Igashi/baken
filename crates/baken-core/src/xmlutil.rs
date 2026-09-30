@@ -1,19 +1,26 @@
 //! Small helpers shared by the rbsort and cdjsafe XML passes.
 
 use anyhow::{Context, Result};
+use quick_xml::events::attributes::Attribute;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 use quick_xml::writer::Writer;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
 
+/// An attribute's unescaped value; the one place that calls quick-xml's
+/// deprecated `unescape_value`.
+pub(crate) fn unescaped(attr: &Attribute) -> Result<String> {
+    #[allow(deprecated)]
+    Ok(attr.unescape_value()?.into_owned())
+}
+
 /// Read one attribute's unescaped value from a start tag.
 pub(crate) fn get_attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
     for attr in e.attributes() {
         let attr = attr?;
         if attr.key.as_ref() == name {
-            #[allow(deprecated)]
-            return Ok(Some(attr.unescape_value()?.into_owned()));
+            return unescaped(&attr).map(Some);
         }
     }
     Ok(None)
@@ -26,12 +33,10 @@ pub(crate) fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, Str
     let mut key_type = String::new();
     for attr in e.attributes() {
         let attr = attr?;
-        #[allow(deprecated)]
-        let val = || -> Result<String> { Ok(attr.unescape_value()?.into_owned()) };
         match attr.key.as_ref() {
-            "Name" => name = val()?,
-            "Type" => ty = val()?,
-            "KeyType" => key_type = val()?,
+            "Name" => name = unescaped(&attr)?,
+            "Type" => ty = unescaped(&attr)?,
+            "KeyType" => key_type = unescaped(&attr)?,
             _ => {}
         }
     }

@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use baken_core::headroom::{
     self, AnalysisSummary, ApplyOutcome, AudioAnalysis, GainMode, TpTargetMode,
 };
-use baken_core::CancelToken;
 use clap::Parser;
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm};
@@ -10,7 +9,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::args::{Cli, Command, HeadroomArgs};
-use crate::progress::{make_progress_bar, BarProgress};
+use crate::progress::with_bar;
 use crate::report;
 use crate::updater;
 
@@ -266,19 +265,14 @@ fn print_final_summary(attempted: &[AudioAnalysis], outcome: &ApplyOutcome) {
     }
 
     let summary = AnalysisSummary::from_analyses(&processed);
-
-    for (count, label) in [
+    report::print_counts(&[
         (summary.lossless_count, "lossless files (ffmpeg)"),
         (summary.mp3_lossless_count, "MP3 files (native, lossless)"),
         (
             summary.aac_lossless_count,
             "AAC/M4A files (native, lossless)",
         ),
-    ] {
-        if count > 0 {
-            println!("  {} {} {}", style("•").dim(), count, label);
-        }
-    }
+    ]);
 }
 
 fn prompt_lossless_processing(summary: &AnalysisSummary) -> Result<bool> {
@@ -337,16 +331,9 @@ fn analyze_files(
     tp_mode: TpTargetMode,
     gain_mode: GainMode,
 ) -> Result<Vec<AudioAnalysis>> {
-    let pb = make_progress_bar(files.len(), "Analyzing...");
-    let outcome = headroom::analyze(
-        files,
-        tp_mode,
-        gain_mode,
-        &BarProgress(pb.clone()),
-        &CancelToken::new(),
-    );
-    pb.finish_and_clear();
-    let outcome = outcome?;
+    let outcome = with_bar(files.len(), "Analyzing...", |p, c| {
+        headroom::analyze(files, tp_mode, gain_mode, p, c)
+    })?;
 
     for (path, e) in &outcome.failures {
         // `{:#}` and not `{}`: baken_core::Error is transparent over anyhow,
@@ -405,15 +392,9 @@ fn process_files(
     base_dir: &Path,
     backup_dir: Option<&Path>,
 ) -> ApplyOutcome {
-    let pb = make_progress_bar(analyses.len(), "Processing...");
-    let outcome = headroom::apply(
-        analyses,
-        base_dir,
-        backup_dir,
-        &BarProgress(pb.clone()),
-        &CancelToken::new(),
-    );
-    pb.finish_and_clear();
+    let outcome = with_bar(analyses.len(), "Processing...", |p, c| {
+        headroom::apply(analyses, base_dir, backup_dir, p, c)
+    });
 
     for (path, e) in &outcome.failures {
         let name = path

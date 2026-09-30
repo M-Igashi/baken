@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -93,20 +92,6 @@ const WAV_PCM: &[&str] = &[
     "pcm_f64le",
 ];
 
-#[derive(Debug, Deserialize)]
-struct ProbeStream {
-    codec_name: Option<String>,
-    // ffprobe types these inconsistently (number for bits_per_sample, string
-    // for bits_per_raw_sample), so both are read untyped.
-    bits_per_sample: Option<serde_json::Value>,
-    bits_per_raw_sample: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProbeOutput {
-    streams: Vec<ProbeStream>,
-}
-
 /// Source sample format, used to write a gain-adjusted lossless file back at
 /// its original bit depth instead of promoting everything to 24-bit (issue #74).
 #[derive(Debug, Clone)]
@@ -116,40 +101,11 @@ struct SourceFormat {
     bits: Option<u32>,
 }
 
-fn parse_bits(value: &Option<serde_json::Value>) -> Option<u32> {
-    let bits = match value.as_ref()? {
-        serde_json::Value::Number(n) => n.as_u64()? as u32,
-        serde_json::Value::String(s) => s.parse().ok()?,
-        _ => return None,
-    };
-    // 0 is ffprobe's "not applicable" for bit-packed codecs like FLAC.
-    (bits > 0).then_some(bits)
-}
-
 fn probe_source_format(path: &Path) -> Option<SourceFormat> {
-    let output = crate::tools::ffprobe()
-        .args([
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_streams",
-            "-select_streams",
-            "a:0",
-        ])
-        .arg(path)
-        .output()
-        .ok()?;
-
-    let probe: ProbeOutput = serde_json::from_slice(&output.stdout).ok()?;
-    let stream = probe.streams.into_iter().next()?;
-
-    Some(SourceFormat {
-        // bits_per_raw_sample is the meaningful depth for FLAC, where
-        // bits_per_sample is always 0.
-        bits: parse_bits(&stream.bits_per_raw_sample)
-            .or_else(|| parse_bits(&stream.bits_per_sample)),
-        codec: stream.codec_name?,
+    let info = crate::cdjsafe::probe(path).ok()?;
+    (!info.codec.is_empty()).then_some(SourceFormat {
+        codec: info.codec,
+        bits: info.bit_depth,
     })
 }
 
@@ -221,6 +177,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("wav");
+    let ext = extension.to_ascii_lowercase();
     let temp_path = crate::fsname::native(&file_path.with_extension(format!("tmp.{}", extension)));
 
     let volume_arg = format!("volume={}dB", gain_db);
@@ -231,7 +188,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let source = probe_source_format(file_path);
     // The lossless path only handles .m4a/.mp4 when the payload is ALAC;
     // anything else in that container would be silently re-encoded as AAC.
-    if matches!(extension.to_ascii_lowercase().as_str(), "m4a" | "mp4")
+    if matches!(ext.as_str(), "m4a" | "mp4")
         && source.as_ref().map(|s| s.codec.as_str()) != Some("alac")
     {
         bail!(
@@ -248,10 +205,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         // Stream-copy embedded artwork. Without this, muxer defaults re-encode
         // a JPEG cover to PNG and inflate the file (issue #77).
         .args(["-c:v", "copy"])
-        .args(output_args(
-            &extension.to_ascii_lowercase(),
-            source.as_ref(),
-        ))
+        .args(output_args(&ext, source.as_ref()))
         .arg(&temp_path);
 
     let output = cmd
@@ -279,26 +233,6 @@ fn restore_tags(temp_path: &Path, tags: Option<&Tags>) -> Result<()> {
     })
 }
 
-enum LossyFormat {
-    Mp3,
-    Aac,
-}
-
-/// Apply lossless gain to MP3/AAC files using mp3rgain library (1.5dB steps)
-fn apply_gain_native(file_path: &Path, gain_steps: i32, format: LossyFormat) -> Result<()> {
-    if gain_steps == 0 {
-        return Ok(());
-    }
-    match format {
-        LossyFormat::Mp3 => mp3rgain::apply_gain(file_path, gain_steps)
-            .map(|_| ())
-            .context("mp3rgain failed to apply MP3 gain"),
-        LossyFormat::Aac => mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, gain_steps)
-            .map(|_| ())
-            .context("mp3rgain failed to apply AAC gain"),
-    }
-}
-
 pub fn process_file(
     analysis: &AudioAnalysis,
     base_dir: &Path,
@@ -319,15 +253,19 @@ pub fn process_file(
         backup_file(file_path, base_dir, backup).context("Backup failed")?;
     }
 
+    // Native MP3/AAC gain via mp3rgain, in 1.5 dB steps.
+    let steps = analysis.lossless_gain_steps;
     match analysis.gain_method {
         GainMethod::FfmpegLossless => apply_gain_ffmpeg(file_path, analysis.effective_gain),
-        GainMethod::Mp3Lossless => {
-            apply_gain_native(file_path, analysis.lossless_gain_steps, LossyFormat::Mp3)
+        GainMethod::Mp3Lossless if steps != 0 => mp3rgain::apply_gain(file_path, steps)
+            .map(|_| ())
+            .context("mp3rgain failed to apply MP3 gain"),
+        GainMethod::AacLossless if steps != 0 => {
+            mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, steps)
+                .map(|_| ())
+                .context("mp3rgain failed to apply AAC gain")
         }
-        GainMethod::AacLossless => {
-            apply_gain_native(file_path, analysis.lossless_gain_steps, LossyFormat::Aac)
-        }
-        GainMethod::None => Ok(()),
+        _ => Ok(()),
     }
 }
 
@@ -421,17 +359,6 @@ mod tests {
         let wav = output_args("wav", Some(&source("pcm_s16le", Some(16))));
         assert_eq!(value_of(&wav, "-write_bext").as_deref(), Some("1"));
         assert!(output_args("ogg", None).is_empty());
-    }
-
-    /// ffprobe reports bits_per_sample as a number, bits_per_raw_sample as a
-    /// string, and 0 for bit-packed codecs like FLAC.
-    #[test]
-    fn parses_ffprobe_bit_fields() {
-        assert_eq!(parse_bits(&Some(serde_json::json!(16))), Some(16));
-        assert_eq!(parse_bits(&Some(serde_json::json!("24"))), Some(24));
-        assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
-        assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
-        assert_eq!(parse_bits(&None), None);
     }
 
     /// Issue #131: `rename` only needs the directory, so without this guard

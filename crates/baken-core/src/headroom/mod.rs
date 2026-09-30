@@ -147,9 +147,12 @@ pub fn unwritable(analyses: &[AudioAnalysis]) -> Vec<PathBuf> {
 
 /// Keep the analyses that need a gain change, or none when `lossless` is off.
 pub fn select_processable(analyses: &[AudioAnalysis], lossless: bool) -> Vec<AudioAnalysis> {
+    if !lossless {
+        return Vec::new();
+    }
     analyses
         .iter()
-        .filter(|a| lossless && a.needs_gain())
+        .filter(|a| a.needs_gain())
         .cloned()
         .collect()
 }

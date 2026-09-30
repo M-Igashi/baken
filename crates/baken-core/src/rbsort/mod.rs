@@ -4,6 +4,7 @@ mod camelot;
 mod xml;
 
 pub use camelot::parse_key;
+pub(crate) use xml::find_playlist;
 pub use xml::SortedPlaylist;
 
 use std::path::Path;
