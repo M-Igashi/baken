@@ -23,6 +23,8 @@ pub struct Cue {
     /// -1 memory cue, 0..=7 hot cue A..H.
     pub num: i32,
     pub rgb: Option<(u8, u8, u8)>,
+    /// `Name` started with [`ACTIVE_LOOP_MARKER`], which is not kept in `name`.
+    pub marked: bool,
 }
 
 impl Cue {
@@ -31,6 +33,81 @@ impl Cue {
     }
     pub fn is_loop(&self) -> bool {
         self.kind == 4 || self.end.is_some()
+    }
+    pub fn is_memory_loop(&self) -> bool {
+        !self.is_hot() && self.is_loop()
+    }
+}
+
+/// The XML has no field for an active loop (a memory loop the player engages
+/// when playback reaches it), so a memory loop whose `Name` starts with this,
+/// in any case, is one (issue #210).
+pub const ACTIVE_LOOP_MARKER: &str = "[active]";
+
+fn split_marker(name: String) -> (String, bool) {
+    let trimmed = name.trim_start();
+    match trimmed.get(..ACTIVE_LOOP_MARKER.len()) {
+        Some(head) if head.eq_ignore_ascii_case(ACTIVE_LOOP_MARKER) => (
+            trimmed[ACTIVE_LOOP_MARKER.len()..].trim_start().to_string(),
+            true,
+        ),
+        _ => (name, false),
+    }
+}
+
+/// The track's active loop: players take one, so the earliest marked memory loop.
+pub fn active_loop(cues: &[Cue]) -> Option<&Cue> {
+    cues.iter()
+        .filter(|c| c.marked && c.is_memory_loop())
+        .min_by(|a, b| a.start.total_cmp(&b.start))
+}
+
+/// A track whose [`ACTIVE_LOOP_MARKER`]s do not name exactly one memory loop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActiveLoopWarning {
+    /// Several memory loops are marked; only the one at `used` seconds is active.
+    Several {
+        track: String,
+        count: usize,
+        used: f64,
+    },
+    /// Only cues that are not memory loops are marked, so none is active.
+    NotAMemoryLoop { track: String },
+}
+
+impl ActiveLoopWarning {
+    pub fn check(track: &Track) -> Option<Self> {
+        let count = track
+            .cues
+            .iter()
+            .filter(|c| c.marked && c.is_memory_loop())
+            .count();
+        match active_loop(&track.cues) {
+            Some(used) if count > 1 => Some(Self::Several {
+                track: track.name.clone(),
+                count,
+                used: used.start,
+            }),
+            None if track.cues.iter().any(|c| c.marked) => Some(Self::NotAMemoryLoop {
+                track: track.name.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ActiveLoopWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Several { track, count, used } => write!(
+                f,
+                "{track}: {count} memory loops are named {ACTIVE_LOOP_MARKER}, but a player takes one active loop per track; only the one at {used:.3} s is written as active"
+            ),
+            Self::NotAMemoryLoop { track } => write!(
+                f,
+                "{track}: {ACTIVE_LOOP_MARKER} is on a cue that is not a memory loop, so the track gets no active loop"
+            ),
+        }
     }
 }
 
@@ -154,8 +231,11 @@ impl Library {
                                     }
                                     _ => None,
                                 };
+                            let (name, marked) =
+                                split_marker(attr(&e, "Name")?.unwrap_or_default());
                             t.cues.push(Cue {
-                                name: attr(&e, "Name")?.unwrap_or_default(),
+                                name,
+                                marked,
                                 kind: num(&e, "Type")? as u32,
                                 start: num(&e, "Start")?,
                                 end: attr(&e, "End")?.map(|v| v.trim().parse()).transpose()?,
@@ -298,7 +378,7 @@ mod tests {
       <TEMPO Inizio="0.281" Bpm="128.00" Metro="4/4" Battito="1"/>
       <POSITION_MARK Name="" Type="0" Start="0.281" Num="-1"/>
       <POSITION_MARK Name="" Type="0" Start="15.280" Num="1" Red="40" Green="226" Blue="20"/>
-      <POSITION_MARK Name="lp" Type="4" Start="30.000" End="33.750" Num="-1"/>
+      <POSITION_MARK Name="[active] lp" Type="4" Start="30.000" End="33.750" Num="-1"/>
     </TRACK>
     <TRACK TrackID="2" Name="&amp;" Artist="A" Kind="FLAC File" Size="1" TotalTime="1" AverageBpm="0" Location="file://localhost/V/22.%20%E7%9B%BE.flac" Tonality=""/>
   </COLLECTION>
@@ -326,6 +406,8 @@ mod tests {
         assert_eq!(t.cues.len(), 3);
         assert!(t.cues[1].is_hot() && t.cues[1].rgb == Some((40, 226, 20)));
         assert!(t.cues[2].is_loop() && t.cues[2].end == Some(33.75));
+        assert_eq!((t.cues[2].name.as_str(), t.cues[2].marked), ("lp", true));
+        assert!(!t.cues[0].marked);
         assert_eq!(lib.tracks[1].name, "&");
         assert_eq!(lib.tracks[1].file_name(), "22. 盾.flac");
         let paths: Vec<_> = lib
@@ -339,5 +421,56 @@ mod tests {
         );
         assert_eq!(lib.playlist("Sets/Friday").unwrap().track_ids, vec![352, 2]);
         assert_eq!(lib.playlists[1].parent, Some(0));
+    }
+
+    #[test]
+    fn the_active_marker_is_read_and_left_out_of_the_name() {
+        let split = |n: &str| split_marker(n.to_string());
+        assert_eq!(split("[active] Build"), ("Build".to_string(), true));
+        assert_eq!(split(" [Active]Drop"), ("Drop".to_string(), true));
+        assert_eq!(split("[ACTIVE]"), (String::new(), true));
+        assert_eq!(
+            split("Build [active]"),
+            ("Build [active]".to_string(), false)
+        );
+        assert_eq!(split("[act"), ("[act".to_string(), false));
+        assert_eq!(split("ワーズワース"), ("ワーズワース".to_string(), false));
+    }
+
+    #[test]
+    fn active_loop_warnings() {
+        let cue = |start: f64, kind: u32, num: i32| Cue {
+            start,
+            kind,
+            end: (kind == 4).then_some(start + 4.0),
+            num,
+            marked: true,
+            ..Default::default()
+        };
+        let track = |cues: Vec<Cue>| Track {
+            name: "T".into(),
+            cues,
+            ..Default::default()
+        };
+        // a marked memory loop and its marked hot copy: one active loop
+        let one = track(vec![cue(8.0, 4, -1), cue(8.0, 4, 0)]);
+        assert_eq!(active_loop(&one.cues).map(|c| c.start), Some(8.0));
+        assert_eq!(ActiveLoopWarning::check(&one), None);
+        let two = track(vec![cue(40.0, 4, -1), cue(20.0, 4, -1)]);
+        assert_eq!(
+            ActiveLoopWarning::check(&two),
+            Some(ActiveLoopWarning::Several {
+                track: "T".into(),
+                count: 2,
+                used: 20.0
+            })
+        );
+        let cue_only = track(vec![cue(5.0, 0, -1), cue(5.0, 0, 1)]);
+        assert_eq!(active_loop(&cue_only.cues).map(|c| c.start), None);
+        assert!(matches!(
+            ActiveLoopWarning::check(&cue_only),
+            Some(ActiveLoopWarning::NotAMemoryLoop { .. })
+        ));
+        assert_eq!(ActiveLoopWarning::check(&track(Vec::new())), None);
     }
 }
