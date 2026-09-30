@@ -56,6 +56,20 @@ fn print_plan(plan: &Plan) {
     for w in plan.format_warnings() {
         println!("{} {w}", style("⚠").yellow());
     }
+    let onelibrary = &plan.onelibrary_files;
+    if onelibrary.contains(&"exportLibrary.db") {
+        println!(
+            "{} This stick also carries rekordbox's OneLibrary ({}). expressport writes the Device Library only, so writing export.pdb removes it. OneLibrary players (CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) will then show \"OneLibrary not found\" instead of rekordbox's old library.",
+            style("⚠").yellow(),
+            onelibrary.join(", ")
+        );
+    } else if !onelibrary.is_empty() {
+        println!(
+            "{} This stick also carries part of a rekordbox export that expressport does not write ({}), so writing export.pdb removes it.",
+            style("⚠").yellow(),
+            onelibrary.join(", ")
+        );
+    }
     println!(
         "{} Playlists: {}",
         style("▸").cyan(),
@@ -134,6 +148,15 @@ fn print_report(plan: &Plan, r: &Report) {
     for (name, err) in &r.failures {
         println!("{} {}: {}", style("⚠").yellow(), name, err);
     }
+    if r.onelibrary_kept > 0 {
+        println!(
+            "{} {} of rekordbox's old library files could not be removed. Delete what is left of {} in {}, so that the stick carries one library.",
+            style("⚠").yellow(),
+            r.onelibrary_kept,
+            baken_export::ONELIBRARY_FILES.join(", "),
+            plan.device.join("PIONEER/rekordbox").display()
+        );
+    }
     println!(
         "\n{} Done! {} tracks in the device library.",
         style("✓").green().bold(),
@@ -150,6 +173,10 @@ fn print_report(plan: &Plan, r: &Report) {
             "tracks with analysis computed from the audio",
         ),
         (r.pruned, "stale files removed"),
+        (
+            r.onelibrary_removed,
+            "files of rekordbox's old library removed",
+        ),
         (
             r.apple_double_kept,
             "._ files the system did not let baken remove",
