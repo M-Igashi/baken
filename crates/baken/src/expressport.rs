@@ -59,7 +59,7 @@ fn print_plan(plan: &Plan) {
     let onelibrary = &plan.onelibrary_files;
     if onelibrary.contains(&"exportLibrary.db") {
         println!(
-            "{} This stick also carries rekordbox's OneLibrary ({}). expressport writes the Device Library only, so writing export.pdb removes it. OneLibrary players (CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) will then show \"OneLibrary not found\" instead of rekordbox's old library.",
+            "{} This stick also carries rekordbox's OneLibrary ({}). expressport writes the Device Library only, so writing export.pdb removes them. OneLibrary players (CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) will then show \"OneLibrary not found\" instead of rekordbox's old library.",
             style("⚠").yellow(),
             onelibrary.join(", ")
         );
