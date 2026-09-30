@@ -67,6 +67,19 @@ pub struct PlanTrack {
     pub anlz: Option<Entry>,
 }
 
+/// What rekordbox 7 writes into `PIONEER/rekordbox/` beside `export.pdb` and
+/// expressport does not: the OneLibrary database with its `-wal` and `-shm`,
+/// and `exportExt.pdb`, the Device Library's extension tables. Left next to a
+/// new `export.pdb` they describe rekordbox's old library, which rekordbox
+/// reports as "a library inconsistency on the device" and OneLibrary players
+/// show instead of ours (issue #208).
+pub const ONELIBRARY_FILES: [&str; 4] = [
+    "exportLibrary.db",
+    "exportLibrary.db-wal",
+    "exportLibrary.db-shm",
+    "exportExt.pdb",
+];
+
 #[derive(Debug)]
 pub struct Plan {
     pub library: Library,
@@ -91,6 +104,10 @@ pub struct Plan {
     /// caller that cannot run `diskutil` or `lsblk` (a sandboxed app) can set
     /// it itself before showing [`Plan::format_warnings`].
     pub partition_table: Option<volume::PartitionTable>,
+    /// Those of [`ONELIBRARY_FILES`] on the stick, in that order. [`export`]
+    /// removes them once it has written `export.pdb`, so a cancelled or
+    /// failed run leaves both of the stick's libraries as they were.
+    pub onelibrary_files: Vec<&'static str>,
     pub device_name: String,
     pub cdjsafe: bool,
     pub prune: bool,
@@ -139,6 +156,12 @@ pub struct Report {
     /// remove them: inside the App Sandbox the `._X` of a file the app wrote
     /// cannot be unlinked while `X` exists (issue #192).
     pub apple_double_kept: usize,
+    /// [`ONELIBRARY_FILES`] removed after `export.pdb` was written (issue #208).
+    pub onelibrary_removed: usize,
+    /// [`ONELIBRARY_FILES`] the system did not let the export remove, so they
+    /// are still on the stick next to the new `export.pdb`. Counted rather
+    /// than failing the run, which has written `export.pdb` by then.
+    pub onelibrary_kept: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
     pub tracks_in_database: usize,
@@ -269,6 +292,11 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     } else {
         (None, None)
     };
+    let rb_dir = opts.device.join("PIONEER/rekordbox");
+    let onelibrary_files = ONELIBRARY_FILES
+        .into_iter()
+        .filter(|f| rb_dir.join(f).symlink_metadata().is_ok())
+        .collect();
     Ok(Plan {
         library,
         tracks,
@@ -282,6 +310,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         volume_root,
         filesystem,
         partition_table,
+        onelibrary_files,
         device_name,
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
@@ -438,6 +467,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         path: pdb_path,
         err,
     })?;
+    remove_onelibrary(&rb_dir, &mut report);
 
     if let Some(dir) = &plan.settings_dir {
         settings::copy_all(dir, &plan.settings_files, &plan.device)?;
@@ -467,6 +497,23 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         }
     }
     Ok(report)
+}
+
+/// Remove rekordbox's OneLibrary and `exportExt.pdb` once our `export.pdb` is
+/// on the stick, and not before: until then they match the old one (issue
+/// #208). Whichever of [`ONELIBRARY_FILES`] is there goes, also one rekordbox
+/// wrote after the plan. A file the system does not let us remove is counted,
+/// since an error would lose the report of a run that has written
+/// `export.pdb`. Their `._` files go with the `PIONEER/rekordbox` walk at the
+/// end of [`export`], under the rules of #192.
+fn remove_onelibrary(rb_dir: &Path, report: &mut Report) {
+    for name in ONELIBRARY_FILES {
+        match fsname::remove_file(&rb_dir.join(name)) {
+            Ok(()) => report.onelibrary_removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => report.onelibrary_kept += 1,
+        }
+    }
 }
 
 /// Hands out track indices to the workers that prepare tracks ahead of the
