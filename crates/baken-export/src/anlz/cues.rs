@@ -4,11 +4,13 @@
 //! off a real export and are reproduced byte for byte by the tests.
 
 use super::section::{section, AnlzFile, Section};
-use crate::collection::Cue;
+use crate::collection::{active_loop, Cue};
 
 const HOT: u32 = 1;
 const MEMORY: u32 = 0;
 const NO_LOOP: u32 = 0xFFFF_FFFF;
+/// `PCPT` status of an active loop; every other entry has 0.
+const ACTIVE_LOOP: u32 = 4;
 /// Hot cues A to H are `Num` 0..=7.
 const HOT_CUES: i32 = 8;
 /// A to C go into the `.DAT` `PCOB`, D to H into the `.EXT` one.
@@ -47,6 +49,12 @@ fn loop_ms(c: &Cue) -> u32 {
 
 /// `PCOB` for the `.DAT` file (56-byte `PCPT` entries).
 pub fn pcob(list: u32, cues: &[&Cue]) -> Section {
+    pcob_with_active(list, cues, None)
+}
+
+/// `PCOB` whose entry for `active` is marked as the active loop, the way
+/// rekordbox marks one (the reference export's only loop).
+fn pcob_with_active(list: u32, cues: &[&Cue], active: Option<&Cue>) -> Section {
     let mut p = Vec::with_capacity(12 + cues.len() * 56);
     p.extend_from_slice(&list.to_be_bytes());
     p.extend_from_slice(&0u16.to_be_bytes());
@@ -63,7 +71,12 @@ pub fn pcob(list: u32, cues: &[&Cue]) -> Section {
         p.extend_from_slice(&0x1cu32.to_be_bytes());
         p.extend_from_slice(&0x38u32.to_be_bytes());
         p.extend_from_slice(&hot_number(c).to_be_bytes());
-        p.extend_from_slice(&0u32.to_be_bytes()); // status
+        let status = if active.is_some_and(|a| std::ptr::eq(a, *c)) {
+            ACTIVE_LOOP
+        } else {
+            0
+        };
+        p.extend_from_slice(&status.to_be_bytes());
         p.extend_from_slice(&0x0001_0000u32.to_be_bytes());
         let (first, last) = if list == HOT {
             (0xFFFF, 0xFFFF)
@@ -175,13 +188,17 @@ pub enum Kind {
 /// `PCOB` memory, and in the `.EXT` also `PCO2` hot and `PCO2` memory. The
 /// `.DAT` `PCOB` holds hot cues A to C and the `.EXT` one D to H (its memory
 /// list stays empty); `PCO2` lists them all. Verified on a real export with
-/// hot cues A and G.
+/// hot cues A and G. The active loop is marked in the `.DAT` memory list only;
+/// rekordbox's `PCP2` entry for it carries no flag.
 pub fn sections(kind: Kind, cues: &[Cue], bpm: f64) -> Vec<Section> {
     let (hot, mem) = split(cues);
     let (dat_hot, ext_hot): (Vec<&Cue>, Vec<&Cue>) =
         hot.iter().copied().partition(|c| c.num < DAT_HOT_CUES);
     match kind {
-        Kind::Dat => vec![pcob(HOT, &dat_hot), pcob(MEMORY, &mem)],
+        Kind::Dat => vec![
+            pcob(HOT, &dat_hot),
+            pcob_with_active(MEMORY, &mem, active_loop(cues)),
+        ],
         Kind::Ext => vec![
             pcob(HOT, &ext_hot),
             pcob_empty(MEMORY),
@@ -319,6 +336,56 @@ mod tests {
         };
         assert_eq!(loop_fraction(&l, 83.5), (8, 1));
         assert_eq!(pcob(MEMORY, &[&l]).bytes[24 + 28], 2);
+    }
+
+    #[test]
+    fn active_loop_matches_fixture_bytes() {
+        // From the reference export, track "inner universe": a memory cue at
+        // 0.253 and an active loop 121.155 to 126.904 (PCPT status 4).
+        let cue = Cue {
+            start: 0.253,
+            num: -1,
+            ..Default::default()
+        };
+        let active = Cue {
+            kind: 4,
+            start: 121.155,
+            end: Some(126.904),
+            num: -1,
+            marked: true,
+            ..Default::default()
+        };
+        let dat = sections(Kind::Dat, &[cue.clone(), active.clone()], 83.5);
+        assert_eq!(dat[1].bytes, hex("50434f420000001800000088000000000000000200000001504350540000001c00000038000000000000000400010000ffff0001020003e80001d9430001efb800000000000000000000000000000000504350540000001c000000380000000000000000000100000000ffff010003e8000000fdffffffff00000000000000000000000000000000"));
+        // unmarked, the same loop is a plain memory loop
+        let plain = Cue {
+            marked: false,
+            ..active
+        };
+        assert_eq!(
+            &sections(Kind::Dat, &[cue, plain], 83.5)[1].bytes[40..44],
+            &[0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn only_the_earliest_marked_memory_loop_is_active() {
+        let marked = |start: f64, num: i32| Cue {
+            kind: 4,
+            start,
+            end: Some(start + 4.0),
+            num,
+            marked: true,
+            ..Default::default()
+        };
+        // a marked hot copy (as mixxx2rekordbox writes one) never counts
+        let cues = [marked(60.0, -1), marked(30.0, -1), marked(10.0, 0)];
+        let dat = sections(Kind::Dat, &cues, 128.0);
+        let status = |i: usize| &dat[1].bytes[24 + 56 * i + 16..24 + 56 * i + 20];
+        // memory list in reverse XML order: 30.0 first, then 60.0
+        assert_eq!(status(0), &[0, 0, 0, 4]);
+        assert_eq!(status(1), &[0, 0, 0, 0]);
+        assert_eq!(&dat[0].bytes[24 + 16..24 + 20], &[0, 0, 0, 0]);
     }
 
     fn hex(s: &str) -> Vec<u8> {

@@ -132,6 +132,17 @@ fn print_plan(plan: &Plan) {
             plan.without_grid()
         );
     }
+    if plan.active_loops() > 0 {
+        println!(
+            "{} {} tracks get an active loop (a memory loop named {})",
+            style("▸").cyan(),
+            plan.active_loops(),
+            baken_export::collection::ACTIVE_LOOP_MARKER
+        );
+    }
+    for w in plan.active_loop_warnings() {
+        println!("{} {w}", style("⚠").yellow());
+    }
     for s in &plan.skipped {
         println!("{} Skipped {}: {}", style("⚠").yellow(), s.name, s.reason);
     }

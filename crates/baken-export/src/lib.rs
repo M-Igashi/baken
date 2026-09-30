@@ -128,6 +128,22 @@ impl Plan {
             .count()
     }
 
+    /// Tracks that get an active loop from a memory loop named `[active]` (issue #210).
+    pub fn active_loops(&self) -> usize {
+        self.tracks
+            .iter()
+            .filter(|t| collection::active_loop(&t.device.track.cues).is_some())
+            .count()
+    }
+
+    /// Tracks whose `[active]` marks do not name exactly one memory loop.
+    pub fn active_loop_warnings(&self) -> Vec<collection::ActiveLoopWarning> {
+        self.tracks
+            .iter()
+            .filter_map(|t| collection::ActiveLoopWarning::check(&t.device.track))
+            .collect()
+    }
+
     /// What the stick's filesystem or partition table rules out (issue #184).
     pub fn format_warnings(&self) -> Vec<volume::FormatWarning> {
         volume::warnings(self.filesystem.as_ref(), self.partition_table)
