@@ -22,7 +22,7 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 
 ## Bake'n Deck for Mac
 
-[**Bake'n Deck for Mac**](https://apps.apple.com/app/baken-deck/id6808813823) is the native app edition, on the Mac App Store. The same `baken-core` engine and the same numbers, in a window: Headroom for a whole folder or for a single rekordbox playlist, with a review table and audio preview; a sorted-order preview before Sort writes anything; a CDJ Safe pre-flight check; per-run timestamped backups with one-click restore; and Mac Tune-up for the macOS settings that slow rekordbox down. One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
+[**Bake'n Deck for Mac**](https://apps.apple.com/app/baken-deck/id6808813823) is the native app edition, on the Mac App Store. The same `baken-core` engine and the same numbers, in a window: Headroom for a whole folder or for a single rekordbox playlist, with a review table and audio preview; a sorted-order preview before Sort writes anything; a CDJ Safe pre-flight check; USB Export, which writes the stick from your collection XML with the same code as `baken expressport`, with a pre-flight and a report; per-run timestamped backups with one-click restore; and Mac Tune-up for the macOS settings that slow rekordbox down. One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
 
 The `baken` command line stays free and MIT-licensed on macOS, Windows and Linux, and always will.
 
@@ -447,7 +447,7 @@ baken cdjsafe <XML> --playlist <PATH> --check
 
 *Added in v3.5.0 as a beta, out of beta since v4.3.0. The output is byte-checked against real rekordbox exports (design record: [#115](https://github.com/M-Igashi/baken/issues/115)), and testers have played sticks written by `baken` on a CDJ-3000 (firmware 3.22) and on CDJ-2000NXS2 players (1.85 and 1.87): playlists, beat grid, waveforms, cues, keys, search and My Settings, with copied and with generated analysis ([#116](https://github.com/M-Igashi/baken/issues/116), where further player reports are welcome). As with any stick, check it on a player before a gig.*
 
-`expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read.
+`expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read. The USB Export page in [Bake'n Deck for Mac](#baken-deck-for-mac) (1.2.0 and later) runs this same export in a window.
 
 ```bash
 baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday" --playlist "Sets/Warmup"
