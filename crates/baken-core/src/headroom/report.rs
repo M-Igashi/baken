@@ -36,6 +36,7 @@ pub fn generate_csv(
             "Headroom (dB)",
             "Method",
             "Effective Gain (dB)",
+            "Damage",
         ])
         .context("Failed to write CSV header")?;
 
@@ -44,6 +45,7 @@ pub fn generate_csv(
             .bitrate_kbps
             .map(|b| b.to_string())
             .unwrap_or_else(|| "-".to_string());
+        let damage = analysis.damage.map(|d| d.to_string()).unwrap_or_default();
 
         writer
             .write_record([
@@ -56,6 +58,7 @@ pub fn generate_csv(
                 &format!("{:+.1}", analysis.headroom),
                 analysis.gain_method.method_label(),
                 &format!("{:+.1}", analysis.effective_gain),
+                &damage,
             ])
             .context("Failed to write CSV record")?;
     }

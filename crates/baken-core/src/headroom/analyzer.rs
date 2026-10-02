@@ -32,6 +32,17 @@ pub const GAIN_STEP: f64 = mp3rgain::GAIN_STEP_DB;
 /// Files whose True Peak is within this distance of the target are left alone
 const MIN_EFFECTIVE_GAIN: f64 = 0.05;
 
+/// Levels no real file reaches (issue #223); beyond them the numbers describe
+/// decoder garbage, and the gain they ask for (-39 dB on the reported file,
+/// +22.3 LUFS and +37.6 dBTP through ffmpeg) would leave the track almost
+/// silent. The loudest masters stay a few LU under 0 LUFS. True peak alone
+/// proves less: decoders output float, so an MP3 or AAC whose gain someone
+/// raised goes past full scale and is exactly what lowering is for. An AAC in
+/// the owner's test folder sits at +7.2 dBTP on drum hits, -10.3 LUFS, and
+/// decodes cleanly in symphonia, ffmpeg and Core Audio.
+pub const MAX_PLAUSIBLE_TRUE_PEAK: f64 = 20.0;
+pub const MAX_PLAUSIBLE_LOUDNESS: f64 = 0.0;
+
 /// Processing method for the file
 #[derive(Debug, Clone, PartialEq)]
 pub enum GainMethod {
@@ -85,6 +96,66 @@ pub struct Measurement {
     /// Only read for lossy files; the split-bitrate target needs it.
     pub bitrate_kbps: Option<u32>,
     pub codec: Codec,
+    /// Packets the decoder rejected; None when every packet decoded.
+    #[serde(default)]
+    pub decode_errors: Option<DecodeErrors>,
+}
+
+impl Measurement {
+    /// Why this measurement cannot be trusted, if it cannot (issue #223).
+    pub fn damage(&self) -> Option<Damage> {
+        if let Some(errors) = self.decode_errors {
+            return Some(Damage::DecodeErrors(errors));
+        }
+        (self.input_tp > MAX_PLAUSIBLE_TRUE_PEAK || self.input_i > MAX_PLAUSIBLE_LOUDNESS)
+            .then_some(Damage::Implausible)
+    }
+}
+
+/// Packets the decoder rejected while measuring a file.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DecodeErrors {
+    pub count: u32,
+    /// Seconds into the decoded audio. None when ffmpeg measured the file,
+    /// since its log does not say where.
+    pub first_at: Option<f64>,
+}
+
+/// Why a file's measurement cannot be trusted (issue #223). A damaged file
+/// gets no gain: the numbers describe what the decoder made of the damage,
+/// not the music, and what to do with the file is the DJ's call.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Damage {
+    /// The decoder rejected packets.
+    DecodeErrors(DecodeErrors),
+    /// Every packet decoded, to a level no real file reaches.
+    Implausible,
+}
+
+impl std::fmt::Display for Damage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Damage::DecodeErrors(DecodeErrors { count, first_at }) => {
+                let frames = if *count == 1 { "frame" } else { "frames" };
+                write!(f, "{count} audio {frames} failed to decode")?;
+                if let Some(at) = first_at {
+                    let tenths = (at * 10.0).round() as u64;
+                    write!(
+                        f,
+                        ", the first at {}:{:02}.{}",
+                        tenths / 600,
+                        tenths / 10 % 60,
+                        tenths % 10
+                    )?;
+                }
+                Ok(())
+            }
+            Damage::Implausible => write!(
+                f,
+                "measured above {MAX_PLAUSIBLE_LOUDNESS:.0} LUFS or {MAX_PLAUSIBLE_TRUE_PEAK:+.0} dBTP, a level no real file reaches"
+            ),
+        }
+    }
 }
 
 /// The gain proposal for one [`Measurement`] under one ceiling and mode.
@@ -95,6 +166,8 @@ pub struct Decision {
     pub gain_method: GainMethod,
     pub effective_gain: f64,
     pub lossless_gain_steps: i32,
+    /// Set when the measurement cannot be trusted; the method is then None.
+    pub damage: Option<Damage>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +183,7 @@ pub struct AudioAnalysis {
     pub gain_method: GainMethod,
     pub effective_gain: f64,
     pub lossless_gain_steps: i32,
+    pub damage: Option<Damage>,
 }
 
 impl AudioAnalysis {
@@ -131,6 +205,7 @@ impl AudioAnalysis {
             gain_method: decision.gain_method,
             effective_gain: decision.effective_gain,
             lossless_gain_steps: decision.lossless_gain_steps,
+            damage: decision.damage,
         }
     }
 
@@ -202,6 +277,22 @@ fn parse_stderr_bitrate(stderr: &str) -> Option<u32> {
         .next()?
         .parse()
         .ok()
+}
+
+/// Packets ffmpeg's decoder rejected, one log line each: "Error submitting
+/// packet to decoder" since ffmpeg 7, "Error while decoding stream" before.
+fn parse_stderr_decode_errors(stderr: &str) -> Option<DecodeErrors> {
+    let count = stderr
+        .lines()
+        .filter(|line| {
+            line.contains("Error submitting packet to decoder")
+                || line.contains("Error while decoding stream")
+        })
+        .count();
+    (count > 0).then_some(DecodeErrors {
+        count: count as u32,
+        first_at: None,
+    })
 }
 
 fn get_bitrate(path: &Path) -> Option<u32> {
@@ -410,18 +501,19 @@ fn measure_native(path: &Path) -> Result<Measurement> {
     let (mut sample_rate, mut frames) = (0, 0u64);
     let mut samples: Vec<f64> = Vec::new();
     let extension = path.extension().and_then(|e| e.to_str());
-    let codec = crate::decode::decode(file, extension, |chunk, rate, channels| {
-        let analyzer = analyzer.get_or_insert_with(|| {
-            sample_rate = rate;
-            Bs1770Analyzer::new_with_true_peak(rate, channels)
-        });
-        samples.clear();
-        samples.extend(chunk.iter().map(|&s| f64::from(s)));
-        for frame in samples.chunks_exact(channels) {
-            analyzer.add_frame(frame);
-        }
-        frames += (chunk.len() / channels) as u64;
-    })?;
+    let (codec, decode_errors) =
+        crate::decode::decode(file, extension, |chunk, rate, channels| {
+            let analyzer = analyzer.get_or_insert_with(|| {
+                sample_rate = rate;
+                Bs1770Analyzer::new_with_true_peak(rate, channels)
+            });
+            samples.clear();
+            samples.extend(chunk.iter().map(|&s| f64::from(s)));
+            for frame in samples.chunks_exact(channels) {
+                analyzer.add_frame(frame);
+            }
+            frames += (chunk.len() / channels) as u64;
+        })?;
     let analyzer = analyzer.ok_or_else(|| anyhow!("no audio decoded"))?;
     let true_peak = analyzer
         .true_peak()
@@ -440,6 +532,7 @@ fn measure_native(path: &Path) -> Result<Measurement> {
         input_tp,
         bitrate_kbps: bitrate,
         codec,
+        decode_errors,
     })
 }
 
@@ -500,22 +593,29 @@ fn measure_ffmpeg(path: &Path) -> Result<Measurement> {
         input_tp,
         bitrate_kbps,
         codec,
+        decode_errors: parse_stderr_decode_errors(&stderr),
     })
 }
 
 /// Pure: the ceiling for this file, the headroom to it, and the method, gain
 /// and native step count that get there. Same inputs, same answer, no I/O.
+/// A damaged measurement gets no gain, whatever it asks for.
 pub fn decide(measurement: &Measurement, tp_mode: TpTargetMode, gain_mode: GainMode) -> Decision {
     let target_tp = tp_mode.target_for(measurement.codec.is_lossy(), measurement.bitrate_kbps);
     let headroom = target_tp - measurement.input_tp;
-    let (gain_method, effective_gain, lossless_gain_steps) =
-        decide_gain(headroom, measurement.codec, gain_mode);
+    let damage = measurement.damage();
+    let (gain_method, effective_gain, lossless_gain_steps) = if damage.is_some() {
+        (GainMethod::None, 0.0, 0)
+    } else {
+        decide_gain(headroom, measurement.codec, gain_mode)
+    };
     Decision {
         target_tp,
         headroom,
         gain_method,
         effective_gain,
         lossless_gain_steps,
+        damage,
     }
 }
 
@@ -700,6 +800,7 @@ mod tests {
             input_tp: -2.5,
             bitrate_kbps: Some(320),
             codec: Codec::Mp3,
+            decode_errors: None,
         };
         let d = decide(&m, TpTargetMode::default(), GainMode::Normalize);
         assert_eq!(d.target_tp, DEFAULT_TARGET_TRUE_PEAK);
@@ -744,6 +845,7 @@ mod tests {
             input_tp: -6.0,
             bitrate_kbps: None,
             codec: Codec::Lossless,
+            decode_errors: None,
         };
         let d = decide(
             &m,
@@ -904,5 +1006,106 @@ mod tests {
         let err = ensure_finite(f64::NEG_INFINITY, f64::NEG_INFINITY).unwrap_err();
         assert!(err.downcast_ref::<Conclusive>().is_some());
         assert!(format!("{err}").contains("may be silent or corrupted"));
+    }
+
+    /// Issue #223: the reported AAC measured +22.3 LUFS / +37.6 dBTP through
+    /// ffmpeg and was offered -39 dB. A damaged file gets no gain at all.
+    #[test]
+    fn a_damaged_measurement_gets_no_gain() {
+        let reported = Measurement {
+            input_i: 22.3,
+            input_tp: 37.6,
+            bitrate_kbps: Some(279),
+            codec: Codec::Aac,
+            decode_errors: Some(DecodeErrors {
+                count: 1667,
+                first_at: None,
+            }),
+        };
+        let d = decide(&reported, TpTargetMode::default(), GainMode::Normalize);
+        assert_eq!(
+            (d.gain_method, d.effective_gain, d.lossless_gain_steps),
+            (GainMethod::None, 0.0, 0)
+        );
+        assert!(matches!(d.damage, Some(Damage::DecodeErrors(_))));
+
+        // Without the error count the level alone gives it away.
+        let garbage = Measurement {
+            decode_errors: None,
+            ..reported.clone()
+        };
+        let d = decide(&garbage, TpTargetMode::default(), GainMode::Normalize);
+        assert_eq!(
+            (d.gain_method, d.damage),
+            (GainMethod::None, Some(Damage::Implausible))
+        );
+
+        // A raised AAC far over full scale that decodes cleanly is lowered:
+        // the one in the owner's test folder, -7.7 dB rounded up to six steps.
+        let raised = Measurement {
+            input_i: -10.3,
+            input_tp: 7.2,
+            ..garbage.clone()
+        };
+        let d = decide(&raised, TpTargetMode::default(), GainMode::Normalize);
+        assert_eq!(
+            (d.gain_method, d.lossless_gain_steps, d.damage),
+            (GainMethod::AacLossless, -6, None)
+        );
+        let at_the_limit = Measurement {
+            input_i: MAX_PLAUSIBLE_LOUDNESS,
+            input_tp: MAX_PLAUSIBLE_TRUE_PEAK,
+            ..raised
+        };
+        assert_eq!(at_the_limit.damage(), None);
+        let louder = Measurement {
+            input_i: 0.1,
+            ..at_the_limit.clone()
+        };
+        assert_eq!(louder.damage(), Some(Damage::Implausible));
+        let hotter = Measurement {
+            input_tp: 20.1,
+            ..at_the_limit
+        };
+        assert_eq!(hotter.damage(), Some(Damage::Implausible));
+    }
+
+    #[test]
+    fn damage_says_how_many_frames_failed_and_where() {
+        let at =
+            |count, first_at| Damage::DecodeErrors(DecodeErrors { count, first_at }).to_string();
+        assert_eq!(
+            at(1460, Some(221.657)),
+            "1460 audio frames failed to decode, the first at 3:41.7"
+        );
+        assert_eq!(
+            at(1, Some(0.0)),
+            "1 audio frame failed to decode, the first at 0:00.0"
+        );
+        assert_eq!(at(22, None), "22 audio frames failed to decode");
+        assert_eq!(
+            Damage::Implausible.to_string(),
+            "measured above 0 LUFS or +20 dBTP, a level no real file reaches"
+        );
+    }
+
+    #[test]
+    fn decode_errors_are_counted_from_the_ffmpeg_log() {
+        // ffmpeg 9.0.2 on the reported file, and the pre-7 wording.
+        let stderr = "[aac @ 0x7a] channel element 3.7 is not allocated\n\
+            [aist#0:0/aac @ 0x7b] [dec:aac @ 0x7c] Error submitting packet to decoder: Invalid data found when processing input\n\
+            size=N/A time=00:04:22.67 bitrate=N/A speed=43.5x\r[aist#0:0/aac @ 0x7b] [dec:aac @ 0x7c] Error submitting packet to decoder: Invalid data found when processing input\n\
+            Error while decoding stream #0:0: Invalid data found when processing input\n";
+        assert_eq!(
+            parse_stderr_decode_errors(stderr),
+            Some(DecodeErrors {
+                count: 3,
+                first_at: None
+            })
+        );
+        assert_eq!(
+            parse_stderr_decode_errors("[aac @ 0x7a] Reserved bit set.\n"),
+            None
+        );
     }
 }

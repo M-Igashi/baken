@@ -70,7 +70,7 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 ### How It Works
 
 1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A, ALAC/M4A)
-2. Measures LUFS (Integrated Loudness) and True Peak per ITU-R BS.1770-4, decoding in-process (ffmpeg is used for files the built-in decoder cannot open)
+2. Measures LUFS (Integrated Loudness) and True Peak per ITU-R BS.1770-4, decoding in-process (ffmpeg is used for files the built-in decoder cannot open). A file that does not decode cleanly is reported as damaged and left alone (see [Damaged Files](#damaged-files))
 3. Computes the gain that puts each file's True Peak at the ceiling (-0.5 dBTP by default). Quiet files get a positive gain, loud files a negative one; `--boost-only` restricts this to positive gains.
 4. Categorizes files by processing method:
    - **Green**: Lossless files (ffmpeg)
@@ -208,6 +208,10 @@ A WAV keeps its header form too. ffmpeg writes `WAVE_FORMAT_EXTENSIBLE` for inte
 
 The gain for each file is `ceiling − measured True Peak`. Files below the ceiling get a positive gain, files above it (loudness-war masters, inter-sample overs from lossy encoding) get a negative one, so every track ends up at the same True Peak with no limiter involved. Pass `--boost-only` to keep the pre-v3.3 behaviour of raising quiet files only and leaving loud files untouched.
 
+#### Damaged Files
+
+A file with audio frames the decoder rejects is reported as damaged, with the number of frames and where the first one is, and gets no gain. So does a file that measures above 0 LUFS or +20 dBTP, a level no real file reaches. The numbers of such a file describe what the decoder made of the damage, not the music: an AAC whose last two and a half minutes are corrupt measured +22.3 LUFS and +37.6 dBTP through ffmpeg, and up to 4.4.0 it was offered -39 dB, which would have left the track almost silent ([#223](https://github.com/M-Igashi/baken/issues/223)). The damaged part may also play as a burst of noise on a player, so replace the file from its source; rekordbox analyses such a file without complaint. The terminal lists every damaged file with its full path, and the CSV report names the reason in its `Damage` column.
+
 #### Two-Tier Approach for Lossy Formats (MP3/AAC)
 
 Each MP3 and AAC/M4A file is categorized into one of two tiers:
@@ -263,13 +267,14 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 
 #### CSV Report
 
-| Filename | Format | Bitrate (kbps) | LUFS | True Peak (dBTP) | Target (dBTP) | Headroom (dB) | Method | Effective Gain (dB) |
-|----------|--------|----------------|------|------------------|---------------|---------------|--------|---------------------|
-| track01.flac | Lossless | - | -13.3 | -3.2 | -0.5 | +2.7 | ffmpeg | +2.7 |
-| track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 |
-| track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | none | 0.0 |
-| track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 |
-| track10.m4a | AAC | 256 | -12.5 | -1.2 | -0.5 | +0.7 | none | 0.0 |
+| Filename | Format | Bitrate (kbps) | LUFS | True Peak (dBTP) | Target (dBTP) | Headroom (dB) | Method | Effective Gain (dB) | Damage |
+|----------|--------|----------------|------|------------------|---------------|---------------|--------|---------------------|--------|
+| track01.flac | Lossless | - | -13.3 | -3.2 | -0.5 | +2.7 | ffmpeg | +2.7 | |
+| track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 | |
+| track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | none | 0.0 | |
+| track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 | |
+| track10.m4a | AAC | 256 | -12.5 | -1.2 | -0.5 | +0.7 | none | 0.0 | |
+| track11.m4a | - | 307 | -7.7 | 3.3 | -0.5 | -3.8 | none | +0.0 | 1460 audio frames failed to decode, the first at 3:41.7 |
 
 #### Backup Structure
 
