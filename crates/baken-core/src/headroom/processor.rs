@@ -183,7 +183,8 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let volume_arg = format!("volume={}dB", gain_db);
     // ffmpeg re-emits only the metadata it understands, so the source's raw
     // tags go back over the output or GEOB/PRIV and the MP4 free-form atoms
-    // are lost (issue #117).
+    // are lost (issue #117). A plain WAV's `fmt ` goes back the same way, or
+    // the file comes back as WAVE_FORMAT_EXTENSIBLE (issue #218).
     let tags = tags::read(file_path);
     let source = probe_source_format(file_path);
     // The lossless path only handles .m4a/.mp4 when the payload is ALAC;

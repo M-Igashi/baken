@@ -202,6 +202,8 @@ A lossy file closer to the ceiling than one 1.5 dB step is left alone rather tha
 
 Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
 
+A WAV keeps its header form too. ffmpeg writes `WAVE_FORMAT_EXTENSIBLE` for integer PCM deeper than 16 bits and for anything faster than 48 kHz, so a plain WAV, the way DAWs and download stores write it, gets its own `fmt ` chunk back after the rewrite and reads the same in `baken cdjsafe --check` before and after a run ([#218](https://github.com/M-Igashi/baken/issues/218)).
+
 #### Raising and Lowering
 
 The gain for each file is `ceiling − measured True Peak`. Files below the ceiling get a positive gain, files above it (loudness-war masters, inter-sample overs from lossy encoding) get a negative one, so every track ends up at the same True Peak with no limiter involved. Pass `--boost-only` to keep the pre-v3.3 behaviour of raising quiet files only and leaving loud files untouched.

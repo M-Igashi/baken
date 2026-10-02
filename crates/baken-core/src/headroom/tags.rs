@@ -1,10 +1,12 @@
-//! Carrying a file's DJ metadata across an ffmpeg re-mux (issue #117).
+//! Carrying a file's DJ metadata across an ffmpeg re-mux (issue #117), and a
+//! WAV's plain format header (issue #218).
 //!
 //! ffmpeg re-emits only the metadata it can map onto its own key/value model,
 //! so the binary payloads DJ software writes are dropped whenever headroom
 //! rewrites a container: ID3v2 `GEOB`/`PRIV` frames on AIFF and WAV, and
-//! free-form `----` atoms on MP4. Lifting them off the source and putting them
-//! back over the output keeps them byte for byte.
+//! free-form `----` atoms on MP4. It also writes a plain WAV as
+//! `WAVE_FORMAT_EXTENSIBLE` (see [`super::wav`]). Lifting these off the source
+//! and putting them back over the output keeps them byte for byte.
 //!
 //! Audio payloads are never held in memory: a gig's worth of 24-bit WAV is
 //! hundreds of megabytes per file and `apply` runs files in parallel.
@@ -14,10 +16,16 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-/// Metadata an ffmpeg re-mux would drop, lifted off a source file.
+use super::wav;
+
+/// What an ffmpeg re-mux would drop or change, lifted off a source file.
 pub enum Tags {
-    /// A raw ID3v2 tag from an AIFF/WAV `ID3 ` chunk.
-    Id3(Vec<u8>),
+    /// AIFF and WAV: the raw ID3v2 tag of an `ID3 ` chunk, and a WAV's `fmt `
+    /// payload when it is a plain one.
+    Riff {
+        id3: Option<Vec<u8>>,
+        plain_fmt: Option<Vec<u8>>,
+    },
     /// Free-form `----` items from an MP4's `moov/udta/meta/ilst`, the ones
     /// Serato and rekordbox write.
     Mp4(Vec<Vec<u8>>),
@@ -75,15 +83,15 @@ impl Container {
 pub fn read(path: &Path) -> Option<Tags> {
     match Container::of(path)? {
         Container::Mp4 => read_free_form(path).ok().flatten().map(Tags::Mp4),
-        container => read_chunk(path, container).ok().flatten().map(Tags::Id3),
+        container => read_riff(path, container).ok().flatten(),
     }
 }
 
 /// Put `tags` back over a file ffmpeg has just written.
 pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
     match (Container::of(path), tags) {
-        (Some(c @ (Container::Aiff | Container::Wav)), Tags::Id3(tag)) => {
-            restore_chunk(path, tag, c)
+        (Some(c @ (Container::Aiff | Container::Wav)), Tags::Riff { id3, plain_fmt }) => {
+            restore_riff(path, id3.as_deref(), plain_fmt.as_deref(), c)
         }
         (Some(Container::Mp4), Tags::Mp4(items)) => restore_free_form(path, items),
         // A mismatch means the converted file's extension drifted from the
@@ -107,10 +115,22 @@ impl Chunk {
     fn padded_len(&self) -> u64 {
         self.len + (self.len & 1)
     }
+
+    /// The payload, read whole: only for the small chunks carried here.
+    fn read(&self, file: &mut File) -> io::Result<Vec<u8>> {
+        let mut payload = vec![0u8; self.len as usize];
+        file.seek(SeekFrom::Start(self.start))?;
+        file.read_exact(&mut payload)?;
+        Ok(payload)
+    }
 }
 
 fn is_id3_chunk(id: &[u8; 4]) -> bool {
     id.eq_ignore_ascii_case(b"id3 ")
+}
+
+fn is_fmt_chunk(id: &[u8; 4]) -> bool {
+    id == b"fmt "
 }
 
 /// Walk the chunk headers, reading no payload. A length running past the end
@@ -143,31 +163,84 @@ fn chunk_table(file: &mut File, big_endian: bool) -> io::Result<Vec<Chunk>> {
     Ok(table)
 }
 
-fn read_chunk(path: &Path, container: Container) -> Result<Option<Vec<u8>>> {
+/// The source's ID3 tag and, in a WAV, its `fmt ` when that is a plain one.
+fn read_riff(path: &Path, container: Container) -> Result<Option<Tags>> {
     let mut file = File::open(path)?;
     let table = chunk_table(&mut file, container.big_endian())?;
-    let Some(chunk) = table.iter().find(|c| is_id3_chunk(&c.id)) else {
-        return Ok(None);
-    };
-    let mut tag = vec![0u8; chunk.len as usize];
-    file.seek(SeekFrom::Start(chunk.start))?;
-    file.read_exact(&mut tag)?;
-    Ok(Some(tag))
+    let find = |want: fn(&[u8; 4]) -> bool| table.iter().find(|c| want(&c.id));
+    let id3 = find(is_id3_chunk).map(|c| c.read(&mut file)).transpose()?;
+    let plain_fmt = match container {
+        Container::Wav => find(is_fmt_chunk).map(|c| c.read(&mut file)).transpose()?,
+        _ => None,
+    }
+    .filter(|fmt| wav::is_plain(fmt));
+    Ok((id3.is_some() || plain_fmt.is_some()).then_some(Tags::Riff { id3, plain_fmt }))
 }
 
-fn restore_chunk(path: &Path, tag: &[u8], container: Container) -> Result<()> {
-    let big_endian = container.big_endian();
+/// Put the source's `id3` tag over whatever ID3 chunk ffmpeg wrote, and its
+/// `plain_fmt` over the `fmt ` ffmpeg wrote when that is the same format as
+/// `WAVE_FORMAT_EXTENSIBLE`, in one pass. A file with neither to do is left
+/// as it is.
+fn restore_riff(
+    path: &Path,
+    id3: Option<&[u8]>,
+    plain_fmt: Option<&[u8]>,
+    container: Container,
+) -> Result<()> {
     let mut src = File::open(path)?;
-    let kept: Vec<Chunk> = chunk_table(&mut src, big_endian)?
+    let table = chunk_table(&mut src, container.big_endian())?;
+    let fmt = match (plain_fmt, table.iter().find(|c| is_fmt_chunk(&c.id))) {
+        (Some(plain), Some(c)) if wav::is_extensible_form(&c.read(&mut src)?, plain) => Some(plain),
+        _ => None,
+    };
+    if id3.is_none() && fmt.is_none() {
+        return Ok(());
+    }
+    let mut parts: Vec<Part> = table
         .into_iter()
-        .filter(|c| !is_id3_chunk(&c.id))
+        .filter(|c| id3.is_none() || !is_id3_chunk(&c.id))
+        .map(|c| match fmt {
+            Some(plain) if is_fmt_chunk(&c.id) => Part::New(b"fmt ", plain),
+            _ => Part::Kept(c),
+        })
         .collect();
+    if let Some(tag) = id3 {
+        parts.push(Part::New(container.chunk_id(), tag));
+    }
+    rewrite_chunks(path, src, container, parts)
+}
 
-    let tag_len = tag.len() as u64;
-    // The declared size covers the 4-byte form type, every chunk kept, and the
-    // tag chunk appended after them, each with its 8-byte header.
-    let size =
-        4 + kept.iter().map(|c| 8 + c.padded_len()).sum::<u64>() + 8 + tag_len + (tag_len & 1);
+/// A chunk of a rewritten RIFF/FORM file: one of the file's own, copied as it
+/// is, or a new one.
+enum Part<'a> {
+    Kept(Chunk),
+    New(&'a [u8; 4], &'a [u8]),
+}
+
+impl Part<'_> {
+    /// Payload length, pad byte excluded.
+    fn len(&self) -> u64 {
+        match self {
+            Part::Kept(chunk) => chunk.len,
+            Part::New(_, data) => data.len() as u64,
+        }
+    }
+}
+
+/// Rewrite the RIFF/FORM file at `path`, open as `src`, as its own 12-byte
+/// header followed by `parts`, with the declared size recomputed.
+fn rewrite_chunks(
+    path: &Path,
+    mut src: File,
+    container: Container,
+    parts: Vec<Part>,
+) -> Result<()> {
+    // The declared size covers the 4-byte form type and every part, each
+    // with its 8-byte header and pad byte.
+    let size = 4 + parts
+        .iter()
+        .map(|p| 8 + p.len() + (p.len() & 1))
+        .sum::<u64>();
 
     let mut head = [0u8; 12];
     src.seek(SeekFrom::Start(0))?;
@@ -179,20 +252,23 @@ fn restore_chunk(path: &Path, tag: &[u8], container: Container) -> Result<()> {
     // still has open (issue #137).
     rewrite(path, move |out| {
         out.write_all(&head)?;
-        for chunk in &kept {
-            src.seek(SeekFrom::Start(chunk.start - 8))?;
-            io::copy(&mut Read::by_ref(&mut src).take(8 + chunk.len), out)?;
+        for part in &parts {
+            match part {
+                Part::Kept(chunk) => {
+                    src.seek(SeekFrom::Start(chunk.start - 8))?;
+                    io::copy(&mut Read::by_ref(&mut src).take(8 + chunk.len), out)?;
+                }
+                Part::New(id, data) => {
+                    out.write_all(*id)?;
+                    out.write_all(&container.encode_len(data.len() as u32))?;
+                    out.write_all(data)?;
+                }
+            }
             // Written here rather than copied, since the last chunk of a file
             // is often stored without its pad byte.
-            if chunk.len & 1 == 1 {
+            if part.len() & 1 == 1 {
                 out.write_all(&[0])?;
             }
-        }
-        out.write_all(container.chunk_id())?;
-        out.write_all(&container.encode_len(tag.len() as u32))?;
-        out.write_all(tag)?;
-        if tag_len & 1 == 1 {
-            out.write_all(&[0])?;
         }
         Ok(())
     })
@@ -212,11 +288,11 @@ fn rewrite(path: &Path, fill: impl FnOnce(&mut BufWriter<File>) -> Result<()>) -
         out.flush()?;
         Ok(())
     };
-    if let Err(e) = build() {
+    let result = build().and_then(|()| fs::rename(&temp, path).map_err(Into::into));
+    if result.is_err() {
         let _ = fs::remove_file(&temp);
-        return Err(e);
     }
-    fs::rename(&temp, path).map_err(Into::into)
+    result
 }
 
 // ------------------------------------------------------------------ MP4 ---
@@ -366,6 +442,7 @@ fn restore_free_form(path: &Path, items: &[Vec<u8>]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headroom::wav::tests::{extensible, plain};
 
     /// A 4 KB binary frame, the shape rekordbox and Serato write.
     fn tag_with_geob() -> Vec<u8> {
@@ -465,17 +542,24 @@ mod tests {
         dir.join(name)
     }
 
+    fn id3(tag: Vec<u8>) -> Tags {
+        Tags::Riff {
+            id3: Some(tag),
+            plain_fmt: None,
+        }
+    }
+
     fn id3_of(tags: &Tags) -> &[u8] {
         match tags {
-            Tags::Id3(tag) => tag,
-            Tags::Mp4(_) => panic!("expected an ID3 tag"),
+            Tags::Riff { id3: Some(tag), .. } => tag,
+            _ => panic!("expected an ID3 tag"),
         }
     }
 
     fn mp4_of(tags: &Tags) -> &[Vec<u8>] {
         match tags {
             Tags::Mp4(items) => items,
-            Tags::Id3(_) => panic!("expected MP4 free-form items"),
+            Tags::Riff { .. } => panic!("expected MP4 free-form items"),
         }
     }
 
@@ -496,7 +580,7 @@ mod tests {
             ),
         )
         .unwrap();
-        restore(&path, &Tags::Id3(tag.clone())).unwrap();
+        restore(&path, &id3(tag.clone())).unwrap();
 
         assert_eq!(id3_of(&read(&path).unwrap()), tag.as_slice());
         let written = fs::read(&path).unwrap();
@@ -526,7 +610,7 @@ mod tests {
         )
         .unwrap();
         assert!(read(&path).is_none());
-        restore(&path, &Tags::Id3(tag.clone())).unwrap();
+        restore(&path, &id3(tag.clone())).unwrap();
 
         assert_eq!(id3_of(&read(&path).unwrap()), tag.as_slice());
         let written = fs::read(&path).unwrap();
@@ -536,13 +620,98 @@ mod tests {
         );
     }
 
+    /// ffmpeg's output of a tagged 24-bit mono WAV: its `fmt ` comes back as
+    /// the source's 16 bytes and its tag goes after the rest in the same
+    /// pass, so every later chunk moves; each one, the odd-length `data`
+    /// included, arrives byte for byte (issue #218).
+    #[test]
+    fn restores_a_wav_fmt_and_its_tag_in_one_pass() {
+        let source = temp_path("source.wav");
+        let converted = temp_path("converted.wav");
+        let fmt = plain(1, 1, 48000, 24);
+        let tag = tag_with_geob();
+        let data = chunk(b"data", &[9u8; 3 * 101], false);
+        fs::write(
+            &source,
+            container(
+                Container::Wav,
+                &[
+                    chunk(b"fmt ", &fmt, false),
+                    data.clone(),
+                    chunk(b"id3 ", &tag, false),
+                ],
+            ),
+        )
+        .unwrap();
+        let bext = chunk(b"bext", &[7u8; 603], false);
+        let list = chunk(
+            b"LIST",
+            b"INFOISFT\x0e\x00\x00\x00Lavf63.1.102\x00\x00",
+            false,
+        );
+        fs::write(
+            &converted,
+            container(
+                Container::Wav,
+                &[
+                    chunk(b"fmt ", &extensible(&fmt, 4), false),
+                    bext.clone(),
+                    list.clone(),
+                    data.clone(),
+                ],
+            ),
+        )
+        .unwrap();
+
+        restore(&converted, &read(&source).unwrap()).unwrap();
+        assert_eq!(
+            fs::read(&converted).unwrap(),
+            container(
+                Container::Wav,
+                &[
+                    chunk(b"fmt ", &fmt, false),
+                    bext,
+                    list,
+                    data,
+                    chunk(b"id3 ", &tag, false)
+                ]
+            )
+        );
+    }
+
+    /// A 16-bit file ffmpeg keeps plain, and six channels whose extensible
+    /// header says more than a plain one could: nothing to rewrite.
+    #[test]
+    fn leaves_a_wav_alone_when_its_fmt_has_no_plain_form_to_take() {
+        for (fmt, ours) in [
+            (plain(1, 2, 44100, 16), plain(1, 2, 44100, 16)),
+            (
+                plain(1, 6, 48000, 24),
+                extensible(&plain(1, 6, 48000, 24), 0x3F),
+            ),
+        ] {
+            let source = temp_path("plain-source.wav");
+            let converted = temp_path("plain-converted.wav");
+            let data = chunk(b"data", &[5u8; 48], false);
+            fs::write(
+                &source,
+                container(Container::Wav, &[chunk(b"fmt ", &fmt, false), data.clone()]),
+            )
+            .unwrap();
+            let file = container(Container::Wav, &[chunk(b"fmt ", &ours, false), data]);
+            fs::write(&converted, &file).unwrap();
+            restore(&converted, &read(&source).unwrap()).unwrap();
+            assert_eq!(fs::read(&converted).unwrap(), file);
+        }
+    }
+
     /// FLAC keeps Vorbis comments ffmpeg already carries; both calls no-op.
     #[test]
     fn leaves_other_containers_alone() {
         let path = temp_path("skip.flac");
         fs::write(&path, b"fLaC-untouched").unwrap();
         assert!(read(&path).is_none());
-        restore(&path, &Tags::Id3(tag_with_geob())).unwrap();
+        restore(&path, &id3(tag_with_geob())).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"fLaC-untouched");
     }
 
