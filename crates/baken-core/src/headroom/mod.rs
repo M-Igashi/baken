@@ -5,6 +5,7 @@ mod processor;
 mod report;
 mod scanner;
 mod tags;
+mod wav;
 
 pub use analyzer::{
     decide, AudioAnalysis, Codec, Decision, GainMethod, GainMode, Measurement, TpTargetMode,
