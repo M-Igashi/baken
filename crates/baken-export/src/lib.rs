@@ -16,6 +16,7 @@ pub mod volume;
 
 pub use error::{Error, Result};
 
+use anlz::flac;
 use anlz::generate;
 use anlz::generate::Measured;
 use anlz::hash::AnlzSlots;
@@ -25,6 +26,7 @@ use anlz::section::AnlzFile;
 use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -65,6 +67,10 @@ pub struct PlanTrack {
     pub source: PathBuf,
     /// rekordbox's own analysis to copy; `None` means generate it from the audio.
     pub anlz: Option<Entry>,
+    /// The FLAC changed after rekordbox analysed it, so the seek table in
+    /// that analysis points into the old file (issue #219). [`export`] checks
+    /// again when it reads the analysis and rebuilds the table from the file.
+    pub stale_seek_table: bool,
 }
 
 /// What rekordbox 7 writes into `PIONEER/rekordbox/` beside `export.pdb` and
@@ -136,6 +142,12 @@ impl Plan {
             .count()
     }
 
+    /// Tracks whose FLAC changed after rekordbox analysed it (a headroom run
+    /// re-encodes FLAC), so that its seek table is rebuilt from the file.
+    pub fn stale_seek_tables(&self) -> impl Iterator<Item = &PlanTrack> {
+        self.tracks.iter().filter(|t| t.stale_seek_table)
+    }
+
     /// Tracks whose `[active]` marks do not name exactly one memory loop.
     pub fn active_loop_warnings(&self) -> Vec<collection::ActiveLoopWarning> {
         self.tracks
@@ -178,6 +190,12 @@ pub struct Report {
     /// are still on the stick next to the new `export.pdb`. Counted rather
     /// than failing the run, which has written `export.pdb` by then.
     pub onelibrary_kept: usize,
+    /// FLAC seek tables rebuilt because the file changed after rekordbox
+    /// analysed it (issue #219).
+    pub seek_tables_rebuilt: usize,
+    /// Such tables that could not be rebuilt, because the file's frames could
+    /// not all be found, and were left out.
+    pub seek_tables_dropped: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
     pub tracks_in_database: usize,
@@ -283,11 +301,18 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 },
                 source,
                 anlz: entry.cloned(),
+                stale_seek_table: false,
             });
         }
     }
     if tracks.is_empty() {
         return Err(Error::NothingToExport);
+    }
+    // `--cdjsafe` writes MP3s, which carry no seek table of this kind.
+    if !opts.cdjsafe {
+        tracks
+            .par_iter_mut()
+            .for_each(|t| t.stale_seek_table = has_stale_seek_table(t));
     }
     let device_name = opts
         .device_name
@@ -327,6 +352,23 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
     })
+}
+
+/// Whether the FLAC seek table in `pt`'s rekordbox analysis no longer fits
+/// its file. What cannot be read counts as fitting, so the table is then
+/// copied as it always was.
+fn has_stale_seek_table(pt: &PlanTrack) -> bool {
+    let Some(entry) = pt.anlz.as_ref() else {
+        return false;
+    };
+    if pt.device.file_type != pdb::rows::FILE_TYPE_FLAC {
+        return false;
+    }
+    let Ok(Some(ext)) = read_optional(&entry.sibling(FileKind::Ext.extension())) else {
+        return false;
+    };
+    ext.find(flac::TAG)
+        .is_some_and(|table| flac::is_stale(table, &pt.source).unwrap_or(false))
 }
 
 fn select_playlists(library: &Library, names: &[String]) -> Result<Vec<usize>> {
@@ -595,6 +637,7 @@ struct Prepared {
     files: Vec<(FileKind, AnlzFile)>,
     device: DeviceTrack,
     generated: bool,
+    seek_table: Option<SeekTable>,
     audio: Audio,
 }
 
@@ -648,7 +691,7 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             match kind {
                 FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
                 // `PVB2` describes FLAC seeking; it means nothing for an MP3
-                FileKind::Ext => file.remove(b"PVB2"),
+                FileKind::Ext => file.remove(flac::TAG),
                 FileKind::TwoEx => {}
             }
         }
@@ -693,10 +736,12 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             files: FileKind::ALL.into_iter().zip(files).collect(),
             device: with_measured(&pt.device, &audio, mp3),
             generated: true,
+            seek_table: None,
             audio: Audio::Source,
         });
     };
     let mut files = Vec::new();
+    let mut seek_table = None;
     for kind in FileKind::ALL {
         let Some(mut file) = read_optional(&entry.sibling(kind.extension()))? else {
             if kind != FileKind::TwoEx {
@@ -715,14 +760,47 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             &pt.device.track.cues,
             pt.device.track.grid_bpm(),
         );
+        if kind == FileKind::Ext && pt.device.file_type == pdb::rows::FILE_TYPE_FLAC {
+            seek_table = refresh_seek_table(&mut file, &pt.source);
+        }
         files.push((kind, file));
     }
     Ok(Prepared {
         files,
         device: pt.device.clone(),
         generated: false,
+        seek_table,
         audio: Audio::Source,
     })
+}
+
+/// What became of a FLAC seek table that no longer fit its file.
+enum SeekTable {
+    Rebuilt,
+    Dropped,
+}
+
+/// rekordbox's FLAC seek table points into the file it analysed (issue
+/// #219). Checked again here rather than taken from the plan, since the file
+/// may have changed since: one that no longer fits is replaced by the table
+/// built from the file. A file whose frames cannot all be found loses it
+/// rather than send the player to the wrong bytes; a stick with generated
+/// analysis has none either.
+fn refresh_seek_table(ext: &mut AnlzFile, source: &Path) -> Option<SeekTable> {
+    let table = ext.find_mut(flac::TAG)?;
+    if !flac::is_stale(table, source).unwrap_or(false) {
+        return None;
+    }
+    match flac::seek_table(source) {
+        Ok(fresh) => {
+            *table = fresh;
+            Some(SeekTable::Rebuilt)
+        }
+        Err(_) => {
+            ext.remove(flac::TAG);
+            Some(SeekTable::Dropped)
+        }
+    }
 }
 
 /// Everything that touches the stick, one track at a time in plan order. The
@@ -771,6 +849,11 @@ fn write_track(
     }
     if prepared.generated {
         report.anlz_generated += 1;
+    }
+    match prepared.seek_table {
+        Some(SeekTable::Rebuilt) => report.seek_tables_rebuilt += 1,
+        Some(SeekTable::Dropped) => report.seek_tables_dropped += 1,
+        None => {}
     }
     Ok(prepared.device)
 }

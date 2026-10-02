@@ -1,12 +1,15 @@
-//! Generated `PQTZ` / `PQT2` sections against the local rekordbox 7 analysis
-//! files in `.claude/fixtures/JPHFAREKORD-20260918/local-anlz` (not in git).
-//! Returns early when the fixture is absent.
+//! Generated `PQTZ` / `PQT2` sections, waveforms and FLAC seek tables
+//! (`PVB2`) against the local rekordbox 7 analysis files in
+//! `.claude/fixtures/JPHFAREKORD-20260918/local-anlz` (not in git). Returns
+//! early when the fixture is absent; the waveform and seek table tests also
+//! need the audio on the library drive.
 
+use baken_export::anlz::flac;
 use baken_export::anlz::generate::{pqt2_empty, pqtz};
-use baken_export::anlz::locate::AnlzIndex;
+use baken_export::anlz::locate::{read_optional, AnlzIndex};
 use baken_export::anlz::section::AnlzFile;
 use baken_export::collection::Library;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn fixture_root() -> Option<PathBuf> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -124,7 +127,7 @@ fn waveforms_match_rekordbox_within_tolerance() {
         if compared == 4 {
             break;
         }
-        let source = std::path::Path::new(&track.location);
+        let source = Path::new(&track.location);
         let Some(entry) = index.find(track) else {
             continue;
         };
@@ -192,6 +195,49 @@ fn waveforms_match_rekordbox_within_tolerance() {
     );
     assert!(h > 0.9 && w > 0.9, "height {h} whiteness {w}");
     assert!(band_corr.iter().all(|&c| c / compared as f64 > 0.75));
+}
+
+/// Where the file has not changed since rekordbox analysed it, the table
+/// built from it is rekordbox's byte for byte; where it has (the library's
+/// FLACs headroom processed after the analysis), rekordbox's is stale and the
+/// rebuilt one fits.
+#[test]
+fn seek_tables_are_rebuilt_as_rekordbox_writes_them() {
+    let Some(root) = fixture_root() else { return };
+    let lib = Library::load(&root.join("collection.xml")).unwrap();
+    let index = AnlzIndex::build(&[root.join("local-anlz")]).unwrap();
+    // Rebuilding reads the whole file, so a few of each kind.
+    const EACH: usize = 4;
+    let (mut fitting, mut stale) = (0, 0);
+    for track in &lib.tracks {
+        let source = Path::new(&track.location);
+        let Some(entry) = index.find(track) else {
+            continue;
+        };
+        let Ok(Some(ext)) = read_optional(&entry.sibling("EXT")) else {
+            continue;
+        };
+        let Some(theirs) = ext.find(flac::TAG).filter(|_| source.exists()) else {
+            continue;
+        };
+        let is_stale = flac::is_stale(theirs, source).unwrap();
+        let seen = if is_stale { &mut stale } else { &mut fitting };
+        if *seen == EACH {
+            continue;
+        }
+        *seen += 1;
+        let ours = flac::seek_table(source).unwrap();
+        if is_stale {
+            assert_ne!(&ours, theirs, "{}", track.name);
+            assert!(!flac::is_stale(&ours, source).unwrap(), "{}", track.name);
+        } else {
+            assert_eq!(&ours, theirs, "{}", track.name);
+        }
+        if fitting == EACH && stale == EACH {
+            break;
+        }
+    }
+    eprintln!("seek tables: {fitting} rebuilt byte for byte, {stale} stale ones rebuilt to fit");
 }
 
 fn correlation(a: &[f64], b: &[f64]) -> f64 {
