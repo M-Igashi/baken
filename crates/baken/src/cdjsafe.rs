@@ -148,7 +148,7 @@ fn run_check(args: &CdjsafeArgs, plan: &Plan) -> Result<()> {
         style(plan.len()).cyan(),
         style(&args.playlist).bold()
     );
-    let report = with_bar(plan.len(), "Probing...", |p, c| {
+    let report = with_bar(plan.len(), "Checking...", |p, c| {
         cdjsafe::check::check(plan, p, c)
     })?;
     print_check(&report);
@@ -219,7 +219,11 @@ fn print_check(report: &CheckReport) {
     let notes: Vec<&TrackCheck> = report
         .tracks
         .iter()
-        .filter(|t| t.facts.is_err() || t.verdicts.iter().any(|v| *v != Verdict::Plays))
+        .filter(|t| {
+            t.facts.is_err()
+                || t.verdicts.iter().any(|v| *v != Verdict::Plays)
+                || t.low_cutoff().is_some()
+        })
         .collect();
     if !notes.is_empty() {
         println!();
@@ -239,6 +243,14 @@ fn print_check(report: &CheckReport) {
                 };
                 println!("    {} {}{models}: {why}", mark(v), p.label());
             }
+        }
+        if let (Some(hz), Ok(f)) = (t.low_cutoff(), &t.facts) {
+            println!(
+                "    {} nothing above {:.1} kHz, low for {} kbps: likely transcoded from a lower bitrate",
+                style("⚠").yellow(),
+                f64::from(hz) / 1000.0,
+                f.bitrate_kbps.unwrap_or_default()
+            );
         }
     }
 
@@ -273,6 +285,16 @@ fn print_check(report: &CheckReport) {
             style("⚠").yellow(),
             plural(unreadable, "track", "tracks"),
             plural(unreadable, "it", "them")
+        );
+    }
+    let low = report.low_cutoffs();
+    if low > 0 {
+        println!(
+            "{} {low} lossy {} short of what {} bitrate keeps, likely transcoded from a lower bitrate. Nothing is changed; listen to {} before the gig.",
+            style("⚠").yellow(),
+            plural(low, "track stops", "tracks stop"),
+            plural(low, "its", "their"),
+            plural(low, "it", "them")
         );
     }
     let skipped = report.skipped.len();
