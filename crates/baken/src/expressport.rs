@@ -131,6 +131,23 @@ fn print_plan(plan: &Plan) {
             plan.without_grid()
         );
     }
+    let stale: Vec<&str> = plan
+        .stale_seek_tables()
+        .map(|t| t.device.track.name.as_str())
+        .collect();
+    if !stale.is_empty() {
+        println!(
+            "{} {} FLAC files changed after rekordbox analysed them (a headroom run re-encodes FLAC), so the seek table in their analysis points into the old file. The export rebuilds it from each file. Before a USB export from rekordbox itself, analyse them again in rekordbox:",
+            style("⚠").yellow(),
+            stale.len()
+        );
+        for name in stale.iter().take(10) {
+            println!("  {} {name}", style("•").dim());
+        }
+        if stale.len() > 10 {
+            println!("  {} and {} more", style("•").dim(), stale.len() - 10);
+        }
+    }
     if plan.active_loops() > 0 {
         println!(
             "{} {} tracks get an active loop (a memory loop named {})",
@@ -181,6 +198,14 @@ fn print_report(plan: &Plan, r: &Report) {
         (
             r.anlz_generated,
             "tracks with analysis computed from the audio",
+        ),
+        (
+            r.seek_tables_rebuilt,
+            "FLAC seek tables rebuilt from the file",
+        ),
+        (
+            r.seek_tables_dropped,
+            "FLAC seek tables left out: the file's frames could not all be read",
         ),
         (r.pruned, "stale files removed"),
         (
