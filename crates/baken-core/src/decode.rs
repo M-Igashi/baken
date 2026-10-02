@@ -11,7 +11,7 @@ use symphonia::core::formats::{FormatOptions, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 
-use crate::headroom::Codec;
+use crate::headroom::{Codec, DecodeErrors};
 use crate::{Error, Result};
 
 /// Decode the default audio track of `file`, handing every decoded buffer to
@@ -25,15 +25,18 @@ pub fn decode_with(
     extension: Option<&str>,
     sink: impl FnMut(&[f32], u32, usize),
 ) -> Result<Codec> {
-    decode(file, extension, sink).map_err(Error::from)
+    decode(file, extension, sink)
+        .map(|(codec, _)| codec)
+        .map_err(Error::from)
 }
 
-/// [`decode_with`] for the crate's own callers, which work in `anyhow`.
+/// [`decode_with`] for the crate's own callers, which work in `anyhow`, plus
+/// the packets that were skipped.
 pub(crate) fn decode(
     file: File,
     extension: Option<&str>,
     mut sink: impl FnMut(&[f32], u32, usize),
-) -> anyhow::Result<Codec> {
+) -> anyhow::Result<(Codec, Option<DecodeErrors>)> {
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = extension {
@@ -61,14 +64,30 @@ pub(crate) fn decode(
 
     let mut spec: Option<(u32, usize)> = None;
     let mut buf: Vec<f32> = Vec::new();
+    let mut frames = 0u64;
+    let mut errors: Option<DecodeErrors> = None;
     while let Some(packet) = format.next_packet()? {
         if packet.track_id != track_id {
             continue;
         }
         let decoded = match decoder.decode(&packet) {
             Ok(d) => d,
-            Err(SymphoniaError::DecodeError(_)) => continue,
-            Err(e) => return Err(e.into()),
+            Err(e @ SymphoniaError::ResetRequired) => return Err(e.into()),
+            // Malformed data, a bit reader running off the packet, or a
+            // feature the stream has no business using: the packet is
+            // damaged (issue #223; the reported AAC hit all three). A stream
+            // that never decodes still fails below, so the files this
+            // decoder cannot handle at all still go to the fallback.
+            Err(_) => {
+                let first_at = spec.map_or(0.0, |(rate, _)| frames as f64 / f64::from(rate));
+                errors
+                    .get_or_insert(DecodeErrors {
+                        count: 0,
+                        first_at: Some(first_at),
+                    })
+                    .count += 1;
+                continue;
+            }
         };
         let current = (decoded.spec().rate(), decoded.spec().channels().count());
         match spec {
@@ -78,9 +97,10 @@ pub(crate) fn decode(
         }
         buf.clear();
         decoded.copy_to_vec_interleaved(&mut buf);
+        frames += (buf.len() / current.1) as u64;
         sink(&buf, current.0, current.1);
     }
-    spec.map(|_| codec)
+    spec.map(|_| (codec, errors))
         .ok_or_else(|| anyhow!("no audio decoded"))
 }
 

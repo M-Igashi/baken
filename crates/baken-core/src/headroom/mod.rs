@@ -8,8 +8,9 @@ mod tags;
 mod wav;
 
 pub use analyzer::{
-    decide, AudioAnalysis, Codec, Decision, GainMethod, GainMode, Measurement, TpTargetMode,
-    DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP, HIGH_BITRATE_THRESHOLD, SPLIT_TARGET_TRUE_PEAK_HIGH,
+    decide, AudioAnalysis, Codec, Damage, Decision, DecodeErrors, GainMethod, GainMode,
+    Measurement, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, GAIN_STEP, HIGH_BITRATE_THRESHOLD,
+    MAX_PLAUSIBLE_LOUDNESS, MAX_PLAUSIBLE_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH,
     SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 pub use processor::{create_backup_dir, ensure_backup_dir, is_writable};

@@ -120,8 +120,11 @@ fn write_csv_report(
     base_dir: &Path,
     explicit_path: Option<&Path>,
 ) -> Result<()> {
-    let processable: Vec<_> = analyses.iter().filter(|a| a.needs_gain()).collect();
-    let csv_path = headroom::generate_csv(&processable, base_dir, explicit_path)?;
+    let rows: Vec<_> = analyses
+        .iter()
+        .filter(|a| a.needs_gain() || a.damage.is_some())
+        .collect();
+    let csv_path = headroom::generate_csv(&rows, base_dir, explicit_path)?;
     println!(
         "{} Report saved: {}",
         style("✓").green(),
@@ -353,7 +356,40 @@ fn analyze_files(
         outcome.analyses.len()
     );
 
+    print_damaged(&outcome.analyses);
     Ok(outcome.analyses)
+}
+
+/// Damaged files get no gain (issue #223); say which and why, since the same
+/// damage may play as a burst of noise on a player.
+fn print_damaged(analyses: &[AudioAnalysis]) {
+    let damaged: Vec<_> = analyses
+        .iter()
+        .filter_map(|a| a.damage.map(|d| (a, d)))
+        .collect();
+    if damaged.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} {} damaged and left alone:",
+        style("⚠").yellow(),
+        damaged.len(),
+        if damaged.len() == 1 {
+            "file looks"
+        } else {
+            "files look"
+        }
+    );
+    for (a, damage) in damaged {
+        println!(
+            "  {} {}: {} (measured {:+.1} LUFS, {:+.1} dBTP)",
+            style("•").dim(),
+            a.path.display(),
+            damage,
+            a.input_i,
+            a.input_tp
+        );
+    }
 }
 
 /// Name the files whose gain cannot be written and leave them out, before
