@@ -1,7 +1,8 @@
 //! `baken cdjsafe --check` (issue #183): what each class of player will do
 //! with every track of a playlist. Read-only: nothing is converted or
 //! written. It reports and never decides; converting stays `convert`'s job,
-//! which converts everything (issue #40).
+//! which converts everything (issue #40). The same goes for MP3 and AAC files
+//! whose audio stops short of what their bitrate keeps (issue #222).
 
 use rayon::prelude::*;
 use std::path::Path;
@@ -10,11 +11,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::header;
 use super::location::stick_path;
 use super::matrix;
+use super::spectrum;
 use super::transcode::{self, SourceInfo};
 use super::{Plan, SkippedTrack};
 use crate::{CancelToken, Error, Progress, Result};
 
 pub use super::matrix::{Player, Verdict};
+pub use super::spectrum::{expected_cutoff, Bandwidth};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Format {
@@ -69,11 +72,27 @@ pub struct TrackCheck {
     pub facts: std::result::Result<Facts, String>,
     /// One per [`Player::ALL`], in that order.
     pub verdicts: Vec<Verdict>,
+    /// Where the audio stops, measured on MP3 and AAC files; `None` for
+    /// lossless files and for files that could not be decoded.
+    pub bandwidth: Option<Bandwidth>,
 }
 
 impl TrackCheck {
     pub fn verdict(&self, player: Player) -> &Verdict {
         &self.verdicts[player as usize]
+    }
+
+    /// The measured cutoff, when it is below [`expected_cutoff`] for the
+    /// file's bitrate: most likely encoded from a lower-bitrate file. Some
+    /// masters have little top end, so this is a measurement to report, not a
+    /// refusal, and [`Self::is_flagged`] ignores it.
+    pub fn low_cutoff(&self) -> Option<u32> {
+        let facts = self.facts.as_ref().ok()?;
+        let expected = expected_cutoff(facts.bitrate_kbps?)?;
+        match self.bandwidth? {
+            Bandwidth::Cutoff(hz) if hz < expected && expected < facts.sample_rate / 2 => Some(hz),
+            _ => None,
+        }
     }
 
     /// Unreadable, or refused by at least one class of player.
@@ -106,6 +125,11 @@ impl CheckReport {
         self.count(|t| t.facts.is_err())
     }
 
+    /// Lossy tracks with a [`TrackCheck::low_cutoff`].
+    pub fn low_cutoffs(&self) -> usize {
+        self.count(|t| t.low_cutoff().is_some())
+    }
+
     fn count(&self, f: impl Fn(&TrackCheck) -> bool) -> usize {
         self.tracks.iter().filter(|t| f(t)).count()
     }
@@ -118,7 +142,8 @@ impl CheckReport {
 }
 
 /// Probe every reachable track of `plan` and say what each class of player
-/// will do with it. Needs ffprobe, like [`super::convert`].
+/// will do with it, and decode the MP3 and AAC files to see where their audio
+/// stops. Needs ffprobe, like [`super::convert`].
 pub fn check(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Result<CheckReport> {
     let total = plan.sources.len();
     let done = AtomicUsize::new(0);
@@ -145,6 +170,10 @@ pub fn check(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Resu
                     Err(_) => Verdict::Unknown("the file could not be read".into()),
                 })
                 .collect();
+            let bandwidth = match &facts {
+                Ok(f) if matches!(f.format, Format::Mp3 | Format::Aac) => spectrum::measure(path),
+                _ => None,
+            };
             progress.on_file_done(done.fetch_add(1, Ordering::Relaxed) + 1, total, path);
             Some(TrackCheck {
                 name: src.name.clone(),
@@ -152,6 +181,7 @@ pub fn check(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Resu
                 stick_path,
                 facts,
                 verdicts,
+                bandwidth,
             })
         })
         .collect();
