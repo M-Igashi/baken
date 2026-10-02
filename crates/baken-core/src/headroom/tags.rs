@@ -4,9 +4,10 @@
 //! ffmpeg re-emits only the metadata it can map onto its own key/value model,
 //! so the binary payloads DJ software writes are dropped whenever headroom
 //! rewrites a container: ID3v2 `GEOB`/`PRIV` frames on AIFF and WAV, and
-//! free-form `----` atoms on MP4. It also writes a plain WAV as
-//! `WAVE_FORMAT_EXTENSIBLE` (see [`super::wav`]). Lifting these off the source
-//! and putting them back over the output keeps them byte for byte.
+//! free-form `----` atoms on MP4. On WAV it also writes a plain `fmt ` as
+//! `WAVE_FORMAT_EXTENSIBLE` and a `bext` with its description, originator and
+//! dates blank (see [`super::wav`]). Lifting these off the source and putting
+//! them back over the output keeps them byte for byte.
 //!
 //! Audio payloads are never held in memory: a gig's worth of 24-bit WAV is
 //! hundreds of megabytes per file and `apply` runs files in parallel.
@@ -20,15 +21,29 @@ use super::wav;
 
 /// What an ffmpeg re-mux would drop or change, lifted off a source file.
 pub enum Tags {
-    /// AIFF and WAV: the raw ID3v2 tag of an `ID3 ` chunk, and a WAV's `fmt `
-    /// payload when it is a plain one.
-    Riff {
-        id3: Option<Vec<u8>>,
-        plain_fmt: Option<Vec<u8>>,
-    },
+    /// AIFF and WAV.
+    Riff(Riff),
     /// Free-form `----` items from an MP4's `moov/udta/meta/ilst`, the ones
     /// Serato and rekordbox write.
     Mp4(Vec<Vec<u8>>),
+}
+
+/// The chunks of an AIFF or WAV source that go back over ffmpeg's output.
+#[derive(Default)]
+pub struct Riff {
+    /// The raw ID3v2 tag of an `ID3 ` chunk.
+    pub id3: Option<Vec<u8>>,
+    /// A WAV's `fmt ` payload when it is a plain one.
+    pub plain_fmt: Option<Vec<u8>>,
+    /// A WAV's `bext` (Broadcast Wave) payload as it goes back, see
+    /// [`wav::bext_without_loudness`].
+    pub bext: Option<Vec<u8>>,
+}
+
+impl Riff {
+    fn is_empty(&self) -> bool {
+        self.id3.is_none() && self.plain_fmt.is_none() && self.bext.is_none()
+    }
 }
 
 /// Where a container keeps the metadata worth carrying.
@@ -90,8 +105,8 @@ pub fn read(path: &Path) -> Option<Tags> {
 /// Put `tags` back over a file ffmpeg has just written.
 pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
     match (Container::of(path), tags) {
-        (Some(c @ (Container::Aiff | Container::Wav)), Tags::Riff { id3, plain_fmt }) => {
-            restore_riff(path, id3.as_deref(), plain_fmt.as_deref(), c)
+        (Some(c @ (Container::Aiff | Container::Wav)), Tags::Riff(riff)) => {
+            restore_riff(path, riff, c)
         }
         (Some(Container::Mp4), Tags::Mp4(items)) => restore_free_form(path, items),
         // A mismatch means the converted file's extension drifted from the
@@ -133,6 +148,10 @@ fn is_fmt_chunk(id: &[u8; 4]) -> bool {
     id == b"fmt "
 }
 
+fn is_bext_chunk(id: &[u8; 4]) -> bool {
+    id == b"bext"
+}
+
 /// Walk the chunk headers, reading no payload. A length running past the end
 /// of the file is clamped rather than rejected, so a container truncated mid
 /// chunk still round-trips every byte it does have.
@@ -163,47 +182,67 @@ fn chunk_table(file: &mut File, big_endian: bool) -> io::Result<Vec<Chunk>> {
     Ok(table)
 }
 
-/// The source's ID3 tag and, in a WAV, its `fmt ` when that is a plain one.
+/// The source's ID3 tag and, in a WAV, its `fmt ` when that is a plain one
+/// and its `bext`.
 fn read_riff(path: &Path, container: Container) -> Result<Option<Tags>> {
     let mut file = File::open(path)?;
     let table = chunk_table(&mut file, container.big_endian())?;
-    let find = |want: fn(&[u8; 4]) -> bool| table.iter().find(|c| want(&c.id));
-    let id3 = find(is_id3_chunk).map(|c| c.read(&mut file)).transpose()?;
-    let plain_fmt = match container {
-        Container::Wav => find(is_fmt_chunk).map(|c| c.read(&mut file)).transpose()?,
-        _ => None,
-    }
-    .filter(|fmt| wav::is_plain(fmt));
-    Ok((id3.is_some() || plain_fmt.is_some()).then_some(Tags::Riff { id3, plain_fmt }))
+    let mut payload = |want: fn(&[u8; 4]) -> bool| -> io::Result<Option<Vec<u8>>> {
+        table
+            .iter()
+            .find(|c| want(&c.id))
+            .map(|c| c.read(&mut file))
+            .transpose()
+    };
+    let id3 = payload(is_id3_chunk)?;
+    let (plain_fmt, bext) = match container {
+        Container::Wav => (
+            payload(is_fmt_chunk)?.filter(|fmt| wav::is_plain(fmt)),
+            payload(is_bext_chunk)?.map(wav::bext_without_loudness),
+        ),
+        _ => (None, None),
+    };
+    let riff = Riff {
+        id3,
+        plain_fmt,
+        bext,
+    };
+    Ok((!riff.is_empty()).then_some(Tags::Riff(riff)))
 }
 
-/// Put the source's `id3` tag over whatever ID3 chunk ffmpeg wrote, and its
-/// `plain_fmt` over the `fmt ` ffmpeg wrote when that is the same format as
-/// `WAVE_FORMAT_EXTENSIBLE`, in one pass. A file with neither to do is left
-/// as it is.
-fn restore_riff(
-    path: &Path,
-    id3: Option<&[u8]>,
-    plain_fmt: Option<&[u8]>,
-    container: Container,
-) -> Result<()> {
+/// Put the source's chunks back over ffmpeg's output in one pass: its ID3 tag
+/// in place of any ffmpeg wrote, its plain `fmt ` in place of ffmpeg's when
+/// that is the same format as `WAVE_FORMAT_EXTENSIBLE`, and its `bext` right
+/// after the `fmt `, where ffmpeg and most writers put one. A file with none
+/// of these to do is left as it is.
+fn restore_riff(path: &Path, riff: &Riff, container: Container) -> Result<()> {
     let mut src = File::open(path)?;
     let table = chunk_table(&mut src, container.big_endian())?;
-    let fmt = match (plain_fmt, table.iter().find(|c| is_fmt_chunk(&c.id))) {
+    let fmt = match (
+        riff.plain_fmt.as_deref(),
+        table.iter().find(|c| is_fmt_chunk(&c.id)),
+    ) {
         (Some(plain), Some(c)) if wav::is_extensible_form(&c.read(&mut src)?, plain) => Some(plain),
         _ => None,
     };
-    if id3.is_none() && fmt.is_none() {
+    let (id3, bext) = (riff.id3.as_deref(), riff.bext.as_deref());
+    if id3.is_none() && fmt.is_none() && bext.is_none() {
         return Ok(());
     }
-    let mut parts: Vec<Part> = table
-        .into_iter()
-        .filter(|c| id3.is_none() || !is_id3_chunk(&c.id))
-        .map(|c| match fmt {
-            Some(plain) if is_fmt_chunk(&c.id) => Part::New(b"fmt ", plain),
+    let mut parts = Vec::with_capacity(table.len() + 2);
+    for c in table {
+        if (id3.is_some() && is_id3_chunk(&c.id)) || (bext.is_some() && is_bext_chunk(&c.id)) {
+            continue;
+        }
+        let is_fmt = is_fmt_chunk(&c.id);
+        parts.push(match fmt {
+            Some(plain) if is_fmt => Part::New(b"fmt ", plain),
             _ => Part::Kept(c),
-        })
-        .collect();
+        });
+        if let Some(bext) = bext.filter(|_| is_fmt) {
+            parts.push(Part::New(b"bext", bext));
+        }
+    }
     if let Some(tag) = id3 {
         parts.push(Part::New(container.chunk_id(), tag));
     }
@@ -461,6 +500,17 @@ mod tests {
         tag
     }
 
+    /// A 602-byte BWF `bext` with a description, a time reference and
+    /// `version`, then a coding history.
+    fn bext(version: u16, description: &[u8]) -> Vec<u8> {
+        let mut b = vec![0u8; 602];
+        b[..description.len()].copy_from_slice(description);
+        b[338..346].copy_from_slice(&123_456u64.to_le_bytes());
+        b[346..348].copy_from_slice(&version.to_le_bytes());
+        b.extend_from_slice(b"A=PCM,F=48000,W=24,M=mono\r\n");
+        b
+    }
+
     fn chunk(id: &[u8; 4], payload: &[u8], big_endian: bool) -> Vec<u8> {
         let len = payload.len() as u32;
         let mut out = id.to_vec();
@@ -543,15 +593,15 @@ mod tests {
     }
 
     fn id3(tag: Vec<u8>) -> Tags {
-        Tags::Riff {
+        Tags::Riff(Riff {
             id3: Some(tag),
-            plain_fmt: None,
-        }
+            ..Default::default()
+        })
     }
 
     fn id3_of(tags: &Tags) -> &[u8] {
         match tags {
-            Tags::Riff { id3: Some(tag), .. } => tag,
+            Tags::Riff(Riff { id3: Some(tag), .. }) => tag,
             _ => panic!("expected an ID3 tag"),
         }
     }
@@ -559,7 +609,7 @@ mod tests {
     fn mp4_of(tags: &Tags) -> &[Vec<u8>] {
         match tags {
             Tags::Mp4(items) => items,
-            Tags::Riff { .. } => panic!("expected MP4 free-form items"),
+            Tags::Riff(_) => panic!("expected MP4 free-form items"),
         }
     }
 
@@ -620,15 +670,17 @@ mod tests {
         );
     }
 
-    /// ffmpeg's output of a tagged 24-bit mono WAV: its `fmt ` comes back as
-    /// the source's 16 bytes and its tag goes after the rest in the same
-    /// pass, so every later chunk moves; each one, the odd-length `data`
-    /// included, arrives byte for byte (issue #218).
+    /// ffmpeg's output of a tagged 24-bit mono BWF: its `fmt ` comes back as
+    /// the source's 16 bytes, its `bext` right after it and its tag after the
+    /// rest, in the same pass. Every later chunk moves; each one, the
+    /// odd-length `data` included, arrives byte for byte. A `bext` ffmpeg
+    /// wrote itself gives way to the source's (issue #218).
     #[test]
-    fn restores_a_wav_fmt_and_its_tag_in_one_pass() {
+    fn restores_a_wav_fmt_bext_and_tag_in_one_pass() {
         let source = temp_path("source.wav");
         let converted = temp_path("converted.wav");
         let fmt = plain(1, 1, 48000, 24);
+        let bext = bext(1, b"Bake'n Deck");
         let tag = tag_with_geob();
         let data = chunk(b"data", &[9u8; 3 * 101], false);
         fs::write(
@@ -637,46 +689,64 @@ mod tests {
                 Container::Wav,
                 &[
                     chunk(b"fmt ", &fmt, false),
+                    chunk(b"bext", &bext, false),
                     data.clone(),
                     chunk(b"id3 ", &tag, false),
                 ],
             ),
         )
         .unwrap();
-        let bext = chunk(b"bext", &[7u8; 603], false);
         let list = chunk(
             b"LIST",
             b"INFOISFT\x0e\x00\x00\x00Lavf63.1.102\x00\x00",
             false,
         );
+        let expected = container(
+            Container::Wav,
+            &[
+                chunk(b"fmt ", &fmt, false),
+                chunk(b"bext", &bext, false),
+                list.clone(),
+                data.clone(),
+                chunk(b"id3 ", &tag, false),
+            ],
+        );
+        let ffmpeg_bext = chunk(b"bext", &self::bext(1, b""), false);
+        for ffmpeg_wrote_bext in [false, true] {
+            let mut chunks = vec![chunk(b"fmt ", &extensible(&fmt, 4), false)];
+            if ffmpeg_wrote_bext {
+                chunks.push(ffmpeg_bext.clone());
+            }
+            chunks.extend([list.clone(), data.clone()]);
+            fs::write(&converted, container(Container::Wav, &chunks)).unwrap();
+            restore(&converted, &read(&source).unwrap()).unwrap();
+            assert_eq!(fs::read(&converted).unwrap(), expected);
+        }
+    }
+
+    /// The BWF v2 loudness of the source describes the audio before the gain,
+    /// so its `bext` goes back as version 1, which has no loudness fields.
+    #[test]
+    fn a_version_2_bext_goes_back_without_its_loudness() {
+        let source = temp_path("loud-source.wav");
+        let mut v2 = bext(2, b"Master");
+        v2[412..422].copy_from_slice(&[0xE8, 0xFA, 0xF4, 0x01, 0x9C, 0xFF, 0, 0, 0, 0]);
         fs::write(
-            &converted,
+            &source,
             container(
                 Container::Wav,
                 &[
-                    chunk(b"fmt ", &extensible(&fmt, 4), false),
-                    bext.clone(),
-                    list.clone(),
-                    data.clone(),
+                    chunk(b"fmt ", &plain(1, 2, 44100, 16), false),
+                    chunk(b"bext", &v2, false),
+                    chunk(b"data", &[1u8; 40], false),
                 ],
             ),
         )
         .unwrap();
-
-        restore(&converted, &read(&source).unwrap()).unwrap();
-        assert_eq!(
-            fs::read(&converted).unwrap(),
-            container(
-                Container::Wav,
-                &[
-                    chunk(b"fmt ", &fmt, false),
-                    bext,
-                    list,
-                    data,
-                    chunk(b"id3 ", &tag, false)
-                ]
-            )
-        );
+        let Some(Tags::Riff(riff)) = read(&source) else {
+            panic!("expected the bext");
+        };
+        assert_eq!(riff.bext, Some(bext(1, b"Master")));
     }
 
     /// A 16-bit file ffmpeg keeps plain, and six channels whose extensible

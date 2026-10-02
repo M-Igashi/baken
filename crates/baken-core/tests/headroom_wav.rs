@@ -1,7 +1,7 @@
 //! A headroom run over plain PCM WAVs, through ffmpeg the way a real run goes
-//! (issue #218): each file keeps its format tag and `fmt ` chunk, its ID3 tag
-//! and `bext` time reference, and its `cdjsafe --check` verdicts. Needs ffmpeg
-//! and ffprobe on `PATH`; returns early without them.
+//! (issue #218): each file keeps its format tag and `fmt ` chunk, its ID3 tag,
+//! its `bext` (BWF v2 loudness aside) and its `cdjsafe --check` verdicts.
+//! Needs ffmpeg and ffprobe on `PATH`; returns early without them.
 
 use baken_core::cdjsafe::{self, check};
 use baken_core::headroom::{self, GainMode, TpTargetMode};
@@ -30,9 +30,10 @@ fn chunk(file: &[u8], id: &[u8; 4]) -> Option<Vec<u8>> {
 
 /// A second and one sample of a 440 Hz sine at -10.5 dBFS (loudness gating
 /// needs 400 ms blocks), written the way a DAW writes it: a 16-byte `fmt `
-/// with tag 1 (PCM) or 3 (float), a BWF `bext` with a time reference, the
-/// audio (odd-length in 24-bit mono), and an ID3 tag when `tagged`. headroom
-/// raises it by about 10 dB.
+/// with tag 1 (PCM) or 3 (float), a BWF `bext` with a description, dates and
+/// a time reference, the audio (odd-length in 24-bit mono), and an ID3 tag
+/// when `tagged`, whose `bext` is version 2 with loudness. headroom raises it
+/// by about 10 dB.
 fn write_wav(path: &Path, tag: u16, bits: u16, rate: u32, channels: u16, tagged: bool) {
     let mut data = Vec::new();
     for i in 0..=rate as usize {
@@ -61,8 +62,15 @@ fn write_wav(path: &Path, tag: u16, bits: u16, rate: u32, channels: u16, tagged:
     // reference at 338 and the version at 346; coding history after 602.
     let mut bext = vec![0u8; 602];
     bext[..12].copy_from_slice(b"Bake'n Deck ");
+    bext[256..262].copy_from_slice(b"Studio");
+    bext[320..338].copy_from_slice(b"2026-10-0212:34:56");
     bext[338..346].copy_from_slice(&123_456u64.to_le_bytes());
     bext[346] = 1;
+    if tagged {
+        bext[346] = 2;
+        bext[412..422]
+            .copy_from_slice(&[0xE8, 0xFA, 0xF4, 0x01, 0x9C, 0xFF, 0x10, 0xFB, 0x20, 0xFB]);
+    }
     bext.extend_from_slice(b"A=PCM\r\n");
     let title = b"\x00Bake'n Deck";
     let mut id3 = b"ID3\x03\x00\x00\x00\x00\x00".to_vec();
@@ -181,8 +189,13 @@ fn a_headroom_run_keeps_a_plain_wav_plain() {
         assert_ne!(chunk(&after, b"data"), chunk(before, b"data"), "{path:?}");
         assert_eq!(chunk(&after, b"fmt "), chunk(before, b"fmt "), "{path:?}");
         assert_eq!(chunk(&after, b"id3 "), chunk(before, b"id3 "), "{path:?}");
-        let bext = chunk(&after, b"bext").unwrap();
-        assert_eq!(bext[338..346], 123_456u64.to_le_bytes(), "{path:?}");
+        // ffmpeg would have left the description, originator and dates blank.
+        let mut bext = chunk(before, b"bext").unwrap();
+        if bext[346] == 2 {
+            bext[346] = 1;
+            bext[412..602].fill(0);
+        }
+        assert_eq!(chunk(&after, b"bext"), Some(bext), "{path:?}");
     }
     assert_eq!(check_verdicts(&xml), verdicts);
     std::fs::remove_dir_all(&dir).unwrap();

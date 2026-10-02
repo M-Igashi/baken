@@ -160,13 +160,10 @@ fn output_args(extension: &str, source: Option<&SourceFormat>) -> Vec<String> {
                 sample_fmt.into(),
             ]
         }
-        // -write_bext preserves Broadcast Wave Format chunks (time_reference, umid).
-        "wav" => vec![
-            "-c:a".into(),
-            pcm_codec(WAV_PCM, "pcm_s24le"),
-            "-write_bext".into(),
-            "1".into(),
-        ],
+        // No -write_bext: its chunk comes back with the description,
+        // originator and dates blank, so `tags` puts the source's back instead
+        // (issue #218).
+        "wav" => vec!["-c:a".into(), pcm_codec(WAV_PCM, "pcm_s24le")],
         _ => Vec::new(),
     }
 }
@@ -183,8 +180,9 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     let volume_arg = format!("volume={}dB", gain_db);
     // ffmpeg re-emits only the metadata it understands, so the source's raw
     // tags go back over the output or GEOB/PRIV and the MP4 free-form atoms
-    // are lost (issue #117). A plain WAV's `fmt ` goes back the same way, or
-    // the file comes back as WAVE_FORMAT_EXTENSIBLE (issue #218).
+    // are lost (issue #117). A WAV's plain `fmt ` and its `bext` go back the
+    // same way, or the file comes back as WAVE_FORMAT_EXTENSIBLE and its BWF
+    // description, originator and dates blank (issue #218).
     let tags = tags::read(file_path);
     let source = probe_source_format(file_path);
     // The lossless path only handles .m4a/.mp4 when the payload is ALAC;
@@ -358,7 +356,7 @@ mod tests {
         let aiff = output_args("aif", Some(&source("pcm_s16be", Some(16))));
         assert_eq!(value_of(&aiff, "-write_id3v2").as_deref(), Some("1"));
         let wav = output_args("wav", Some(&source("pcm_s16le", Some(16))));
-        assert_eq!(value_of(&wav, "-write_bext").as_deref(), Some("1"));
+        assert_eq!(value_of(&wav, "-write_bext"), None);
         assert!(output_args("ogg", None).is_empty());
     }
 

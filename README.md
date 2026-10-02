@@ -291,7 +291,7 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 ### Notes & Technical Details
 
 - **Files are overwritten in place** after backup — rekordbox metadata remains linked
-- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (the lossless formats) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117))
+- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (the lossless formats) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117)). A WAV's Broadcast Wave `bext` chunk (description, originator, dates, time reference) goes back the same way, which ffmpeg would write with the description, originator and dates blank; only BWF v2 loudness values are left out, since the gain changes them ([#218](https://github.com/M-Igashi/baken/issues/218))
 - Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
 - MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
 - MP3/AAC files closer to the ceiling than one step are left alone; nothing is re-encoded for gain

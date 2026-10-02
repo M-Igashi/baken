@@ -1,4 +1,4 @@
-//! A WAV's plain `fmt ` against the one ffmpeg writes (issue #218).
+//! A WAV's own `fmt ` and `bext` against the ones ffmpeg writes (issue #218).
 //!
 //! ffmpeg writes `WAVE_FORMAT_EXTENSIBLE` for integer PCM deeper than 16 bits
 //! and for anything faster than 48 kHz, so a plain 24-bit WAV, the way DAWs
@@ -40,6 +40,25 @@ pub fn is_extensible_form(ours: &[u8], plain: &[u8]) -> bool {
         && ours[26..40] == SUBTYPE_TAIL
 }
 
+/// Where the version and the loudness fields sit in a `bext` payload: the
+/// version after the time reference, and after the UMID the 190 bytes BWF
+/// version 2 gives 10 of to loudness (EBU Tech 3285 v2).
+const BEXT_VERSION: usize = 346;
+const BEXT_LOUDNESS: std::ops::Range<usize> = 412..602;
+
+/// The source's `bext` as it goes back over ffmpeg's output, which ffmpeg
+/// would write with its description, originator and dates blank. Byte for
+/// byte, except that the BWF version 2 loudness (integrated loudness, true
+/// peak and the rest) describes the audio before the gain: that chunk goes
+/// back as version 1, which has no loudness fields, as ffmpeg writes it.
+pub fn bext_without_loudness(mut bext: Vec<u8>) -> Vec<u8> {
+    if bext.len() >= BEXT_LOUDNESS.end && u16_at(&bext, BEXT_VERSION) >= 2 {
+        bext[BEXT_VERSION..BEXT_VERSION + 2].copy_from_slice(&1u16.to_le_bytes());
+        bext[BEXT_LOUDNESS].fill(0);
+    }
+    bext
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -70,6 +89,20 @@ pub(crate) mod tests {
             &SUBTYPE_TAIL,
         ]
         .concat()
+    }
+
+    #[test]
+    fn only_a_version_2_bext_loses_its_loudness() {
+        let mut v1 = vec![0u8; 620];
+        v1[..4].copy_from_slice(b"desc");
+        v1[346] = 1;
+        assert_eq!(bext_without_loudness(v1.clone()), v1);
+        let mut v2 = v1.clone();
+        v2[346] = 2;
+        v2[412..414].copy_from_slice(&(-1400i16).to_le_bytes());
+        assert_eq!(bext_without_loudness(v2), v1);
+        let short = vec![2u8; 400];
+        assert_eq!(bext_without_loudness(short.clone()), short);
     }
 
     #[test]
