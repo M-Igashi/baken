@@ -11,6 +11,9 @@ pub enum FileSystem {
     Fat,
     ExFat,
     HfsPlus,
+    /// HFS+ formatted case-sensitive (HFSX, Disk Utility's "Mac OS Extended
+    /// (Case-sensitive)"). Only told apart on macOS.
+    HfsPlusCaseSensitive,
     Apfs,
     Ntfs,
     /// Anything else, by the name the OS gives it.
@@ -23,6 +26,7 @@ impl fmt::Display for FileSystem {
             FileSystem::Fat => "FAT",
             FileSystem::ExFat => "exFAT",
             FileSystem::HfsPlus => "HFS+",
+            FileSystem::HfsPlusCaseSensitive => "case-sensitive HFS+",
             FileSystem::Apfs => "APFS",
             FileSystem::Ntfs => "NTFS",
             FileSystem::Other(name) => name,
@@ -42,6 +46,8 @@ pub enum PartitionTable {
 /// FAT16, FAT32 and HFS+ and say "NTFS is not supported". exFAT and GPT come
 /// from AlphaTheta's support pages: exFAT for the CDJ-3000, XDJ-RX3 and
 /// XDJ-XZ only, and no GUID partition map on the CDJ-3000 or the CDJ-2000.
+/// The same pages (OPUS-QUAD, XDJ-RX3, XDJ-AZ, CDJ-3000X) say a device
+/// formatted "Mac Extended format (case-sensitive) might not be recognized".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatWarning {
     FileSystem(FileSystem),
@@ -53,6 +59,9 @@ impl fmt::Display for FormatWarning {
         match self {
             FormatWarning::FileSystem(FileSystem::ExFat) => f.write_str(
                 "This stick is exFAT. A CDJ-3000 reads it (AlphaTheta lists exFAT for the CDJ-3000, XDJ-RX3 and XDJ-XZ); a CDJ-2000NXS2 and older do not, their manuals list FAT16, FAT32 and HFS+ only.",
+            ),
+            FormatWarning::FileSystem(FileSystem::HfsPlusCaseSensitive) => f.write_str(
+                "This stick is case-sensitive HFS+. AlphaTheta says a device formatted Mac OS Extended (Case-sensitive) might not be recognised. Format it as FAT32, or as Mac OS Extended (Journaled), which is not case-sensitive.",
             ),
             FormatWarning::FileSystem(FileSystem::Ntfs) => f.write_str(
                 "This stick is NTFS, which the players' manuals rule out (\"NTFS is not supported\"). Format it as FAT32.",
@@ -103,6 +112,7 @@ mod imp {
         let fs = match c_str(&st.f_fstypename).as_str() {
             "msdos" => FileSystem::Fat,
             "exfat" => FileSystem::ExFat,
+            "hfs" if case_sensitive(dir) => FileSystem::HfsPlusCaseSensitive,
             "hfs" => FileSystem::HfsPlus,
             "apfs" => FileSystem::Apfs,
             "ntfs" => FileSystem::Ntfs,
@@ -118,6 +128,14 @@ mod imp {
         // SAFETY: `path` is NUL-terminated and statfs fills `st` whenever it returns 0.
         (unsafe { libc::statfs(path.as_ptr(), st.as_mut_ptr()) } == 0)
             .then(|| unsafe { st.assume_init() })
+    }
+
+    fn case_sensitive(dir: &Path) -> bool {
+        let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: `path` is NUL-terminated.
+        unsafe { libc::pathconf(path.as_ptr(), libc::_PC_CASE_SENSITIVE) == 1 }
     }
 
     fn c_str(chars: &[libc::c_char]) -> String {
@@ -248,6 +266,17 @@ mod tests {
         assert_eq!(
             warnings(Some(&FileSystem::Apfs), None),
             [FormatWarning::FileSystem(FileSystem::Apfs)]
+        );
+    }
+
+    #[test]
+    fn case_sensitive_hfs_plus_is_warned_about() {
+        assert_eq!(
+            warnings(
+                Some(&FileSystem::HfsPlusCaseSensitive),
+                Some(PartitionTable::Mbr)
+            ),
+            [FormatWarning::FileSystem(FileSystem::HfsPlusCaseSensitive)]
         );
     }
 
