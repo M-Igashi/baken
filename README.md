@@ -429,6 +429,8 @@ Probes every track and prints, per track, what a pre-NXS2 player (CDJ-2000NXS, C
 
 The tables come from Pioneer's own operating instructions only, never from another tool's table; each one is cited in `crates/baken-core/src/cdjsafe/matrix.rs`. The CDJ-2000NXS2, for instance, lists WAV, AIFF, Apple Lossless and FLAC at up to 96 kHz from USB, while the CDJ-3000 lists MP3 and AAC at 44.1 and 48 kHz only. Every manual also says that some files do not play even in a supported format, so ✓ means "within the list", not a guarantee. `--check` only reports: a conversion still converts the whole playlist.
 
+MP3 and AAC tracks are also decoded to see where their audio stops. An encoder low-passes what its bitrate cannot pay for (LAME at about 17 kHz for 128 kbps, 19.5 kHz for 256 and 20 kHz for 320), and re-encoding at a higher bitrate keeps the lower cutoff, so a "320" made from a 128 kbps file has nothing above 17 kHz. A track of 256 kbps or more with nothing above 19 kHz, or of 192 kbps or more with nothing above 17 kHz, is listed with the measured frequency as likely transcoded from a lower bitrate ([#222](https://github.com/M-Igashi/baken/issues/222)). That is a measurement, not a verdict: some masters have little top end, so listen before deciding. It never changes the exit code, and nothing is skipped or converted because of it. Decoding costs about half a second of CPU per lossy track, spread over all cores: a 1374-track playlist with 533 MP3 and AAC files took 35 s instead of 8.
+
 ### Usage
 
 ```

@@ -9,6 +9,7 @@ pub mod check;
 mod header;
 mod location;
 mod matrix;
+mod spectrum;
 mod transcode;
 mod xml;
 
