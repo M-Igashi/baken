@@ -422,9 +422,11 @@ const CDJSAFE_TAGS: u64 = 1 << 20;
 /// What the run adds to the stick, counted from above, so that a stick that
 /// passes does not fill up halfway (issue #233):
 ///
-/// - the audio of every track not on the stick by the rule [`write_track`]
-///   keeps it by: the source's size, or for `--cdjsafe` 320 kbps over the
-///   length plus [`CDJSAFE_TAGS`];
+/// - the audio of every track not on the stick at the source's size (a
+///   file of that size written again needs no more room), or for
+///   `--cdjsafe` 320 kbps over the length plus [`CDJSAFE_TAGS`] unless the
+///   transcode on the stick is recent enough to stay
+///   ([`newer_than_source`]);
 /// - every analysis file, see [`anlz_len`], whether or not the stick already
 ///   holds those bytes, which only writing them out would tell;
 /// - `export.pdb` as built from the plan, the settings files, and the
@@ -453,9 +455,8 @@ fn space_needed(
         let audio = device_path(&opts.device, &dt.usb_path);
         let on_stick = tally.existing(&audio);
         let len = if opts.cdjsafe {
-            on_stick
-                .is_none()
-                .then(|| 40_000 * length_secs(dt) + CDJSAFE_TAGS)
+            let kept = on_stick.is_some() && newer_than_source(&audio, &pt.source);
+            (!kept).then(|| 40_000 * length_secs(dt) + CDJSAFE_TAGS)
         } else {
             (on_stick != Some(dt.file_size)).then_some(dt.file_size)
         };
@@ -1079,6 +1080,18 @@ fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<(Audio, u32)> {
 /// the source no longer has.
 const TRANSCODE_MARGIN: Duration = Duration::from_secs(60 * 60);
 
+/// Whether `dest` was written at least [`TRANSCODE_MARGIN`] after `source`
+/// last changed; `false` when either time cannot be read.
+fn newer_than_source(dest: &Path, source: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified());
+    match (modified(dest), modified(source)) {
+        (Ok(written), Ok(changed)) => written
+            .duration_since(changed)
+            .is_ok_and(|d| d >= TRANSCODE_MARGIN),
+        _ => false,
+    }
+}
+
 /// The frames of the transcode already on the stick, when it can stay: it
 /// was written at least [`TRANSCODE_MARGIN`] after the source last changed
 /// (a headroom run, a re-rip), and it is a whole 320 kbps CBR MP3 at 44.1 kHz,
@@ -1086,14 +1099,7 @@ const TRANSCODE_MARGIN: Duration = Duration::from_secs(60 * 60);
 /// left there. The stick file is only read once its time says it may stay.
 fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<u32> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
-    let written = std::fs::metadata(&dest).and_then(|m| m.modified()).ok()?;
-    let changed = std::fs::metadata(&pt.source)
-        .and_then(|m| m.modified())
-        .ok()?;
-    if !written
-        .duration_since(changed)
-        .is_ok_and(|d| d >= TRANSCODE_MARGIN)
-    {
+    if !newer_than_source(&dest, &pt.source) {
         return None;
     }
     let mp3 = rewrite::mp3_audio(&dest).ok()?;
