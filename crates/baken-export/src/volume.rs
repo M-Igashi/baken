@@ -1,6 +1,7 @@
 //! What the stick is formatted as (issue #184). A player that cannot mount a
 //! stick shows no library at all, which looks exactly like a broken export, so
-//! `plan` says so before the first file is copied.
+//! `plan` says so before the first file is copied. Also how much it has free
+//! (issue #233).
 
 use std::fmt;
 use std::path::Path;
@@ -88,6 +89,42 @@ pub fn warnings(fs: Option<&FileSystem>, table: Option<PartitionTable>) -> Vec<F
         out.push(FormatWarning::Gpt);
     }
     out
+}
+
+/// Free space on the volume `dir` is on, and the unit it allocates files in
+/// (the cluster on FAT and exFAT), from `statvfs` (issue #233).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Space {
+    /// Bytes an ordinary user can still write.
+    pub available: u64,
+    pub unit: u64,
+}
+
+/// `None` where it cannot be read, and on Windows, where it is not read yet.
+pub(crate) fn space(dir: &Path) -> Option<Space> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+        let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: `path` is NUL-terminated and statvfs fills `st` whenever it returns 0.
+        if unsafe { libc::statvfs(path.as_ptr(), st.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let st = unsafe { st.assume_init() };
+        // the field types differ between platforms
+        #[allow(clippy::unnecessary_cast)]
+        let (unit, blocks) = (st.f_frsize as u64, st.f_bavail as u64);
+        (unit > 0).then(|| Space {
+            available: blocks.saturating_mul(unit),
+            unit,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
 }
 
 /// Filesystem and partition table of the volume `dir` is on, as far as this

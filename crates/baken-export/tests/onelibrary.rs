@@ -138,6 +138,7 @@ fn a_cancelled_or_failed_run_leaves_them() {
     std::fs::create_dir(&pdb).unwrap();
     assert!(export(&p, &(), &CancelToken::new()).is_err());
     assert_eq!(left(&opts), ONELIBRARY_FILES);
+    assert!(!rb(&opts).join("export.pdb.tmp").exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
 
