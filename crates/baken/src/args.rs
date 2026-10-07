@@ -52,7 +52,8 @@ pub enum Command {
     /// waveform are copied from rekordbox's local analysis cache); cues and
     /// playlists come from the XML. The My Settings files are copied from
     /// rekordbox's settings directory and are required unless --no-settings is
-    /// given (DEVSETTING.DAT only when present).
+    /// given (DEVSETTING.DAT and the DJ profile djprofile.nxs only when
+    /// present).
     #[cfg(feature = "expressport")]
     Expressport(ExpressportArgs),
 }
@@ -78,11 +79,12 @@ pub struct ExpressportArgs {
     pub anlz_dir: Vec<PathBuf>,
 
     /// Directory holding MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT and,
-    /// optionally, DEVSETTING.DAT (default: rekordbox's own settings directory).
+    /// optionally, DEVSETTING.DAT and djprofile.nxs (default: rekordbox's own
+    /// settings directory).
     #[arg(long, value_name = "DIR")]
     pub settings_dir: Option<PathBuf>,
 
-    /// Write no My Settings: the player keeps its own settings.
+    /// Write no My Settings and no djprofile.nxs: the player keeps its own settings.
     #[arg(long, conflicts_with = "settings_dir")]
     pub no_settings: bool,
 
