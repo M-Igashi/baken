@@ -32,6 +32,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Condvar, Mutex};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -171,7 +172,10 @@ impl Plan {
 
 #[derive(Debug, Default)]
 pub struct Report {
+    /// Audio files written from the source, also over a stick file that no
+    /// longer matched it.
     pub copied: usize,
+    /// Audio files already on the stick that still match their source.
     pub kept: usize,
     pub transcoded: usize,
     pub anlz_files: usize,
@@ -631,8 +635,9 @@ impl Drop for StopOnDrop<'_> {
 }
 
 /// A track's analysis files, audio and final `DeviceTrack`, computed ahead
-/// of the stick writes (issue #160) from local files, except that `--cdjsafe`
-/// looks at the stick once to see whether the MP3 is already there.
+/// of the stick writes (issue #160) from local files. `--cdjsafe` is the
+/// exception: it looks at the MP3 the stick may already hold, and reads it
+/// when that one can stay.
 struct Prepared {
     files: Vec<(FileKind, AnlzFile)>,
     device: DeviceTrack,
@@ -643,11 +648,13 @@ struct Prepared {
 
 /// Where the audio written to the stick comes from.
 enum Audio {
-    /// The source file, byte for byte.
+    /// The source file, byte for byte, unless the stick already holds the
+    /// same bytes ([`write_track`] decides).
     Source,
     /// `--cdjsafe`: the MP3 encoded on the local disk ahead of the write.
     Transcoded(TempFile),
-    /// `--cdjsafe`: already on the stick, nothing to write.
+    /// `--cdjsafe`: a transcode already on the stick that still fits its
+    /// source ([`transcode_on_stick`]), nothing to write.
     OnStick,
 }
 
@@ -673,20 +680,15 @@ impl Drop for TempFile {
 }
 
 fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
-    let audio = if plan.cdjsafe {
-        cdjsafe_audio(plan, pt)?
+    let (audio, frames) = if plan.cdjsafe {
+        let (audio, frames) = cdjsafe_audio(plan, pt)?;
+        (audio, Some(frames))
     } else {
-        Audio::Source
+        (Audio::Source, None)
     };
     let mut prepared = prepare_analysis(plan, pt)?;
-    if plan.cdjsafe {
-        // `PVBR` describes the MP3 that ends up on the stick, whichever that is
-        let mp3 = match &audio {
-            Audio::Source => pt.source.clone(),
-            Audio::Transcoded(tmp) => tmp.0.clone(),
-            Audio::OnStick => device_path(&plan.device, &pt.device.usb_path),
-        };
-        let frames = rewrite::mp3_audio(&mp3)?.frames;
+    // `PVBR` describes the MP3 that ends up on the stick, whichever that is
+    if let Some(frames) = frames {
         for (kind, file) in &mut prepared.files {
             match kind {
                 FileKind::Dat => rewrite::set_cbr_pvbr(file, frames),
@@ -700,20 +702,55 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
     Ok(prepared)
 }
 
-/// `--cdjsafe`: the MP3 for the stick, encoded here on the worker so that the
-/// encoder never waits for the stick and the stick sees one plain copy
-/// (issue #197). A track already on the stick is kept; one that is already
-/// 320 kbps CBR MP3 goes as it is.
-fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Audio> {
-    if device_path(&plan.device, &pt.device.usb_path).is_file() {
-        return Ok(Audio::OnStick);
-    }
+/// `--cdjsafe`: the MP3 for the stick and its audio frames, encoded here on
+/// the worker so that the encoder never waits for the stick and the stick
+/// sees one plain copy (issue #197). A source that is already 320 kbps CBR
+/// MP3 goes as it is, and a copy of it already on the stick is judged by its
+/// bytes in [`write_track`] like any copied track. A transcode already on the
+/// stick is kept only when it still fits its source (issue #231).
+fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<(Audio, u32)> {
     if baken_core::cdjsafe::probe(&pt.source)?.is_compatible_mp3() {
-        return Ok(Audio::Source);
+        return Ok((Audio::Source, rewrite::mp3_audio(&pt.source)?.frames));
+    }
+    if let Some(frames) = transcode_on_stick(plan, pt) {
+        return Ok((Audio::OnStick, frames));
     }
     let tmp = TempFile::new("mp3");
     baken_core::cdjsafe::transcode(&pt.source, &tmp.0)?;
-    Ok(Audio::Transcoded(tmp))
+    let frames = rewrite::mp3_audio(&tmp.0)?.frames;
+    Ok((Audio::Transcoded(tmp), frames))
+}
+
+/// How much later than the source's last change a transcode on the stick
+/// must have been written to be kept. FAT stores local time in 2 s steps,
+/// rounded down, which only ever makes the stick file look older. But macOS
+/// converts every FAT time with the UTC offset in force at that moment,
+/// whatever the file's date (measured on FSKit), so once the clocks go back
+/// an hour every file on the stick looks an hour newer than it is. A trip
+/// west across more than one time zone does the same by more and is not
+/// covered. Too large a margin costs a transcode; too small a one keeps audio
+/// the source no longer has.
+const TRANSCODE_MARGIN: Duration = Duration::from_secs(60 * 60);
+
+/// The frames of the transcode already on the stick, when it can stay: it
+/// was written at least [`TRANSCODE_MARGIN`] after the source last changed
+/// (a headroom run, a re-rip), and it is a whole 320 kbps CBR MP3 at 44.1 kHz,
+/// not a copy cut short by an interrupted export or a file another export
+/// left there. The stick file is only read once its time says it may stay.
+fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<u32> {
+    let dest = device_path(&plan.device, &pt.device.usb_path);
+    let written = std::fs::metadata(&dest).and_then(|m| m.modified()).ok()?;
+    let changed = std::fs::metadata(&pt.source)
+        .and_then(|m| m.modified())
+        .ok()?;
+    if !written
+        .duration_since(changed)
+        .is_ok_and(|d| d >= TRANSCODE_MARGIN)
+    {
+        return None;
+    }
+    let mp3 = rewrite::mp3_audio(&dest).ok()?;
+    (mp3.complete && mp3.sample_rate == 44100 && mp3.kbps() == Some(320)).then_some(mp3.frames)
 }
 
 /// The analysis files: rekordbox's own rewritten for the stick, or generated
@@ -829,7 +866,9 @@ fn write_track(
             report.transcoded += 1;
             size
         }
-        (Audio::Source, Some(size)) if !plan.cdjsafe && size == pt.device.file_size => {
+        (Audio::Source, Some(size))
+            if size == pt.device.file_size && same_pieces(&pt.source, &dest, size) =>
+        {
             report.kept += 1;
             size
         }
@@ -856,6 +895,34 @@ fn write_track(
         None => {}
     }
     Ok(prepared.device)
+}
+
+/// Whether `a` and `b`, both `len` bytes long, hold the same 64 KiB at the
+/// start, in the middle and at the end. A file that only kept its size
+/// differs there: native MP3 and AAC gain (`baken headroom`) rewrites every
+/// frame in place, PCM gain every sample, and an edit inside the ID3 padding
+/// the start (issue #231). Three pieces rather than one, since a large cover
+/// can fill the first 64 KiB and an MP4 index the last. Comparing whole files
+/// would read every kept track back from the stick, the slow end of an export.
+fn same_pieces(a: &Path, b: &Path, len: u64) -> bool {
+    fn pieces(path: &Path, len: u64) -> std::io::Result<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let piece = len.min(64 << 10);
+        let mut file = std::fs::File::open(path)?;
+        let mut out = vec![0; 3 * piece as usize];
+        for (at, buf) in [0, (len - piece) / 2, len - piece]
+            .into_iter()
+            .zip(out.chunks_mut(piece.max(1) as usize))
+        {
+            file.seek(SeekFrom::Start(at))?;
+            file.read_exact(buf)?;
+        }
+        Ok(out)
+    }
+    let Ok(source) = pieces(a, len) else {
+        return false;
+    };
+    pieces(b, len).is_ok_and(|stick| stick == source)
 }
 
 /// Write an analysis file unless the stick already holds exactly these bytes.
@@ -1144,6 +1211,46 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A difference in any of the three pieces counts, one between them does
+    /// not; a file shorter than `len` or missing differs.
+    #[test]
+    fn same_pieces_compares_start_middle_and_end() {
+        let dir = std::env::temp_dir().join(format!("baken-pieces-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        let data: Vec<u8> = (0..1_000_000usize).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&a, &data).unwrap();
+        let differs_at = |at: usize| {
+            let mut other = data.clone();
+            other[at] ^= 1;
+            std::fs::write(&b, &other).unwrap();
+            !same_pieces(&a, &b, data.len() as u64)
+        };
+        let middle = (data.len() - (64 << 10)) / 2;
+        for at in [
+            0,
+            65535,
+            middle,
+            middle + 65535,
+            data.len() - 65536,
+            data.len() - 1,
+        ] {
+            assert!(differs_at(at), "{at}");
+        }
+        for at in [65536, middle - 1, middle + 65536, data.len() - 65537] {
+            assert!(!differs_at(at), "{at}");
+        }
+        std::fs::write(&b, &data[..data.len() - 1]).unwrap();
+        assert!(!same_pieces(&a, &b, data.len() as u64));
+        assert!(!same_pieces(&a, &dir.join("missing"), data.len() as u64));
+        for small in [&b"x"[..], b""] {
+            std::fs::write(&a, small).unwrap();
+            std::fs::write(&b, small).unwrap();
+            assert!(same_pieces(&a, &b, small.len() as u64));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_temp_file_goes_with_its_handle() {
         let tmp = TempFile::new("mp3");
@@ -1205,6 +1312,7 @@ mod tests {
             frames: 7656,
             bytes: 7656 * 1045,
             sample_rate: 44100,
+            ..Default::default()
         };
         assert_eq!(
             with_measured(&track(FILE_TYPE_MP3, 16), &audio(), Some(mp3)).bitrate,
