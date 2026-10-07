@@ -26,7 +26,12 @@ pub fn native(path: &Path) -> PathBuf {
 
 /// `path` in NFC, the form rekordbox writes paths in.
 pub fn nfc(path: &Path) -> PathBuf {
-    normalize(path, |s| s.nfc().collect())
+    normalize(path, nfc_str)
+}
+
+/// `s` in NFC, like [`nfc`].
+pub(crate) fn nfc_str(s: &str) -> String {
+    s.nfc().collect()
 }
 
 fn normalize(path: &Path, form: impl Fn(&str) -> String) -> PathBuf {

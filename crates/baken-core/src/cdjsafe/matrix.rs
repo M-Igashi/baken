@@ -172,13 +172,8 @@ static CDJ_3000: Table = Table {
     ],
 };
 
-/// A stick path longer than this gets an unknown: a FAT32 name stops at 255
-/// characters, and no manual gives a limit for the whole path.
-const LONG_PATH: usize = 255;
-
-/// What `player` does with a file, going by its table. `stick_path` is where a
-/// rekordbox export puts the file.
-pub fn verdict(player: Player, facts: &Facts, stick_path: &str) -> Verdict {
+/// What `player` does with a file, going by its table.
+pub fn verdict(player: Player, facts: &Facts) -> Verdict {
     let name = format_name(&facts.format);
 
     // Every manual: "Copyright-protected files cannot be played."
@@ -250,12 +245,6 @@ pub fn verdict(player: Player, facts: &Facts, stick_path: &str) -> Verdict {
             "the manual does not say whether a VBR MP3 without a Xing or VBRI header plays".into(),
         );
     }
-    let path_len = stick_path.chars().count();
-    if path_len > LONG_PATH {
-        unknown.push(format!(
-            "its path on the stick is {path_len} characters, and the manual gives no limit"
-        ));
-    }
 
     if !refused.is_empty() {
         Verdict::Refuses(refused.join("; "))
@@ -281,7 +270,6 @@ fn format_name(format: &Format) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Player::*;
 
     fn file(format: Format, ext: &str, rate: u32, bits: Option<u32>, kbps: Option<u32>) -> Facts {
         Facts {
@@ -302,7 +290,7 @@ mod tests {
     }
 
     fn verdicts(f: &Facts) -> [char; 3] {
-        Player::ALL.map(|p| match verdict(p, f, "/Contents/A/B/x") {
+        Player::ALL.map(|p| match verdict(p, f) {
             Verdict::Plays => 'y',
             Verdict::Refuses(_) => 'n',
             Verdict::Unknown(_) => '?',
@@ -362,9 +350,6 @@ mod tests {
         assert_eq!(verdicts(&aifc), ['?', '?', '?']);
         aifc.extension = "aifc".into();
         assert_eq!(verdicts(&aifc), ['n', 'n', 'n']);
-        let cbr = file(Format::Mp3, "mp3", 44100, None, Some(320));
-        let long = format!("/Contents/{}/x.mp3", "a".repeat(250));
-        assert!(matches!(verdict(Cdj3000, &cbr, &long), Verdict::Unknown(_)));
         // An unknown never hides a refusal.
         let mut flac = file(Format::Flac, "flac", 44100, Some(16), Some(900));
         flac.channels = 1;
