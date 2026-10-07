@@ -8,6 +8,7 @@
 //! its own (`DJ_PROFILE_SIZE`).
 
 use anyhow::{bail, Context, Result};
+use baken_core::fsname;
 use std::path::{Path, PathBuf};
 
 pub const REQUIRED: [&str; 3] = ["MYSETTING.DAT", "MYSETTING2.DAT", "DJMMYSETTING.DAT"];
@@ -157,14 +158,17 @@ pub fn files(dir: &Path) -> Result<Vec<&'static str>> {
     Ok(files)
 }
 
-/// Validate and copy `files` into `<device>/PIONEER/`.
+/// Validate and copy `files` into `<device>/PIONEER/`, the bytes only, each
+/// through a temp file and a rename so that a failed write leaves the
+/// stick's old file whole.
 pub fn copy_all(from: &Path, files: &[&str], device: &Path) -> Result<()> {
     let dest = device.join("PIONEER");
     std::fs::create_dir_all(&dest)?;
     for f in files {
         let src = from.join(f);
         validate(&src)?;
-        std::fs::copy(&src, dest.join(f)).with_context(|| format!("copying {f}"))?;
+        let bytes = std::fs::read(&src).with_context(|| format!("reading {}", src.display()))?;
+        fsname::write_atomic(&dest.join(f), &bytes).with_context(|| format!("copying {f}"))?;
     }
     Ok(())
 }

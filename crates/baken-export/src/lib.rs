@@ -27,7 +27,7 @@ use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
 use rayon::prelude::*;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -115,6 +115,15 @@ pub struct Plan {
     /// removes them once it has written `export.pdb`, so a cancelled or
     /// failed run leaves both of the stick's libraries as they were.
     pub onelibrary_files: Vec<&'static str>,
+    /// What the export writes to the stick, estimated from above (issue
+    /// #233): audio and analysis files not already there, `export.pdb`, the
+    /// settings files and new directories, in whole allocation units, less
+    /// what it overwrites. [`plan`] fails with [`Error::NotEnoughSpace`] when
+    /// this exceeds `space_available`.
+    pub space_needed: u64,
+    /// Free space on the stick's volume; `None` where it cannot be read
+    /// (Windows, or `statvfs` failed), and then nothing is checked.
+    pub space_available: Option<u64>,
     pub device_name: String,
     pub cdjsafe: bool,
     pub prune: bool,
@@ -202,6 +211,10 @@ pub struct Report {
     pub seek_tables_dropped: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
+    /// `prune` was asked for and not done because tracks failed: their files
+    /// from an earlier export are not in `export.pdb` this time and would
+    /// otherwise go (a stick that filled up, a NAS that was asleep).
+    pub prune_skipped: bool,
     pub tracks_in_database: usize,
 }
 
@@ -338,6 +351,45 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .into_iter()
         .filter(|f| rb_dir.join(f).symlink_metadata().is_ok())
         .collect();
+
+    let space = volume::space(&opts.device);
+    let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
+    let pdb_len = pdb::write(&build::build(
+        &library,
+        &devices,
+        &selected,
+        &device_name,
+        &build::today(),
+    ))
+    .len() as u64;
+    let settings_lens: Vec<u64> = match &settings_dir {
+        Some(dir) => settings_files
+            .iter()
+            .map(|f| dir.join(f).metadata().map_or(0, |m| m.len()))
+            .collect(),
+        None => Vec::new(),
+    };
+    // macOS puts xattrs on every file a process under a third-party app
+    // writes, which FAT and exFAT keep in a `._` file (issue #196)
+    let sidecars = cfg!(target_os = "macos")
+        && matches!(
+            filesystem,
+            Some(volume::FileSystem::Fat | volume::FileSystem::ExFat)
+        );
+    let space_needed = space_needed(
+        opts,
+        &tracks,
+        pdb_len,
+        &settings_lens,
+        space.map_or(1, |s| s.unit),
+        sidecars,
+    );
+    if let Some(space) = space.filter(|s| s.available < space_needed) {
+        return Err(Error::NotEnoughSpace {
+            needed: space_needed,
+            available: space.available,
+        });
+    }
     Ok(Plan {
         library,
         tracks,
@@ -352,10 +404,194 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         filesystem,
         partition_table,
         onelibrary_files,
+        space_needed,
+        space_available: space.map(|s| s.available),
         device_name,
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
     })
+}
+
+/// Room for what the system puts on the stick beyond the files counted:
+/// directories growing past their first allocation unit, filesystem metadata.
+const SPACE_MARGIN: u64 = 1 << 20;
+
+/// Tags and artwork a `--cdjsafe` MP3 carries over from its source.
+const CDJSAFE_TAGS: u64 = 1 << 20;
+
+/// What the run adds to the stick, counted from above, so that a stick that
+/// passes does not fill up halfway (issue #233):
+///
+/// - the audio of every track not on the stick at the source's size (a
+///   file of that size written again needs no more room), or for
+///   `--cdjsafe` 320 kbps over the length plus [`CDJSAFE_TAGS`] unless the
+///   transcode on the stick is recent enough to stay
+///   ([`newer_than_source`]);
+/// - every analysis file, see [`anlz_len`], whether or not the stick already
+///   holds those bytes, which only writing them out would tell;
+/// - `export.pdb` as built from the plan, the settings files, and the
+///   directories the run creates;
+/// - with `sidecars`, the 4 KiB `._` file macOS writes beside every file and
+///   directory the run writes on FAT and exFAT, until the walk at the end of
+///   [`export`] removes it;
+/// - and [`SPACE_MARGIN`].
+///
+/// Every file takes whole allocation units of `unit` bytes. A file at the
+/// same path counts against what replaces it, since writing over it frees it
+/// first; the old `export.pdb` and settings files do not, since they stay
+/// until the new ones are in place. Pruning frees space only after the
+/// writes, so it counts for nothing.
+fn space_needed(
+    opts: &Options,
+    tracks: &[PlanTrack],
+    pdb_len: u64,
+    settings_lens: &[u64],
+    unit: u64,
+    sidecars: bool,
+) -> u64 {
+    let mut tally = Tally::new(&opts.device, unit, sidecars);
+    for pt in tracks {
+        let dt = &pt.device;
+        let audio = device_path(&opts.device, &dt.usb_path);
+        let on_stick = tally.existing(&audio);
+        let len = if opts.cdjsafe {
+            let kept = on_stick.is_some() && newer_than_source(&audio, &pt.source);
+            (!kept).then(|| 40_000 * length_secs(dt) + CDJSAFE_TAGS)
+        } else {
+            (on_stick != Some(dt.file_size)).then_some(dt.file_size)
+        };
+        if let Some(len) = len {
+            tally.file(len, on_stick);
+        }
+        for kind in FileKind::ALL {
+            let Some(len) = anlz_len(pt, kind) else {
+                continue;
+            };
+            let path = device_path(&opts.device, &dt.anlz_path(kind.extension()));
+            let old = tally.existing(&path);
+            tally.file(len, old);
+        }
+    }
+    tally.dir(&opts.device.join("PIONEER/rekordbox"));
+    tally.file(pdb_len, None);
+    for &len in settings_lens {
+        tally.file(len, None);
+    }
+    tally.total()
+}
+
+/// Adds up [`space_needed`] in whole allocation units.
+struct Tally<'a> {
+    device: &'a Path,
+    unit: u64,
+    /// What a `._` file takes, or 0.
+    sidecar: u64,
+    needed: u64,
+    freed: u64,
+    /// Directories looked at, and whether each was on the stick.
+    dirs: HashMap<PathBuf, bool>,
+}
+
+impl<'a> Tally<'a> {
+    fn new(device: &'a Path, unit: u64, sidecars: bool) -> Self {
+        let mut tally = Tally {
+            device,
+            unit: unit.max(1),
+            sidecar: 0,
+            needed: SPACE_MARGIN,
+            freed: 0,
+            dirs: HashMap::new(),
+        };
+        if sidecars {
+            tally.sidecar = tally.units(4096);
+        }
+        tally
+    }
+
+    fn units(&self, len: u64) -> u64 {
+        len.div_ceil(self.unit) * self.unit
+    }
+
+    /// A file of `len` bytes written over one of `old` bytes, if any.
+    fn file(&mut self, len: u64, old: Option<u64>) {
+        self.needed += self.units(len) + self.sidecar;
+        self.freed += old.map_or(0, |old| self.units(old));
+    }
+
+    /// Whether `dir` is on the stick. One that is not counts once, as do
+    /// the parents it lacks.
+    fn dir(&mut self, dir: &Path) -> bool {
+        if let Some(&there) = self.dirs.get(dir) {
+            return there;
+        }
+        let there = dir == self.device || dir.is_dir();
+        if !there {
+            self.needed += self.unit + self.sidecar;
+            if let Some(parent) = dir.parent() {
+                self.dir(parent);
+            }
+        }
+        self.dirs.insert(dir.to_path_buf(), there);
+        there
+    }
+
+    /// The size of the file at `path`, counting the directories it needs.
+    fn existing(&mut self, path: &Path) -> Option<u64> {
+        let dir = path.parent()?;
+        if !self.dir(dir) {
+            return None;
+        }
+        std::fs::metadata(path)
+            .ok()
+            .filter(|m| m.is_file())
+            .map(|m| m.len())
+    }
+
+    fn total(&self) -> u64 {
+        self.needed.saturating_sub(self.freed)
+    }
+}
+
+/// The track's length in whole seconds, from above: `TotalTime` is
+/// truncated, and without it the file's size is read as 128 kbps.
+fn length_secs(dt: &DeviceTrack) -> u64 {
+    match dt.track.total_time {
+        0 => dt.file_size / 16_000 + 1,
+        secs => u64::from(secs) + 1,
+    }
+}
+
+/// An analysis file of `pt` as it goes on the stick, from above. Copied,
+/// rekordbox's own file plus what the stick path in `PPTH` (instead of
+/// `?/<name>`) and the cue lists, empty in the local file, add: a cue is a
+/// 56-byte `PCPT` and, as a hot cue, an 88-byte `PCP2` with its name in
+/// UTF-16. Generated, the sizes [`generate::build_files`] writes: the column
+/// waveforms take 150 bytes per second in `PWV3`, 300 in `PWV5` and 450 in
+/// `PWV7`, a beat 8 bytes in `PQTZ` (40 a second covers 300 BPM), the rest is
+/// fixed (68.7 KB in all for a 60 s track). `None` for a `.2EX` rekordbox
+/// did not write.
+fn anlz_len(pt: &PlanTrack, kind: FileKind) -> Option<u64> {
+    let dt = &pt.device;
+    let cues: usize = dt
+        .track
+        .cues
+        .iter()
+        .map(|c| 56 + 88 + 2 * (c.name.len() + 1))
+        .sum();
+    let added = (2 * (dt.usb_path.len() + 1) + cues + 256) as u64;
+    match &pt.anlz {
+        Some(entry) => std::fs::metadata(entry.sibling(kind.extension()))
+            .ok()
+            .map(|m| m.len() + added),
+        None => {
+            let (fixed, per_second) = match kind {
+                FileKind::Dat => (4 << 10, 40),
+                FileKind::Ext => (8 << 10, 450),
+                FileKind::TwoEx => (4 << 10, 450),
+            };
+            Some(fixed + per_second * length_secs(dt) + added)
+        }
+    }
 }
 
 /// Whether the FLAC seek table in `pt`'s rekordbox analysis no longer fits
@@ -434,6 +670,64 @@ fn device_path(device: &Path, usb_path: &str) -> PathBuf {
     device.join(usb_path.trim_start_matches('/'))
 }
 
+/// Device and inode number of the device directory. A stick unmounted
+/// during the run leaves nothing there, or the empty mount point on the
+/// parent's disk, which would take every later write without an error.
+#[cfg(unix)]
+fn device_identity(dir: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(dir).ok().map(|m| (m.dev(), m.ino()))
+}
+
+/// A drive letter only tells whether it is still there.
+#[cfg(not(unix))]
+fn device_identity(dir: &Path) -> Option<()> {
+    dir.is_dir().then_some(())
+}
+
+/// An error from the stick rather than from a source file, so that
+/// [`export`] can tell a stick that failed as a whole from a track that did.
+#[derive(Debug)]
+struct StickError {
+    path: PathBuf,
+    err: std::io::Error,
+}
+
+impl StickError {
+    fn at(path: &Path) -> impl FnOnce(std::io::Error) -> anyhow::Error + '_ {
+        move |err| {
+            StickError {
+                path: path.to_path_buf(),
+                err,
+            }
+            .into()
+        }
+    }
+
+    /// The stick is full, read-only or not answering (EIO, ENXIO, ENODEV:
+    /// 5, 6 and 19 on Linux and macOS alike), so every track after this one
+    /// would fail the same way.
+    fn ends_the_run(&self) -> bool {
+        use std::io::ErrorKind::*;
+        matches!(self.err.kind(), StorageFull | ReadOnlyFilesystem)
+            || cfg!(unix) && matches!(self.err.raw_os_error(), Some(5 | 6 | 19))
+    }
+}
+
+/// The OS message only: a failure is listed under the track's name already.
+impl std::fmt::Display for StickError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.err.fmt(f)
+    }
+}
+
+impl std::error::Error for StickError {}
+
+/// Write `plan` to the stick. A cancel returns the report with `cancelled`
+/// set; a stick that fails as a whole (full, read-only, gone) stops the run
+/// with [`Error::DeviceWrite`], since every later track would fail the same
+/// way. Either way `export.pdb` stays as it was, and so the files written
+/// so far are in no library until a later run takes them up.
 pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Result<Report> {
     let mut report = Report::default();
     let total = plan.tracks.len();
@@ -451,7 +745,34 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
             path: rb_dir.clone(),
             err,
         })?;
+    // The stick may have filled up since the plan, which a front-end shows
+    // before the run starts.
+    if let Some(space) = volume::space(&plan.device)
+        .filter(|s| plan.space_available.is_some() && s.available < plan.space_needed)
+    {
+        return Err(Error::NotEnoughSpace {
+            needed: plan.space_needed,
+            available: space.available,
+        });
+    }
+    let identity = device_identity(&plan.device);
+    let still_mounted = || {
+        if device_identity(&plan.device) == identity {
+            Ok(())
+        } else {
+            Err(Error::DeviceWrite {
+                path: plan.device.clone(),
+                err: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "the stick is no longer mounted there",
+                ),
+            })
+        }
+    };
 
+    // Set when the stick fails as a whole: the run stops at that track,
+    // the workers stop preparing, and `export.pdb` stays as it was.
+    let mut stopped = None;
     let ahead = Ahead::new(total);
     let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<Prepared>)>();
     std::thread::scope(|s| {
@@ -487,6 +808,10 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                 let (j, p) = rx.recv().expect("every track is prepared once");
                 ready.insert(j, p);
             };
+            if let Err(e) = still_mounted() {
+                stopped = Some(e);
+                break;
+            }
             match prepared.and_then(|p| write_track(plan, pt, p, &mut report)) {
                 Ok(dt) => {
                     wanted.insert(device_path(&plan.device, &dt.usb_path));
@@ -495,9 +820,22 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                     }
                     exported.push(dt);
                 }
-                Err(e) => report
-                    .failures
-                    .push((pt.device.track.name.clone(), e.to_string())),
+                Err(e) => {
+                    let message = match e.downcast::<StickError>() {
+                        Ok(e) if e.ends_the_run() => {
+                            stopped = Some(Error::DeviceWrite {
+                                path: e.path,
+                                err: e.err,
+                            });
+                            break;
+                        }
+                        Ok(e) => e.to_string(),
+                        Err(e) => e.to_string(),
+                    };
+                    report
+                        .failures
+                        .push((pt.device.track.name.clone(), message));
+                }
             }
             progress.on_file_done(i + 1, total, &pt.source);
             ahead.written(i + 1);
@@ -506,6 +844,10 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     if report.cancelled {
         return Ok(report);
     }
+    if let Some(e) = stopped {
+        return Err(e);
+    }
+    still_mounted()?;
 
     let date = build::today();
     let model = build::build(
@@ -517,7 +859,9 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     );
     report.tracks_in_database = exported.len();
     let pdb_path = rb_dir.join("export.pdb");
-    std::fs::write(&pdb_path, pdb::write(&model)).map_err(|err| Error::DeviceWrite {
+    // Beside the old one and renamed over it, so a full stick or a crash
+    // leaves the stick with its old library rather than none.
+    fsname::write_atomic(&pdb_path, &pdb::write(&model)).map_err(|err| Error::DeviceWrite {
         path: pdb_path,
         err,
     })?;
@@ -527,7 +871,11 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         settings::copy_all(dir, &plan.settings_files, &plan.device)?;
     }
 
-    if plan.prune {
+    // `wanted` lacks the tracks that failed, and an earlier export may have
+    // left their files on the stick.
+    if plan.prune && !report.failures.is_empty() {
+        report.prune_skipped = true;
+    } else if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
         report.pruned += prune_tree(&plan.device.join("PIONEER/USBANLZ"), &wanted)?;
     }
@@ -732,6 +1080,18 @@ fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<(Audio, u32)> {
 /// the source no longer has.
 const TRANSCODE_MARGIN: Duration = Duration::from_secs(60 * 60);
 
+/// Whether `dest` was written at least [`TRANSCODE_MARGIN`] after `source`
+/// last changed; `false` when either time cannot be read.
+fn newer_than_source(dest: &Path, source: &Path) -> bool {
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified());
+    match (modified(dest), modified(source)) {
+        (Ok(written), Ok(changed)) => written
+            .duration_since(changed)
+            .is_ok_and(|d| d >= TRANSCODE_MARGIN),
+        _ => false,
+    }
+}
+
 /// The frames of the transcode already on the stick, when it can stay: it
 /// was written at least [`TRANSCODE_MARGIN`] after the source last changed
 /// (a headroom run, a re-rip), and it is a whole 320 kbps CBR MP3 at 44.1 kHz,
@@ -739,14 +1099,7 @@ const TRANSCODE_MARGIN: Duration = Duration::from_secs(60 * 60);
 /// left there. The stick file is only read once its time says it may stay.
 fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<u32> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
-    let written = std::fs::metadata(&dest).and_then(|m| m.modified()).ok()?;
-    let changed = std::fs::metadata(&pt.source)
-        .and_then(|m| m.modified())
-        .ok()?;
-    if !written
-        .duration_since(changed)
-        .is_ok_and(|d| d >= TRANSCODE_MARGIN)
-    {
+    if !newer_than_source(&dest, &pt.source) {
         return None;
     }
     let mp3 = rewrite::mp3_audio(&dest).ok()?;
@@ -850,7 +1203,7 @@ fn write_track(
 ) -> anyhow::Result<DeviceTrack> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
     if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(StickError::at(parent))?;
     }
     let existing = std::fs::metadata(&dest).ok().map(|m| m.len());
     prepared.device.file_size = match (&prepared.audio, existing) {
@@ -878,13 +1231,11 @@ fn write_track(
             size
         }
     };
-    std::fs::create_dir_all(device_path(&plan.device, &pt.device.anlz_dir))?;
+    let anlz_dir = device_path(&plan.device, &pt.device.anlz_dir);
+    std::fs::create_dir_all(&anlz_dir).map_err(StickError::at(&anlz_dir))?;
     for (kind, file) in &prepared.files {
-        write_anlz(
-            &device_path(&plan.device, &pt.device.anlz_path(kind.extension())),
-            &file.to_bytes(),
-            report,
-        )?;
+        let path = device_path(&plan.device, &pt.device.anlz_path(kind.extension()));
+        write_anlz(&path, &file.to_bytes(), report).map_err(StickError::at(&path))?;
     }
     if prepared.generated {
         report.anlz_generated += 1;
@@ -945,13 +1296,17 @@ fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result
 /// thread keeps up to three 4 MiB pieces ahead of the writes, so a slow
 /// source (a NAS, an HDD) overlaps a slow stick instead of adding to it
 /// (issue #196). Returns the bytes written.
-fn copy_audio(src: &Path, dst: &Path) -> std::io::Result<u64> {
+///
+/// A copy that fails removes what it wrote: under the track's name a partial
+/// file passes for the track on the next run (issue #233). Errors writing
+/// `dst` are [`StickError`]s, errors reading `src` are not.
+fn copy_audio(src: &Path, dst: &Path) -> anyhow::Result<u64> {
     use std::io::{Read, Write};
     const PIECE: usize = 4 << 20;
     let mut reader = std::fs::File::open(src)?;
-    let mut writer = std::fs::File::create(dst)?;
+    let mut writer = std::fs::File::create(dst).map_err(StickError::at(dst))?;
     let (tx, rx) = mpsc::sync_channel::<std::io::Result<Vec<u8>>>(3);
-    std::thread::scope(|s| {
+    let copied = std::thread::scope(|s| {
         s.spawn(move || loop {
             let mut piece = vec![0u8; PIECE];
             let sent = match reader.read(&mut piece) {
@@ -972,11 +1327,16 @@ fn copy_audio(src: &Path, dst: &Path) -> std::io::Result<u64> {
         let mut written = 0u64;
         for piece in rx {
             let piece = piece?;
-            writer.write_all(&piece)?;
+            writer.write_all(&piece).map_err(StickError::at(dst))?;
             written += piece.len() as u64;
         }
         Ok(written)
-    })
+    });
+    if copied.is_err() {
+        drop(writer);
+        let _ = fsname::remove_file(dst);
+    }
+    copied
 }
 
 /// Fill in what the XML left at 0 from the audio a generated-analysis track
@@ -1249,6 +1609,191 @@ mod tests {
             assert!(same_pieces(&a, &b, small.len() as u64));
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A failed copy, here a source that cannot be read, removes the
+    /// half-written file instead of leaving it under the track's name.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_copy_leaves_no_partial_file() {
+        let dir = std::env::temp_dir().join(format!("baken-partial-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("unreadable")).unwrap();
+        let dst = dir.join("dst.mp3");
+        std::fs::write(&dst, b"an earlier version").unwrap();
+        let err = copy_audio(&dir.join("unreadable"), &dst).unwrap_err();
+        let left = dst.exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(!left);
+        // a source that fails is not the stick failing
+        assert!(err.downcast_ref::<StickError>().is_none());
+    }
+
+    #[test]
+    fn only_errors_about_the_whole_stick_end_the_run() {
+        use std::io::{Error as IoError, ErrorKind};
+        let stick = |err| {
+            anyhow::Error::from(StickError {
+                path: PathBuf::from("/Volumes/USB/x"),
+                err,
+            })
+            .downcast::<StickError>()
+            .unwrap()
+            .ends_the_run()
+        };
+        assert!(stick(IoError::from(ErrorKind::StorageFull)));
+        assert!(stick(IoError::from(ErrorKind::ReadOnlyFilesystem)));
+        assert!(!stick(IoError::from(ErrorKind::NotFound)));
+        assert!(!stick(IoError::from(ErrorKind::PermissionDenied)));
+        assert!(!stick(IoError::from(ErrorKind::InvalidFilename)));
+        #[cfg(unix)]
+        for (errno, ends) in [
+            (libc::ENOSPC, true),
+            (libc::EIO, true),
+            (libc::ENXIO, true),
+            (libc::ENODEV, true),
+            (libc::EROFS, true),
+            (libc::ENOENT, false),
+            (libc::ENAMETOOLONG, false),
+            (libc::EFBIG, false),
+        ] {
+            assert_eq!(stick(IoError::from_raw_os_error(errno)), ends, "{errno}");
+        }
+    }
+
+    #[test]
+    fn the_tally_counts_whole_units_and_what_it_overwrites() {
+        let device = std::env::temp_dir().join(format!("baken-tally-{}", std::process::id()));
+        std::fs::create_dir_all(device.join("Contents")).unwrap();
+        std::fs::write(device.join("Contents/old.mp3"), [0u8; 5000]).unwrap();
+
+        let mut t = Tally::new(&device, 4096, false);
+        assert_eq!(t.total(), SPACE_MARGIN);
+        t.file(1, None);
+        t.file(0, None);
+        assert_eq!(t.total(), SPACE_MARGIN + 4096);
+        // 9000 bytes over 5000: three units for two
+        let old = t.existing(&device.join("Contents/old.mp3"));
+        assert_eq!(old, Some(5000));
+        t.file(9000, old);
+        assert_eq!(t.total(), SPACE_MARGIN + 2 * 4096);
+        // two new directories, each counted once; nothing in them is looked up
+        assert_eq!(t.existing(&device.join("Contents/A/B/new.mp3")), None);
+        assert_eq!(t.existing(&device.join("Contents/A/B/other.mp3")), None);
+        assert!(!t.dir(&device.join("Contents/A")));
+        assert_eq!(t.total(), SPACE_MARGIN + 4 * 4096);
+
+        // a `._` file of 4096 bytes takes a whole 32 KiB cluster
+        let mut t = Tally::new(&device, 32 << 10, true);
+        t.file(100, None);
+        assert!(t.existing(&device.join("New/x.mp3")).is_none());
+        assert_eq!(t.total(), SPACE_MARGIN + 4 * (32 << 10));
+        std::fs::remove_dir_all(&device).unwrap();
+    }
+
+    fn plan_track(track: collection::Track, usb_path: String, anlz: Option<Entry>) -> PlanTrack {
+        PlanTrack {
+            device: DeviceTrack {
+                track,
+                usb_path,
+                ..self::track(FILE_TYPE_WAV, 16)
+            },
+            source: PathBuf::new(),
+            anlz,
+            stale_seek_table: false,
+        }
+    }
+
+    /// rekordbox's own analysis files of the fixture with the stick path and
+    /// the XML's cues spliced in, as [`write_track`] writes them.
+    #[test]
+    fn copied_analysis_fits_its_estimate() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/fixtures/JPHFAREKORD-20260918");
+        let Ok(lib) = Library::load(&root.join("collection.xml")) else {
+            return;
+        };
+        let Ok(index) = AnlzIndex::build(&[root.join("local-anlz")]) else {
+            return;
+        };
+        let mut layout = layout::Layout::default();
+        let mut checked = 0;
+        for track in &lib.tracks {
+            let Some(entry) = index.find(track) else {
+                continue;
+            };
+            let usb_path = layout.assign(track);
+            let pt = plan_track(track.clone(), usb_path.clone(), Some(entry.clone()));
+            for kind in FileKind::ALL {
+                let Some(mut file) = read_optional(&entry.sibling(kind.extension())).unwrap()
+                else {
+                    continue;
+                };
+                rewrite::prepare(&mut file, kind, &usb_path, &track.cues, track.grid_bpm());
+                let len = file.to_bytes().len() as u64;
+                let estimate = anlz_len(&pt, kind).unwrap();
+                assert!(
+                    len <= estimate,
+                    "{} {kind:?}: {len} > {estimate}",
+                    track.name
+                );
+                checked += 1;
+            }
+        }
+        if checked > 0 {
+            assert!(checked > 750, "{checked}");
+        }
+    }
+
+    /// 20.5 s of a fast grid with every hot cue and some memory cues named at length.
+    #[test]
+    fn generated_analysis_fits_its_estimate() {
+        let dir = std::env::temp_dir().join(format!("baken-generated-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let wav = dir.join("t.wav");
+        let (rate, frames) = (44100u32, 44100u32 * 41 / 2);
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + frames * 4).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        for v in [16u32, 0x0002_0001, rate, rate * 4, 0x0010_0004] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(frames * 4).to_le_bytes());
+        for i in 0..frames {
+            let v = ((i as f32 * 0.05).sin() * 8000.0) as i16;
+            b.extend_from_slice(&v.to_le_bytes());
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        std::fs::write(&wav, b).unwrap();
+        let audio = generate::measure(&wav).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let cue = |num: i32, start: f64| collection::Cue {
+            name: format!("a cue named at some length, number {num}"),
+            start,
+            num,
+            ..Default::default()
+        };
+        let track = collection::Track {
+            total_time: 20,
+            tempos: vec![collection::Tempo {
+                bpm: 300.0,
+                metro: "4/4".into(),
+                battito: 1,
+                ..Default::default()
+            }],
+            cues: (0..8).chain([-1; 10]).map(|n| cue(n, 1.0)).collect(),
+            ..Default::default()
+        };
+        let usb_path = "/Contents/Some Artist/Some Album/a long file name for the track.wav";
+        let pt = plan_track(track.clone(), usb_path.into(), None);
+        let files = generate::build_files(&track, usb_path, &audio, None);
+        for (kind, file) in FileKind::ALL.into_iter().zip(files) {
+            let len = file.to_bytes().len() as u64;
+            let estimate = anlz_len(&pt, kind).unwrap();
+            assert!(len <= estimate, "{kind:?}: {len} > {estimate}");
+        }
     }
 
     #[test]

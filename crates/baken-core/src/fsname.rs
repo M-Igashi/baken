@@ -8,6 +8,7 @@
 //! renamed under an NFC name cannot be removed by the name `readdir` gives.
 //! rekordbox writes every `Location` in NFC; Finder stores names in NFD.
 
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -74,6 +75,20 @@ pub fn replace(temp: &Path, target: &Path) -> io::Result<()> {
     std::fs::rename(temp, native(target))
 }
 
+/// Write `bytes` to a sibling `<name>.tmp` and move it over `path`, so a
+/// crash or a full disk mid-write leaves the old file whole. A failed write
+/// or rename removes the temp file again.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut name = path.file_name().map(OsString::from).unwrap_or_default();
+    name.push(".tmp");
+    let temp = native(&path.with_file_name(name));
+    let result = std::fs::write(&temp, bytes).and_then(|()| replace(&temp, path));
+    if result.is_err() {
+        let _ = remove_file(&temp);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,5 +122,43 @@ mod tests {
         assert_eq!(content.unwrap(), b"new");
         assert_eq!(fresh_content.unwrap(), b"fresh");
         assert_eq!(entries, 2);
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_temp_behind() {
+        let dir = std::env::temp_dir().join(format!("baken-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("export.pdb");
+        std::fs::write(&path, b"old").unwrap();
+        write_atomic(&path, b"new").unwrap();
+        let content = std::fs::read(&path);
+        let temp_left = dir.join("export.pdb.tmp").exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(content.unwrap(), b"new");
+        assert!(!temp_left);
+    }
+
+    /// The write fails when the temp name is taken by a directory, the
+    /// rename when the target is a directory that is not empty.
+    #[test]
+    fn a_failed_write_atomic_leaves_the_old_file_and_no_temp() {
+        let dir = std::env::temp_dir().join(format!("baken-atomic-fail-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("export.pdb.tmp")).unwrap();
+        let path = dir.join("export.pdb");
+        std::fs::write(&path, b"old").unwrap();
+        let write_failed = write_atomic(&path, b"new").is_err();
+        let content = std::fs::read(&path);
+
+        let busy = dir.join("busy");
+        std::fs::create_dir_all(busy.join("inside")).unwrap();
+        let rename_failed = write_atomic(&busy, b"new").is_err();
+        let temp_left = dir.join("busy.tmp").exists();
+        let busy_kept = busy.join("inside").is_dir();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(write_failed);
+        assert_eq!(content.unwrap(), b"old");
+        assert!(rename_failed && busy_kept);
+        assert!(!temp_left);
     }
 }

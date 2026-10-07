@@ -92,6 +92,19 @@ fn print_plan(plan: &Plan) {
         style("▸").cyan(),
         style(plan.tracks.len()).cyan()
     );
+    match plan.space_available {
+        Some(free) => println!(
+            "{} Space: up to {} to write, {} free",
+            style("▸").cyan(),
+            size(plan.space_needed),
+            size(free)
+        ),
+        None => println!(
+            "{} Space: up to {} to write (free space unknown, not checked)",
+            style("▸").cyan(),
+            size(plan.space_needed)
+        ),
+    }
     match &plan.settings_dir {
         Some(dir) => {
             let missing: Vec<&str> = baken_export::settings::OPTIONAL
@@ -178,6 +191,13 @@ fn print_report(plan: &Plan, r: &Report) {
     for (name, err) in &r.failures {
         println!("{} {}: {}", style("⚠").yellow(), name, err);
     }
+    if r.prune_skipped {
+        println!(
+            "{} --prune skipped because {} tracks failed: their files from an earlier export stay on the stick until a run where every track succeeds.",
+            style("⚠").yellow(),
+            r.failures.len()
+        );
+    }
     if r.onelibrary_kept > 0 {
         println!(
             "{} {} of rekordbox's old library files could not be removed. Delete what is left of {} in {}, so that the stick carries one library.",
@@ -233,5 +253,13 @@ fn print_report(plan: &Plan, r: &Report) {
             plan.settings_files.len(),
             plan.device.display()
         );
+    }
+}
+
+/// Bytes in decimal megabytes or gigabytes, as Finder shows them.
+fn size(bytes: u64) -> String {
+    match bytes as f64 {
+        b if b >= 1e9 => format!("{:.1} GB", b / 1e9),
+        b => format!("{:.1} MB", b / 1e6),
     }
 }
