@@ -59,6 +59,10 @@ pub struct Mp3Audio {
     /// Bytes of those frames, tags excluded.
     pub bytes: u64,
     pub sample_rate: u32,
+    /// The Xing/Info header counts exactly these frames and the last one ends
+    /// inside the file. A copy cut short (an interrupted export) has fewer;
+    /// a file without such a header is never complete.
+    pub complete: bool,
 }
 
 impl Mp3Audio {
@@ -91,6 +95,7 @@ pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
     const RATES: [u32; 4] = [44100, 48000, 32000, 0];
     let mut audio = Mp3Audio::default();
     let mut first = true;
+    let mut header_frames = None;
     while pos + 4 <= data.len() {
         let h = &data[pos..pos + 4];
         let sync = h[0] == 0xff && (h[1] & 0xe0) == 0xe0;
@@ -108,7 +113,8 @@ pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
         if first {
             first = false;
             let body = &data[pos..(pos + len).min(data.len())];
-            if body.windows(4).any(|w| w == b"Xing" || w == b"Info") {
+            if let Some(at) = body.windows(4).position(|w| w == b"Xing" || w == b"Info") {
+                header_frames = xing_frames(&body[at..]);
                 pos += len;
                 continue;
             }
@@ -118,7 +124,19 @@ pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
         audio.sample_rate = rate;
         pos += len;
     }
+    // ffmpeg's count leaves the Info frame out, like the walk above
+    audio.complete = pos <= data.len() && audio.frames > 0 && header_frames == Some(audio.frames);
     Ok(audio)
+}
+
+/// The frame count of a Xing/Info header (`tag` starts at its name), when its
+/// flags say it carries one.
+fn xing_frames(tag: &[u8]) -> Option<u32> {
+    let flags = u32::from_be_bytes(tag.get(4..8)?.try_into().ok()?);
+    if flags & 1 == 0 {
+        return None;
+    }
+    Some(u32::from_be_bytes(tag.get(8..12)?.try_into().ok()?))
 }
 
 #[cfg(test)]
@@ -138,18 +156,37 @@ mod tests {
         data.resize(10 + tag_size, 0);
         let mut info = frame(false);
         info[36..40].copy_from_slice(b"Info");
+        info[40..44].copy_from_slice(&1u32.to_be_bytes()); // frame count present
+        info[44..48].copy_from_slice(&1000u32.to_be_bytes());
         data.extend(info);
         for i in 0..1000 {
             data.extend(frame(i % 9 != 0));
         }
         let path = std::env::temp_dir().join(format!("baken-mp3-audio-{}.mp3", std::process::id()));
-        std::fs::write(&path, &data).unwrap();
-        let audio = mp3_audio(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
+        let walk = |bytes: &[u8]| {
+            std::fs::write(&path, bytes).unwrap();
+            mp3_audio(&path).unwrap()
+        };
+        let audio = walk(&data);
         assert_eq!(audio.frames, 1000);
         assert_eq!(audio.sample_rate, 44100);
         assert_eq!(audio.kbps(), Some(320));
+        assert!(audio.complete);
         assert_eq!(Mp3Audio::default().kbps(), None);
+
+        // cut short, also inside the last frame
+        let cut = walk(&data[..data.len() / 3]);
+        assert!(cut.frames < 1000 && !cut.complete);
+        let cut = walk(&data[..data.len() - 10]);
+        assert!(cut.frames == 1000 && !cut.complete);
+        // a header that does not count these frames, and none at all
+        let at = 10 + tag_size + 44;
+        let mut other = data.clone();
+        other[at..at + 4].copy_from_slice(&999u32.to_be_bytes());
+        assert!(!walk(&other).complete);
+        other[at - 4..at].fill(0);
+        assert!(!walk(&other).complete);
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
