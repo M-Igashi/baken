@@ -120,6 +120,8 @@ def main():
         for name in ("MYSETTING.DAT", "MYSETTING2.DAT", "DJMMYSETTING.DAT", "DEVSETTING.DAT"):
             with open(os.path.join(settings, name), "wb") as f:
                 f.write(settings_file(name))
+        with open(os.path.join(settings, "djprofile.nxs"), "wb") as f:
+            f.write(bytes(160))
         stick = os.path.join(vol, "stick")
         os.makedirs(stick)
         args = ["expressport", NFC(xml), "--device", stick, "--playlist", "test", "--settings-dir", settings, "--generate-analysis"]

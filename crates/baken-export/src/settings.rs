@@ -3,17 +3,35 @@
 //! 104-byte header (`len_strings` u8 + 3 pad, brand, `rekordbox`, version as
 //! 32-byte fields, `len_data` u32), payload, CRC16-XMODEM, two zero bytes.
 //! They are copied verbatim into `PIONEER/` on the stick; an export without
-//! the three in `REQUIRED` is an error.
+//! the three in `REQUIRED` is an error. The DJ profile `djprofile.nxs` sits
+//! beside them, in the settings directory and on the stick, in a format of
+//! its own (`DJ_PROFILE_SIZE`).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 pub const REQUIRED: [&str; 3] = ["MYSETTING.DAT", "MYSETTING2.DAT", "DJMMYSETTING.DAT"];
 
-/// Copied when present. A rekordbox 7 export does not always carry it, the
-/// one on a real stick was written by the player (issue #116), and a
+/// Copied when present, never required.
+///
+/// `DEVSETTING.DAT`: a rekordbox 7 export does not always carry it, the one
+/// on a real stick was written by the player (issue #116), and a
 /// CDJ-2000NXS2 reads a stick without it.
-pub const OPTIONAL: &str = "DEVSETTING.DAT";
+///
+/// `djprofile.nxs`: the DJ profile rekordbox puts on its sticks; the
+/// reference stick's is byte-identical to the one in rekordbox's settings
+/// directory (issue #234). No player manual mentions a DJ profile, so what a
+/// player does with it is not known.
+pub const OPTIONAL: [&str; 2] = ["DEVSETTING.DAT", "djprofile.nxs"];
+
+/// `djprofile.nxs` has neither the settings header nor a known checksum, so
+/// only its size is checked. Both samples seen are 160 bytes: the reference
+/// stick's and one rekordbox wrote onto a #116 tester's stick. In both, 0x04
+/// holds a big-endian u64 that reads as the file's modification time in Unix
+/// milliseconds, 0x0c to 0x1b are zero, and the profile name (ASCII in both)
+/// starts at 0x20, NUL-padded to the end. Bytes 0x00 to 0x03 and 0x1c to
+/// 0x1f differ between the two and are not understood.
+const DJ_PROFILE_SIZE: usize = 160;
 
 /// Where rekordbox 6 and 7 keep the files on this machine. Empty where
 /// rekordbox does not run, so `--settings-dir` is the only way in.
@@ -59,13 +77,23 @@ fn crc16_xmodem(data: &[u8]) -> u16 {
     crc
 }
 
-/// Structural and checksum check of one settings file.
+/// Structural and checksum check of one settings file; only the size for
+/// `djprofile.nxs`.
 pub fn validate(path: &Path) -> Result<()> {
     let b = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    if name == "djprofile.nxs" {
+        if b.len() != DJ_PROFILE_SIZE {
+            bail!(
+                "{name}: {} bytes; a rekordbox {name} is {DJ_PROFILE_SIZE} bytes, so this is not one",
+                b.len()
+            );
+        }
+        return Ok(());
+    }
     // Payload sizes rekordbox writes; the file is 104 + payload + 4 bytes.
     let expected_payload = match name.as_str() {
         "MYSETTING.DAT" | "MYSETTING2.DAT" => Some(40),
@@ -111,17 +139,15 @@ pub fn validate(path: &Path) -> Result<()> {
 }
 
 /// The files to copy from `dir`, each validated: the required ones, plus
-/// `DEVSETTING.DAT` when it is there.
+/// those of `OPTIONAL` that are there.
 pub fn files(dir: &Path) -> Result<Vec<&'static str>> {
     let mut files = REQUIRED.to_vec();
-    if dir.join(OPTIONAL).is_file() {
-        files.push(OPTIONAL);
-    }
+    files.extend(OPTIONAL.into_iter().filter(|f| dir.join(f).is_file()));
     for f in &files {
         if let Err(e) = validate(&dir.join(f)) {
-            if *f == OPTIONAL {
+            if OPTIONAL.contains(f) {
                 bail!(
-                    "{e}. {OPTIONAL} is optional: remove it from {} to export without it",
+                    "{e}. {f} is optional: remove it from {} to export without it",
                     dir.display()
                 );
             }
@@ -184,22 +210,47 @@ mod tests {
     }
 
     #[test]
-    fn devsetting_is_optional_but_checked_when_present() {
-        let dir = std::env::temp_dir().join(format!("baken-devsetting-{}", std::process::id()));
+    fn optional_files_are_copied_when_present_and_checked() {
+        let dir = std::env::temp_dir().join(format!("baken-optional-{}", std::process::id()));
+        let device = dir.join("stick");
         std::fs::create_dir_all(&dir).unwrap();
         for f in REQUIRED {
             write_valid(&dir, f);
         }
         assert_eq!(locate(Some(&dir)).unwrap(), dir);
         assert_eq!(files(&dir).unwrap(), REQUIRED);
+        copy_all(&dir, &REQUIRED, &device).unwrap();
+        let without_profile = !device.join("PIONEER/djprofile.nxs").exists();
 
-        write_valid(&dir, OPTIONAL);
-        assert_eq!(files(&dir).unwrap().last(), Some(&OPTIONAL));
+        write_valid(&dir, "DEVSETTING.DAT");
+        let mut profile = vec![0u8; DJ_PROFILE_SIZE];
+        profile[0x20..0x25].copy_from_slice(b"baken");
+        std::fs::write(dir.join("djprofile.nxs"), &profile).unwrap();
+        let found = files(&dir).unwrap();
+        copy_all(&dir, &found, &device).unwrap();
+        let copied = std::fs::read(device.join("PIONEER/djprofile.nxs")).unwrap();
 
-        std::fs::write(dir.join(OPTIONAL), [0u8; 39]).unwrap();
-        let message = files(&dir).unwrap_err().to_string();
+        std::fs::write(dir.join("djprofile.nxs"), &profile[..159]).unwrap();
+        let profile_message = files(&dir).unwrap_err().to_string();
+        std::fs::remove_file(dir.join("djprofile.nxs")).unwrap();
+        std::fs::write(dir.join("DEVSETTING.DAT"), [0u8; 39]).unwrap();
+        let devsetting_message = files(&dir).unwrap_err().to_string();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(message.contains("DEVSETTING.DAT is optional"), "{message}");
+
+        assert!(without_profile);
+        assert_eq!(found[REQUIRED.len()..], OPTIONAL);
+        assert_eq!(copied, profile);
+        assert_eq!(
+            profile_message,
+            format!(
+                "djprofile.nxs: 159 bytes; a rekordbox djprofile.nxs is 160 bytes, so this is not one. djprofile.nxs is optional: remove it from {} to export without it",
+                dir.display()
+            )
+        );
+        assert!(
+            devsetting_message.contains("DEVSETTING.DAT is optional"),
+            "{devsetting_message}"
+        );
     }
 
     #[test]
@@ -214,12 +265,29 @@ mod tests {
         files(&dir).unwrap();
     }
 
+    /// The stick's `DEVSETTING.DAT` was written by the player, its
+    /// `djprofile.nxs` by rekordbox.
     #[test]
-    fn fixture_devsetting_written_by_player_validates() {
-        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.claude/fixtures/JPHFAREKORD-20260918/PIONEER/DEVSETTING.DAT");
-        if p.exists() {
-            validate(&p).unwrap();
+    fn fixture_stick_settings_validate_and_copy_verbatim() {
+        let pioneer = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/fixtures/JPHFAREKORD-20260918/PIONEER");
+        if !pioneer.exists() {
+            return;
         }
+        let found = files(&pioneer).unwrap();
+        assert_eq!(found[REQUIRED.len()..], OPTIONAL);
+        let device =
+            std::env::temp_dir().join(format!("baken-fixture-settings-{}", std::process::id()));
+        copy_all(&pioneer, &found, &device).unwrap();
+        let differ: Vec<&str> = found
+            .iter()
+            .copied()
+            .filter(|f| {
+                std::fs::read(pioneer.join(f)).unwrap()
+                    != std::fs::read(device.join("PIONEER").join(f)).unwrap()
+            })
+            .collect();
+        std::fs::remove_dir_all(&device).unwrap();
+        assert!(differ.is_empty(), "{differ:?}");
     }
 }

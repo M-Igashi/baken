@@ -93,19 +93,22 @@ fn print_plan(plan: &Plan) {
         style(plan.tracks.len()).cyan()
     );
     match &plan.settings_dir {
-        Some(dir) => println!(
-            "{} My Settings from {}{}",
-            style("▸").cyan(),
-            dir.display(),
-            if plan
-                .settings_files
-                .contains(&baken_export::settings::OPTIONAL)
-            {
-                ""
-            } else {
-                " (without DEVSETTING.DAT, which is optional)"
-            }
-        ),
+        Some(dir) => {
+            let missing: Vec<&str> = baken_export::settings::OPTIONAL
+                .into_iter()
+                .filter(|f| !plan.settings_files.contains(f))
+                .collect();
+            let note = match missing.as_slice() {
+                [] => String::new(),
+                [f] => format!(" (without {f}, which is optional)"),
+                _ => format!(" (without {}, which are optional)", missing.join(" and ")),
+            };
+            println!(
+                "{} My Settings from {}{note}",
+                style("▸").cyan(),
+                dir.display()
+            )
+        }
         None => println!(
             "{} No My Settings: the player keeps its own",
             style("▸").cyan()
@@ -225,7 +228,7 @@ fn print_report(plan: &Plan, r: &Report) {
     );
     if !plan.settings_files.is_empty() {
         println!(
-            "  {} {} My Settings files in {}/PIONEER/",
+            "  {} {} settings files in {}/PIONEER/",
             style("•").dim(),
             plan.settings_files.len(),
             plan.device.display()
