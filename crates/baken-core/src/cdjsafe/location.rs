@@ -2,6 +2,8 @@ use anyhow::{anyhow, Result};
 use std::fmt::Write;
 use std::path::Path;
 
+use crate::fsname::nfc_str;
+
 /// Decode a rekordbox `Location` attribute (`file://localhost/...`) into a
 /// filesystem path string.
 pub fn decode_location(location: &str) -> Result<String> {
@@ -61,14 +63,7 @@ pub fn encode_location(path: &Path) -> String {
 /// Sanitize a filename for FAT32/exFAT USB drives: replace forbidden
 /// characters, strip control chars, and trim trailing dots/spaces.
 pub fn sanitize_filename(name: &str) -> String {
-    let mut out: String = name
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if (c as u32) < 0x20 => '_',
-            c => c,
-        })
-        .collect();
+    let mut out = replace_forbidden(name);
     while out.ends_with('.') || out.ends_with(' ') {
         out.pop();
     }
@@ -78,16 +73,52 @@ pub fn sanitize_filename(name: &str) -> String {
     out
 }
 
-/// rekordbox cuts the stem of a file on the stick at this many characters.
-const MAX_STEM: usize = 43;
+fn replace_forbidden(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect()
+}
 
-fn component(s: &str, fallback: &str) -> String {
-    let s = s.trim();
-    if s.is_empty() {
-        fallback.to_string()
-    } else {
-        sanitize_filename(s)
+/// rekordbox cuts every name on the stick at this many characters: an artist
+/// or album directory, and a file name with its extension and `-N` suffix.
+/// Counted in characters; UTF-16 units would give the same on every name of
+/// the reference export, none of which has a character outside the BMP.
+const MAX_NAME: usize = 48;
+
+/// An artist or album directory: no space at either end, even after the cut,
+/// and a dot at the end written as `_` (`turan.` becomes `turan_`), as
+/// Windows would drop it.
+fn directory(name: &str, fallback: &str) -> String {
+    let name = replace_forbidden(nfc_str(name).trim());
+    if name.is_empty() {
+        return fallback.to_string();
     }
+    let cut = truncate_chars(&name, MAX_NAME).trim_end();
+    let kept = cut.trim_end_matches('.');
+    format!("{kept}{}", "_".repeat(cut.len() - kept.len()))
+}
+
+/// A file name: the stem keeps a space or dot at its end
+/// (`High Noon (1993) .flac`), and is cut so that stem, `suffix` and
+/// extension fit in [`MAX_NAME`].
+fn file(name: &str, suffix: &str) -> String {
+    let name = nfc_str(name);
+    let (stem, ext) = split_ext(&name);
+    let stem = if stem.trim().is_empty() {
+        "track"
+    } else {
+        stem
+    };
+    let ext = replace_forbidden(ext);
+    let room = MAX_NAME.saturating_sub(ext.chars().count() + suffix.chars().count());
+    format!(
+        "{}{suffix}{ext}",
+        truncate_chars(&replace_forbidden(stem), room)
+    )
 }
 
 fn split_ext(name: &str) -> (&str, &str) {
@@ -105,18 +136,17 @@ fn truncate_chars(s: &str, n: usize) -> &str {
 }
 
 /// Where a rekordbox export puts a file on the stick:
-/// `/Contents/<Artist>/<Album>/<file>`, FAT32-safe names, the stem cut at 43
-/// characters. `suffix` (`-1`, `-2`…) tells apart files that would otherwise
-/// share a path; the stem is cut so that stem and suffix stay within the 43.
+/// `/Contents/<Artist>/<Album>/<file>`, every name NFC (whatever form the
+/// tags are in), FAT32-safe and cut at 48 characters, so a path is never
+/// longer than 156. `suffix` (`-1`, `-2`…) tells apart files that would
+/// otherwise share a path and counts towards the file name's 48. Checked
+/// against every path of a real rekordbox 7 export (#232).
 pub fn stick_path(artist: &str, album: &str, file_name: &str, suffix: &str) -> String {
-    let (stem, ext) = split_ext(file_name);
-    let stem = component(stem, "track");
     format!(
-        "/Contents/{}/{}/{}{suffix}{}",
-        component(artist, "UnknownArtist"),
-        component(album, "UnknownAlbum"),
-        truncate_chars(&stem, MAX_STEM - suffix.chars().count()),
-        sanitize_filename(ext)
+        "/Contents/{}/{}/{}",
+        directory(artist, "UnknownArtist"),
+        directory(album, "UnknownAlbum"),
+        file(file_name, suffix)
     )
 }
 
@@ -168,5 +198,74 @@ mod tests {
         assert_eq!(sanitize_filename("a/b:c*d?.mp3"), "a_b_c_d_.mp3");
         assert_eq!(sanitize_filename("name."), "name");
         assert_eq!(sanitize_filename(""), "track");
+    }
+
+    /// Tracks of the reference rekordbox export (#232) and where it put them.
+    #[test]
+    fn stick_path_follows_rekordbox() {
+        // the whole file name is cut at 48, extension included
+        assert_eq!(
+            stick_path(
+                "DECADANCE & Genex",
+                "",
+                "DECADANCE & Genex - Afterhours (Original Mix).aif",
+                ""
+            ),
+            "/Contents/DECADANCE & Genex/UnknownAlbum/DECADANCE & Genex - Afterhours (Original Mix.aif"
+        );
+        // and the suffix goes inside those 48
+        assert_eq!(
+            stick_path(
+                "Sara Landry",
+                "Queen of the Banshees - EP",
+                "04 Queen of the Banshees (Nico Moreno Remix).aif",
+                "-1"
+            ),
+            "/Contents/Sara Landry/Queen of the Banshees - EP/04 Queen of the Banshees (Nico Moreno Remi-1.aif"
+        );
+        // directories are cut at 48 too, without a space left at the end
+        assert_eq!(
+            stick_path(
+                "Diego Damiani",
+                "Chill Ambient Del Mar (Electronica Chill Hop and Ambient for Relaxing Moments)",
+                "04 - Diego Damiani - Stillness.flac",
+                ""
+            ),
+            "/Contents/Diego Damiani/Chill Ambient Del Mar (Electronica Chill Hop and/04 - Diego Damiani - Stillness.flac"
+        );
+        assert_eq!(
+            stick_path(
+                "Hard Angel",
+                "Tonal Spectrum: Hard Trance - Euro Dance (Minor Keys)",
+                "Hard Angel - The Celestial Sphere.flac",
+                ""
+            ),
+            "/Contents/Hard Angel/Tonal Spectrum_ Hard Trance - Euro Dance (Minor/Hard Angel - The Celestial Sphere.flac"
+        );
+        // a stem keeps the space at its end
+        assert_eq!(
+            stick_path("Mark N-R-G", "", "Mark N-R-G - High Noon (1993) .flac", ""),
+            "/Contents/Mark N-R-G/UnknownAlbum/Mark N-R-G - High Noon (1993) .flac"
+        );
+        // a directory does not keep a dot at its end
+        assert_eq!(
+            stick_path(
+                "turan.",
+                "Nebula Drift",
+                "turan. - Nebula Drift - 03 Tilsim.flac",
+                ""
+            ),
+            "/Contents/turan_/Nebula Drift/turan. - Nebula Drift - 03 Tilsim.flac"
+        );
+        // the XML holds this artist in NFD, the stick in NFC
+        assert_eq!(
+            stick_path(
+                "TYRA\u{308}XX",
+                "",
+                "TYRA\u{308}XX - THE ABYSS (INTRO).aif",
+                ""
+            ),
+            "/Contents/TYR\u{c4}XX/UnknownAlbum/TYR\u{c4}XX - THE ABYSS (INTRO).aif"
+        );
     }
 }

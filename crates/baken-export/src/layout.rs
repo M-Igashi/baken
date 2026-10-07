@@ -1,6 +1,9 @@
 //! Where audio goes on the stick: `/Contents/<Artist>/<Album>/<file>`, the
-//! way rekordbox lays it out. Names are FAT32-safe, stems are cut at 43
-//! characters like rekordbox does, and collisions get a `-1`, `-2` suffix.
+//! way rekordbox lays it out. Names are NFC, FAT32-safe and cut at 48
+//! characters like rekordbox does (see [`stick_path`]), and collisions get a
+//! `-1`, `-2` suffix in the order tracks are assigned. rekordbox numbers them
+//! in the order tracks reach the stick, which within one export is playlist
+//! order, the order `plan` assigns them in (#232).
 
 use crate::collection::Track;
 use baken_core::cdjsafe::stick_path;

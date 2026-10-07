@@ -7,9 +7,9 @@ use baken_export::anlz::locate::AnlzIndex;
 use baken_export::anlz::rewrite::{prepare, FileKind};
 use baken_export::anlz::section::AnlzFile;
 use baken_export::build::{self, DeviceTrack};
-use baken_export::collection::Library;
+use baken_export::collection::{Library, Track};
 use baken_export::layout::Layout;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 fn fixture_root() -> Option<PathBuf> {
@@ -18,12 +18,30 @@ fn fixture_root() -> Option<PathBuf> {
     p.join("PIONEER/rekordbox/export.pdb").exists().then_some(p)
 }
 
-/// Tracks of the reference export as `(title, file_path, analyze_path)`.
-fn fixture_tracks(root: &Path) -> Vec<(String, String, String)> {
+/// A track row of the reference export's `export.pdb`.
+struct StickTrack {
+    id: u32,
+    size: u64,
+    title: String,
+    file_path: String,
+    analyze_path: String,
+}
+
+/// Tracks of the reference export, in `tracks.json` order.
+fn fixture_tracks(root: &Path) -> Vec<StickTrack> {
     let json = std::fs::read_to_string(root.join("tracks.json")).unwrap();
     // minimal parse of the python-dumped list of objects
     let mut out = Vec::new();
     for obj in json.split("{\n").skip(1) {
+        let number = |k: &str| -> u64 {
+            let key = format!("\"{k}\": ");
+            let start = obj.find(&key).unwrap() + key.len();
+            let digits: String = obj[start..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            digits.parse().unwrap()
+        };
         let field = |k: &str| -> String {
             let key = format!("\"{k}\": \"");
             let start = obj.find(&key).unwrap() + key.len();
@@ -61,7 +79,13 @@ fn fixture_tracks(root: &Path) -> Vec<(String, String, String)> {
             }
             s
         };
-        out.push((field("title"), field("file_path"), field("analyze_path")));
+        out.push(StickTrack {
+            id: number("id") as u32,
+            size: number("size"),
+            title: field("title"),
+            file_path: field("file_path"),
+            analyze_path: field("analyze_path"),
+        });
     }
     out
 }
@@ -73,9 +97,83 @@ fn hash_matches_every_fixture_track() {
     assert!(tracks.len() > 500);
     let mismatches: Vec<_> = tracks
         .iter()
-        .filter(|(_, fp, ap)| ap.rsplit_once('/').map(|(dir, _)| dir) != Some(&anlz_dir(fp)))
+        .filter(|t| {
+            t.analyze_path.rsplit_once('/').map(|(dir, _)| dir) != Some(&anlz_dir(&t.file_path))
+        })
+        .map(|t| &t.file_path)
         .collect();
     assert!(mismatches.is_empty(), "{mismatches:?}");
+}
+
+/// The four playlists of the reference export.
+const PLAYLISTS: [&str; 4] = ["Hard Techno", "Non Hard Techno", "HT-70min", "Openings"];
+
+/// Every track on the reference stick gets rekordbox's path and analysis path
+/// (#232), matched to the XML by size and title rather than by path. The
+/// stick was filled by several exports, and rekordbox numbers a collision
+/// `-1`, `-2` in the order tracks reach the stick, which is the order of its
+/// track ids: within one export that is playlist order, the order `plan`
+/// lays tracks out in. Across exports it is the stick's history, so the
+/// tracks are laid out here in id order; in `plan`'s order 11 tracks of three
+/// collision groups swap suffixes.
+#[test]
+fn stick_paths_match_rekordbox() {
+    let Some(root) = fixture_root() else { return };
+    let lib = Library::load(&root.join("collection.xml")).unwrap();
+    let exported: HashSet<u64> = PLAYLISTS
+        .iter()
+        .flat_map(|n| lib.playlist(n).unwrap().track_ids.iter().copied())
+        .collect();
+    let by_identity: HashMap<(u64, &str), &Track> = exported
+        .iter()
+        .map(|&id| lib.track(id).unwrap())
+        .map(|t| ((t.size, t.name.as_str()), t))
+        .collect();
+    assert_eq!(by_identity.len(), exported.len());
+
+    let mut stick = fixture_tracks(&root);
+    stick.sort_by_key(|s| s.id);
+    let (mut layout, mut slots) = (Layout::default(), AnlzSlots::default());
+    let (mut found, mut twice, mut gone, mut wrong) = (HashSet::new(), 0, Vec::new(), Vec::new());
+    for s in &stick {
+        let Some(track) = by_identity.get(&(s.size, s.title.as_str())) else {
+            gone.push(s.title.as_str());
+            continue;
+        };
+        if !found.insert(track.id) {
+            twice += 1;
+        }
+        let usb_path = layout.assign(track);
+        let (dir, index) = slots.assign(&usb_path);
+        let analyze_path = format!("{dir}/ANLZ{index:04}.DAT");
+        if usb_path != s.file_path || analyze_path != s.analyze_path {
+            wrong.push((s.id, usb_path, analyze_path));
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    // One file each under two rekordbox track ids, the earlier of which is in
+    // no playlist on the stick any more (126 and 315, 149 and 312, 235 and
+    // 313): the later copy is `-1`, as here.
+    assert_eq!(twice, 3);
+    // Removed from the collection after the stick's last export.
+    assert_eq!(
+        gone,
+        [
+            "No Good (Kristian Llov BigRoom Techno Edit)",
+            "Goodbye (Fading Soul Remix) for mixtape"
+        ]
+    );
+    // Added to the collection on 2026-08-14, after the stick's last export
+    // (the newest track on the stick was added on 2025-12-13).
+    let missing: Vec<_> = exported
+        .difference(&found)
+        .map(|&id| lib.track(id).unwrap().name.as_str())
+        .collect();
+    assert_eq!(
+        missing,
+        ["Higher State of Consciousness (Adana Twins Remix Two)"]
+    );
+    assert_eq!(stick.len() - gone.len(), 585);
 }
 
 fn mask_pcp2_tails(data: &[u8]) -> Vec<u8> {
@@ -106,7 +204,7 @@ fn local_anlz_becomes_stick_anlz() {
     }
     let lib = Library::load(&root.join("collection.xml")).unwrap();
     let index = AnlzIndex::build(&[local_root]).unwrap();
-    let by_title: HashMap<&str, Vec<&baken_export::collection::Track>> =
+    let by_title: HashMap<&str, Vec<&Track>> =
         lib.tracks.iter().fold(HashMap::new(), |mut m, t| {
             m.entry(t.name.as_str()).or_default().push(t);
             m
@@ -114,7 +212,13 @@ fn local_anlz_becomes_stick_anlz() {
     let mut compared = 0;
     let mut identical = [0usize; 3];
     let mut differ = [0usize; 3];
-    for (title, file_path, analyze_path) in fixture_tracks(&root) {
+    for StickTrack {
+        title,
+        file_path,
+        analyze_path,
+        ..
+    } in fixture_tracks(&root)
+    {
         let Some(cands) = by_title.get(title.as_str()) else {
             continue;
         };
@@ -189,8 +293,7 @@ fn local_anlz_becomes_stick_anlz() {
 fn pdb_from_fixture_collection_round_trips() {
     let Some(root) = fixture_root() else { return };
     let lib = Library::load(&root.join("collection.xml")).unwrap();
-    let names = ["Hard Techno", "Non Hard Techno", "HT-70min", "Openings"];
-    let selected: Vec<usize> = names
+    let selected: Vec<usize> = PLAYLISTS
         .iter()
         .map(|n| {
             lib.playlists
@@ -224,24 +327,6 @@ fn pdb_from_fixture_collection_round_trips() {
             });
         }
     }
-    // export order numbers a shared analysis directory exactly like rekordbox (#176)
-    let theirs: HashMap<String, String> = fixture_tracks(&root)
-        .into_iter()
-        .map(|(_, fp, ap)| (fp, ap))
-        .collect();
-    let compared: Vec<_> = tracks
-        .iter()
-        .filter_map(|dt| Some((theirs.get(&dt.usb_path)?, dt.anlz_path("DAT"))))
-        .collect();
-    assert!(compared.len() > 500);
-    assert!(compared.iter().all(|(a, b)| *a == b));
-    assert_eq!(
-        compared
-            .iter()
-            .filter(|(a, _)| a.ends_with("ANLZ0001.DAT"))
-            .count(),
-        1
-    );
     let model = build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2026-09-18");
     assert_eq!(model.playlists.len(), 4);
     let bytes = baken_export::pdb::write(&model);

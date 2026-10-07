@@ -166,7 +166,7 @@ pub fn check(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Resu
             let verdicts = Player::ALL
                 .iter()
                 .map(|&p| match &facts {
-                    Ok(f) => matrix::verdict(p, f, &stick_path),
+                    Ok(f) => matrix::verdict(p, f),
                     Err(_) => Verdict::Unknown("the file could not be read".into()),
                 })
                 .collect();
