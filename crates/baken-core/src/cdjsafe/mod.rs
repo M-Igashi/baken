@@ -26,8 +26,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::fsname::write_atomic;
 use crate::rbsort::{find_playlist, split_playlist_path};
-use crate::xmlutil::write_atomic;
 use crate::{CancelToken, Error, Progress, Result};
 
 use xml::{NewTrack, SourceTrack};
@@ -255,7 +255,8 @@ pub fn convert(
     };
     let output_bytes =
         xml::rewrite_xml(&plan.xml_data, &plan.sources, &new_tracks, &playlist_name)?;
-    write_atomic(&output, &output_bytes)?;
+    write_atomic(&output, &output_bytes)
+        .with_context(|| format!("Failed to write {}", output.display()))?;
 
     Ok(Report {
         tracks: plan

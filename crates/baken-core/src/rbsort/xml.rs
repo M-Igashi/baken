@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::camelot::parse_key;
-use crate::xmlutil::{get_attr, playlist_node_attrs, unescaped, write_atomic};
+use crate::fsname::write_atomic;
+use crate::xmlutil::{get_attr, playlist_node_attrs, unescaped};
 
 #[derive(Debug, Clone, Default)]
 struct TrackMeta {
@@ -59,7 +60,8 @@ pub fn sort_and_write(
     }
 
     let output_bytes = rewrite_xml(&xml_data, &sorted)?;
-    write_atomic(output, &output_bytes)?;
+    write_atomic(output, &output_bytes)
+        .with_context(|| format!("Failed to write {}", output.display()))?;
 
     Ok(sorted)
 }
