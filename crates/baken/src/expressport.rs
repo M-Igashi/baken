@@ -23,6 +23,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         cdjsafe: args.cdjsafe,
         generate_analysis: args.generate_analysis,
         prune: args.prune,
+        onelibrary: args.onelibrary,
     };
     let plan = plan(&opts)?;
     print_plan(&plan);
@@ -56,9 +57,17 @@ fn print_plan(plan: &Plan) {
         println!("{} {w}", style("⚠").yellow());
     }
     let onelibrary = &plan.onelibrary_files;
-    if onelibrary.contains(&"exportLibrary.db") {
+    if plan.onelibrary {
+        if !onelibrary.is_empty() {
+            println!(
+                "{} This stick carries rekordbox's OneLibrary ({}): it is replaced after export.pdb is written.",
+                style("▸").cyan(),
+                onelibrary.join(", ")
+            );
+        }
+    } else if onelibrary.contains(&"exportLibrary.db") {
         println!(
-            "{} This stick also carries rekordbox's OneLibrary ({}). expressport writes the Device Library only, so writing export.pdb removes them. OneLibrary players (CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) will then show \"OneLibrary not found\" instead of rekordbox's old library.",
+            "{} This stick also carries rekordbox's OneLibrary ({}). Without --onelibrary expressport writes the Device Library only, so writing export.pdb removes them. OneLibrary players (CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) will then show \"OneLibrary not found\" instead of rekordbox's old library.",
             style("⚠").yellow(),
             onelibrary.join(", ")
         );
@@ -126,6 +135,12 @@ fn print_plan(plan: &Plan) {
             "{} No My Settings: the player keeps its own",
             style("▸").cyan()
         ),
+    }
+    if plan.onelibrary {
+        println!(
+            "{} OneLibrary: exportLibrary.db is written too, for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO (not yet tested on those players)",
+            style("▸").cyan()
+        );
     }
     if plan.cdjsafe {
         println!(
@@ -198,6 +213,12 @@ fn print_report(plan: &Plan, r: &Report) {
             r.failures.len()
         );
     }
+    if let Some(e) = &r.onelibrary_error {
+        println!(
+            "{} OneLibrary could not be written ({e}), so the stick carries export.pdb only: OneLibrary players will show \"OneLibrary not found\".",
+            style("⚠").yellow()
+        );
+    }
     if r.onelibrary_kept > 0 {
         println!(
             "{} {} of rekordbox's old library files could not be removed. Delete what is left of {} in {}, so that the stick carries one library.",
@@ -246,6 +267,14 @@ fn print_report(plan: &Plan, r: &Report) {
         style("•").dim(),
         plan.device.display()
     );
+    if r.onelibrary_written {
+        println!(
+            "  {} {}/PIONEER/rekordbox/{}",
+            style("•").dim(),
+            plan.device.display(),
+            baken_export::onelibrary::FILE
+        );
+    }
     if !plan.settings_files.is_empty() {
         println!(
             "  {} {} settings files in {}/PIONEER/",

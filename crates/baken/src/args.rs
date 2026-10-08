@@ -107,6 +107,11 @@ pub struct ExpressportArgs {
     #[arg(long)]
     pub prune: bool,
 
+    /// Also write OneLibrary (exportLibrary.db) for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and
+    /// OMNIS-DUO, which do not read export.pdb. Untested on those players so far.
+    #[arg(long)]
+    pub onelibrary: bool,
+
     /// Resolve everything and print what would be written, without touching the stick.
     #[arg(long)]
     pub dry_run: bool,

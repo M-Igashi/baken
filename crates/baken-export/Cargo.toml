@@ -17,6 +17,15 @@ anyhow.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
+miniz_oxide = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# `exportLibrary.db` (OneLibrary) is SQLCipher. Apple targets encrypt with
+# CommonCrypto; everything else builds OpenSSL from source, so the release
+# binaries need no system libcrypto.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
