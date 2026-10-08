@@ -101,14 +101,58 @@ fn hot_number(c: &Cue) -> u32 {
     }
 }
 
+/// The 16 colours of rekordbox's hot cue menu: the code the `.EXT` stores,
+/// the colour the XML gives (the one rekordbox shows) and the colour bytes
+/// after the code (the player's own palette). Read off rekordbox 7.2.18's
+/// export of a hot cue in each colour (issue #236), except light blue and
+/// cyan, which were not set there: their XML colours come from rekordbox's
+/// menu and their bytes from the same player palette.
+const HOT_CUE_COLOURS: [HotCueColour; 16] = [
+    (0x01, (48, 90, 255), [0x00, 0x00, 0xff]),
+    (0x05, (80, 180, 255), [0x00, 0x70, 0xff]),
+    (0x09, (0, 224, 255), [0x00, 0xe0, 0xff]),
+    (0x0e, (31, 163, 146), [0x00, 0xff, 0xa3]),
+    (0x12, (16, 177, 118), [0x00, 0xff, 0x47]),
+    (GREEN, (40, 226, 20), [0x1a, 0xff, 0x00]),
+    (0x1a, (165, 225, 22), [0x80, 0xff, 0x00]),
+    (0x1e, (180, 190, 4), [0xe6, 0xff, 0x00]),
+    (0x20, (195, 175, 4), [0xff, 0xe8, 0x00]),
+    (0x26, (224, 100, 27), [0xff, 0x5e, 0x00]),
+    (0x2a, (230, 40, 40), [0xff, 0x00, 0x00]),
+    (0x2d, (255, 18, 123), [0xff, 0x00, 0x45]),
+    (0x31, (222, 68, 207), [0xff, 0x00, 0xa1]),
+    (0x38, (180, 50, 255), [0xb3, 0x00, 0xff]),
+    (0x3c, (170, 114, 255), [0x4d, 0x00, 0xff]),
+    (0x3e, (100, 115, 255), [0x1a, 0x00, 0xff]),
+];
+const GREEN: u8 = 0x16;
+/// `(code, XML colour, colour bytes)`.
+type HotCueColour = (u8, (u8, u8, u8), [u8; 3]);
+/// rekordbox's hot cue without a colour: code 0, green bytes.
+const NO_COLOUR: [u8; 4] = [0, 0x1a, 0xff, 0x00];
+
 /// Hot cue colour bytes `(code, r, g, b)` as rekordbox 7 writes them. The
-/// default green (XML 40/226/20) is stored as `1A FF 00` with code 0; other
-/// colours are passed through with code 0 pending a hardware check.
+/// XML colour names one of [`HOT_CUE_COLOURS`]; any other (an XML from
+/// another tool) takes the nearest. Green goes out as [`NO_COLOUR`]: the XML
+/// gives both green and no colour as 40/226/20, rekordbox wrote both forms
+/// for a green hot cue, and both show green. A hot cue without a colour in
+/// the XML gets the same.
 fn hot_colour(c: &Cue) -> [u8; 4] {
-    match c.rgb {
-        Some((40, 226, 20)) => [0, 0x1a, 0xff, 0x00],
-        Some((r, g, b)) => [0, r, g, b],
-        None => [0; 4],
+    let Some((r, g, b)) = c.rgb else {
+        return NO_COLOUR;
+    };
+    let distance = |(pr, pg, pb): (u8, u8, u8)| {
+        let d = |x: u8, y: u8| (i32::from(x) - i32::from(y)).pow(2);
+        d(r, pr) + d(g, pg) + d(b, pb)
+    };
+    let &(code, _, [dr, dg, db]) = HOT_CUE_COLOURS
+        .iter()
+        .min_by_key(|(_, xml, _)| distance(*xml))
+        .expect("16 colours");
+    if code == GREEN {
+        NO_COLOUR
+    } else {
+        [code, dr, dg, db]
     }
 }
 
@@ -327,6 +371,80 @@ mod tests {
         };
         assert_eq!(loop_fraction(&l, 83.5), (8, 1));
         assert_eq!(pcob(MEMORY, &[&l], None).bytes[24 + 28], 2);
+    }
+
+    #[test]
+    fn hot_cue_colours_follow_rekordbox() {
+        let hot = |rgb| Cue {
+            num: 0,
+            rgb,
+            ..Default::default()
+        };
+        // As rekordbox 7.2.18 wrote them for the XML colours (#236).
+        for (rgb, bytes) in [
+            ((222, 68, 207), [0x31, 0xff, 0x00, 0xa1]),
+            ((48, 90, 255), [0x01, 0x00, 0x00, 0xff]),
+            ((255, 18, 123), [0x2d, 0xff, 0x00, 0x45]),
+            ((195, 175, 4), [0x20, 0xff, 0xe8, 0x00]),
+            ((40, 226, 20), NO_COLOUR),
+        ] {
+            assert_eq!(hot_colour(&hot(Some(rgb))), bytes, "{rgb:?}");
+        }
+        // another tool's colour takes the nearest; no colour is rekordbox's default
+        assert_eq!(
+            hot_colour(&hot(Some((250, 0, 0)))),
+            [0x2a, 0xff, 0x00, 0x00]
+        );
+        assert_eq!(hot_colour(&hot(Some((0, 255, 0)))), NO_COLOUR);
+        assert_eq!(hot_colour(&hot(None)), NO_COLOUR);
+    }
+
+    /// rekordbox's own export of a hot cue in each colour (`Tape 3` and
+    /// `Hollow Tube`, local fixture): every cue section we build from the XML
+    /// equals rekordbox's, apart from the 40 bytes after the colour, which
+    /// rekordbox fills with FLAC seek data (#210), and the one green hot cue
+    /// rekordbox wrote with code 22 instead of 0.
+    #[test]
+    fn colours_match_rekordbox_export() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/fixtures/hotcue-colours-20261008");
+        let Ok(lib) = crate::collection::Library::load(&dir.join("collection.xml")) else {
+            return;
+        };
+        fn masked(s: &Section) -> Vec<u8> {
+            let mut b = s.bytes.clone();
+            if &s.tag == b"PCO2" {
+                let mut e = 0x14;
+                while e + 0x30 <= b.len() {
+                    let len = u32::from_be_bytes(b[e + 8..e + 12].try_into().unwrap()) as usize;
+                    let l = u32::from_be_bytes(b[e + 0x28..e + 0x2c].try_into().unwrap()) as usize;
+                    let colour = e + 0x2c + l;
+                    if b[colour..colour + 4] == [GREEN, 0x1a, 0xff, 0x00] {
+                        b[colour] = 0;
+                    }
+                    b[colour + 4..e + len].fill(0);
+                    e += len;
+                }
+            }
+            b
+        }
+        for (id, name) in [(13172647, "tape3"), (192695283, "hollowtube")] {
+            let t = lib.track(id).unwrap();
+            for (kind, ext) in [(Kind::Dat, "DAT"), (Kind::Ext, "EXT")] {
+                let file = std::fs::read(dir.join(format!("{name}.{ext}"))).unwrap();
+                let theirs = AnlzFile::parse(&file).unwrap();
+                let theirs: Vec<&Section> = theirs
+                    .sections
+                    .iter()
+                    .filter(|s| matches!(&s.tag, b"PCOB" | b"PCO2"))
+                    .collect();
+                let ours = sections(kind, &t.cues, t.grid_bpm());
+                assert_eq!(ours.len(), theirs.len());
+                for (i, (o, r)) in ours.iter().zip(theirs).enumerate() {
+                    assert_eq!(masked(o), masked(r), "{name}.{ext} section {i}");
+                }
+            }
+        }
     }
 
     #[test]
