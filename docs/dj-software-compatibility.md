@@ -75,6 +75,25 @@ The Mac app used to offer those files behind an opt-in checkbox, unchecked by de
 
 Lexicon, and every other sync tool, matches tracks by file path. Paths do not change, so a Headroom pass is invisible to them. Order of work does not matter for cues; if the user re-analyses gain in one app afterwards, sync after that so the new value propagates.
 
+## A rekordbox XML written by Lexicon
+
+Lexicon converts Traktor, Serato, Engine DJ, VirtualDJ and djay Pro libraries and can write the result as a rekordbox XML ("Sync to Rekordbox", XML method). `rbsort`, `cdjsafe` and `expressport` read that file like rekordbox's own ([#185](https://github.com/M-Igashi/baken/issues/185)), so a DJ without rekordbox can use them on it. Checked on 2026-10-08 with the one Lexicon-written XML that is public: posted on the Lexicon forum on 2023-10-07 (probably Lexicon 1.5), 145 tracks and 11 playlists from a rekordbox library. Lexicon writes `<PRODUCT Name="rekordbox" Version="5.8.5" Company="AlphaTheta"/>`, so nothing in the file names Lexicon.
+
+**Set Convert keys to Musical key.** That is the one setting to get right. Lexicon does not write the Alphanumeric notation (1A to 12B) for licensing reasons; its Convert keys option in the sync settings chooses Original keys, Open Key, Open Key with leading zero, Musical key or Custom key. Musical key writes `Am`, `F#m`, which is rekordbox's Classic notation: `rbsort` sorts by it and `expressport` shows it on the player. Open Key (`8m`, `01m`) and whatever Original keys passes through (`Dbmaj`, `Dmin` in the sample, beside Classic names) are not read: `rbsort` puts those tracks after every known key and `expressport` writes no key for them.
+
+| Checked | What Lexicon writes | Result |
+|---|---|---|
+| `Location` | `file://localhost/`, spaces and non-ASCII percent-encoded, `&`, `,` and parentheses left raw (rekordbox writes `%26` for `&`) | Decoded either way: with stand-in files at those paths, `cdjsafe --check` found all 64 of a playlist with `&`, a comma and `Ä` in its paths |
+| `TEMPO` | One per track, three decimals, `4/4`, `Battito="1"` | Read as rekordbox's |
+| `POSITION_MARK` | Hot cues, `Type="0"`, `Num` 0 to 7, with RGB; no memory cues or loops in the sample (Lexicon 1.9.7 limits exported memory cues to 10) | Hot cues go onto the stick, colours matched to rekordbox's palette |
+| Playlists | `KeyType="0"`, flat; empty playlists self-closing; one name ending in a backslash | `rbsort` sorted all 11 (208 entries) and changed nothing else |
+| `TotalTime` | Fractional on 110 of 145 tracks (`341.8122448979592`), `0` on 3 | Truncated to whole seconds, as rekordbox writes it. Up to 4.4.0 `expressport` read a fractional value as 0, so a track with copied analysis had no length in `export.pdb` |
+| `AverageBpm`, `DiscNumber`, `Colour` | Empty strings on some tracks | Read as unknown; `rbsort` sorts a track without BPM last within its key |
+
+End to end, with short test tones standing in for the audio at the same paths: `cdjsafe` converted a 22-track playlist and wrote its XML, and `expressport --generate-analysis` wrote 64 tracks.
+
+Not covered yet: an XML Lexicon converted from a Traktor or Serato library, where Lexicon translates the beat grid and the cues itself, and a player reading a stick made from one.
+
 ## Support reply template
 
 Adjust the greeting, keep the structure.
@@ -129,3 +148,4 @@ Link one of those from a support reply instead of retyping the answer. The sourc
 - `M-Igashi/baken-mac`, `docs/gui-features.md`, for the backup and restore behaviour and the read-only refusal added in 1.0.2
 - `M-Igashi/baken-mac`, `BakenDeck/Views/HeadroomView.swift` (`applyGainNow`, `restoreFromFolder`) and `docs/sandbox.md`, for the backup path, the per-volume split and the `.baken-backup` marker check
 - `docs/true-peak-ceiling.md`, for why the ceiling is a true peak target rather than a loudness target
+- Lexicon forum topic 1802 (<https://discuss.lexicondj.com/t/1802>, post 3), the Lexicon-written XML checked above; Lexicon manual, <https://www.lexicondj.com/manual/key-conversion> (the Convert keys options and the licensing note) and <https://www.lexicondj.com/manual/sync-rekordbox-xml>; Lexicon changelog 1.9.7 (2025-11-17, "Limit exported memory cues to Rekordbox to 10")
