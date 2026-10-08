@@ -370,11 +370,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
     let model = build::build(&library, &devices, &selected, &device_name, &build::today());
     let pdb_len = pdb::write(&model).len() as u64;
-    let onelibrary_len = if opts.onelibrary {
-        Some(onelibrary::write(&model, &devices)?.len() as u64)
-    } else {
-        None
-    };
+    let onelibrary_len = opts.onelibrary.then(|| onelibrary::estimated_len(&model));
     let settings_lens: Vec<u64> = match &settings_dir {
         Some(dir) => settings_files
             .iter()
@@ -444,8 +440,9 @@ const CDJSAFE_TAGS: u64 = 1 << 20;
 ///   ([`newer_than_source`]);
 /// - every analysis file, see [`anlz_len`], whether or not the stick already
 ///   holds those bytes, which only writing them out would tell;
-/// - `export.pdb` and `exportLibrary.db` as built from the plan, the settings
-///   files, and the directories the run creates;
+/// - `export.pdb` as built from the plan, `exportLibrary.db` as
+///   [`onelibrary::estimated_len`] puts it, the settings files, and the
+///   directories the run creates;
 /// - with `sidecars`, the 4 KiB `._` file macOS writes beside every file and
 ///   directory the run writes on FAT and exFAT, until the walk at the end of
 ///   [`export`] removes it;

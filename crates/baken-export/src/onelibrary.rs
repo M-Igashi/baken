@@ -81,6 +81,15 @@ fn passphrase() -> anyhow::Result<String> {
     Ok(String::from_utf8(text)?)
 }
 
+/// What [`write`] makes of `model`, from above, for the free-space check
+/// without building it: the empty database takes 32 pages, and the reference
+/// library came to about 600 bytes a track (583 tracks, 859 playlist
+/// entries: 348 KiB).
+pub fn estimated_len(model: &Export) -> u64 {
+    let entries: usize = model.playlists.iter().map(|p| p.track_ids.len()).sum();
+    128 * 1024 + 2048 * model.tracks.len() as u64 + 16 * entries as u64
+}
+
 /// `exportLibrary.db` for `model`, whose track rows are `tracks` in order.
 /// Built in a temporary file, checkpointed, and returned whole: the stick
 /// gets one file, in WAL mode like rekordbox's, without `-wal` or `-shm`.
@@ -92,7 +101,9 @@ pub fn write(model: &Export, tracks: &[DeviceTrack]) -> anyhow::Result<Vec<u8>> 
     let tmp = TempDb::new();
     {
         let mut db = Connection::open(&tmp.0)?;
-        db.pragma_update(None, "key", passphrase()?)?;
+        // The key is public, but an error here carries no SQL text either way.
+        db.pragma_update(None, "key", passphrase()?)
+            .map_err(|_| anyhow::anyhow!("setting the database key"))?;
         let mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         ensure!(mode == "wal", "journal mode {mode}");
         db.execute_batch(SCHEMA)?;
@@ -376,6 +387,7 @@ mod tests {
         };
         let bytes = write(&model, &[device(119312542), device(7)]).unwrap();
         assert_eq!(bytes.len() % 4096, 0);
+        assert!(estimated_len(&model) >= bytes.len() as u64);
         assert_ne!(&bytes[..16], b"SQLite format 3\0", "encrypted");
         let (_tmp, db) = open(&bytes);
         assert_eq!(rows(&db, "PRAGMA journal_mode"), ["wal"]);
@@ -497,7 +509,9 @@ mod tests {
             }
         }
         let model = crate::build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2025-04-11");
-        let (_ours_tmp, baken) = open(&write(&model, &tracks).unwrap());
+        let bytes = write(&model, &tracks).unwrap();
+        assert!(estimated_len(&model) >= bytes.len() as u64);
+        let (_ours_tmp, baken) = open(&bytes);
         let (_theirs_tmp, rekordbox) = rekordbox_db(&root);
 
         const SQL: &str = "SELECT c.masterContentId, c.path, c.title, c.subtitle, c.trackNo, c.discNo, c.rating, c.releaseYear, c.djComment, c.dateAdded, c.fileSize, c.fileType, c.bitrate, c.samplingRate, c.fileName, c.analysisDataFilePath, ar.name, al.name, g.name, l.name, k.name FROM content c LEFT JOIN artist ar ON ar.artist_id = c.artist_id_artist LEFT JOIN album al ON al.album_id = c.album_id LEFT JOIN genre g ON g.genre_id = c.genre_id LEFT JOIN label l ON l.label_id = c.label_id LEFT JOIN key k ON k.key_id = c.key_id";
