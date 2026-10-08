@@ -346,7 +346,9 @@ fn track_from(e: &BytesStart) -> Result<Track> {
             "Genre" => t.genre = v,
             "Kind" => t.kind = v,
             "Size" => t.size = n(),
-            "TotalTime" => t.total_time = n() as u32,
+            // Lexicon writes the exact length ("341.8122448979592"); rekordbox
+            // truncates to whole seconds.
+            "TotalTime" => t.total_time = v.trim().parse::<f64>().map_or(0, |s| s as u32),
             "DiscNumber" => t.disc_number = n() as u32,
             "TrackNumber" => t.track_number = n() as u32,
             "Year" => t.year = n() as u32,
@@ -426,6 +428,18 @@ mod tests {
         );
         assert_eq!(lib.playlist("Sets/Friday").unwrap().track_ids, vec![352, 2]);
         assert_eq!(lib.playlists[1].parent, Some(0));
+    }
+
+    #[test]
+    fn reads_a_track_as_lexicon_writes_it() {
+        // Attributes from a Lexicon "Sync to Rekordbox" XML (issue #185).
+        let xml = r#"<DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="1">
+<TRACK TrackID="24491171" Name="A &amp; B" Kind="WAV File" Size="1297040" TotalTime="341.8122448979592" DiscNumber="" TrackNumber="0" AverageBpm="" BitRate="2116" SampleRate="44100" Location="file://localhost/Users/dj/Music/A%20&amp;%20B,%20H%C3%84WK.wav" Tonality="" Colour="" Lyricist=""/>
+</COLLECTION></DJ_PLAYLISTS>"#;
+        let t = &Library::parse(xml.as_bytes()).unwrap().tracks[0];
+        assert_eq!((t.total_time, t.disc_number, t.average_bpm), (341, 0, 0.0));
+        assert_eq!(t.colour, None);
+        assert_eq!(t.location, "/Users/dj/Music/A & B, HÄWK.wav");
     }
 
     #[test]
