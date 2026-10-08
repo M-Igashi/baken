@@ -10,15 +10,34 @@
 use super::check::{Facts, Format};
 use super::header::WAVE_FORMAT_EXTENSIBLE;
 
+/// Declared in [`Player::ALL`] order: `TrackCheck::verdict` indexes by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Player {
     PreNxs2,
     Cdj2000Nxs2,
     Cdj3000,
+    Cdj3000X,
+    Xdj1000Mk2,
+    XdjXz,
+    XdjRx3,
+    XdjAz,
+    OpusQuad,
+    OmnisDuo,
 }
 
 impl Player {
-    pub const ALL: [Player; 3] = [Player::PreNxs2, Player::Cdj2000Nxs2, Player::Cdj3000];
+    pub const ALL: [Player; 10] = [
+        Player::PreNxs2,
+        Player::Cdj2000Nxs2,
+        Player::Cdj3000,
+        Player::Cdj3000X,
+        Player::Xdj1000Mk2,
+        Player::XdjXz,
+        Player::XdjRx3,
+        Player::XdjAz,
+        Player::OpusQuad,
+        Player::OmnisDuo,
+    ];
 
     pub fn label(self) -> &'static str {
         table(self).label
@@ -27,6 +46,21 @@ impl Player {
     /// The models whose operating instructions the table is taken from.
     pub fn models(self) -> &'static str {
         table(self).models
+    }
+
+    /// The player a name stands for: its label or one of its models, in any
+    /// case, with or without the hyphens (`xdj-az`, `XDJAZ`, `cdj-900nxs`).
+    pub fn from_name(name: &str) -> Option<Player> {
+        let key = |s: &str| -> String {
+            s.chars()
+                .filter(char::is_ascii_alphanumeric)
+                .map(|c| c.to_ascii_lowercase())
+                .collect()
+        };
+        let wanted = key(name);
+        Player::ALL
+            .into_iter()
+            .find(|&p| key(p.label()) == wanted || p.models().split(", ").any(|m| key(m) == wanted))
     }
 }
 
@@ -67,6 +101,13 @@ fn table(player: Player) -> &'static Table {
         Player::PreNxs2 => &PRE_NXS2,
         Player::Cdj2000Nxs2 => &CDJ_2000NXS2,
         Player::Cdj3000 => &CDJ_3000,
+        Player::Cdj3000X => &CDJ_3000X,
+        Player::Xdj1000Mk2 => &XDJ_1000MK2,
+        Player::XdjXz => &XDJ_XZ,
+        Player::XdjRx3 => &XDJ_RX3,
+        Player::XdjAz => &XDJ_AZ,
+        Player::OpusQuad => &OPUS_QUAD,
+        Player::OmnisDuo => &OMNIS_DUO,
     }
 }
 
@@ -117,6 +158,7 @@ const AAC_ALL_RATES: Row = lossy(
     &[16000, 22050, 24000, 32000, 44100, 48000],
     (16, 320),
 );
+const AAC_FROM_32K: Row = lossy(Format::Aac, AAC, &[32000, 44100, 48000], (16, 320));
 
 /// CDJ-2000NXS operating instructions DRI1052-A (2012), p.7, and CDJ-900NXS
 /// DRI1168-A (2013), p.6, "Playable music file formats"; the two tables are
@@ -155,6 +197,17 @@ static CDJ_2000NXS2: Table = Table {
     ],
 };
 
+/// MPEG-1 Layer 3 and AAC LC at 44.1 and 48 kHz, lossless up to 96 kHz: the
+/// CDJ-3000 and every OneLibrary player but the OMNIS-DUO.
+const CDJ_3000_ROWS: &[Row] = &[
+    lossy(Format::Mp3, MP3, TO_48K, (32, 320)),
+    lossy(Format::Aac, AAC, TO_48K, (16, 320)),
+    lossless(Format::Wav, WAV, TO_96K),
+    lossless(Format::Aiff, AIFF, TO_96K),
+    lossless(Format::Alac, ALAC, TO_96K),
+    lossless(Format::Flac, FLAC, TO_96K),
+];
+
 /// CDJ-3000 operating instructions DRI1586-A (2020), p.13, "Supported file
 /// formats". Narrower than the NXS2 for lossy files: MPEG-1 Layer 3 only, and
 /// MP3 and AAC at 44.1 and 48 kHz only.
@@ -162,13 +215,95 @@ static CDJ_2000NXS2: Table = Table {
 static CDJ_3000: Table = Table {
     label: "CDJ-3000",
     models: "CDJ-3000",
+    rows: CDJ_3000_ROWS,
+};
+
+/// CDJ-3000X operating instructions DRI1956B (2025), p.12, "Supported file
+/// formats": the CDJ-3000's table.
+/// <https://downloads.support.alphatheta.com/manuals/dj-players/CDJ-3000X/CDJ-3000X_DRI1956B_manual.pdf>
+static CDJ_3000X: Table = Table {
+    label: "CDJ-3000X",
+    models: "CDJ-3000X",
+    rows: CDJ_3000_ROWS,
+};
+
+/// XDJ-1000MK2 operating instructions DRI1396B (2016), p.6, "Playable music
+/// file formats": the NXS2's lossy rows, lossless at 44.1 and 48 kHz only.
+/// <https://downloads.support.alphatheta.com/manuals/dj-players/XDJ-1000MK2/XDJ-1000MK2_DRI1396B_manual.pdf>
+static XDJ_1000MK2: Table = Table {
+    label: "XDJ-1000MK2",
+    models: "XDJ-1000MK2",
+    rows: &[
+        MP3_MPEG1,
+        MP3_MPEG2,
+        AAC_ALL_RATES,
+        lossless(Format::Wav, WAV, TO_48K),
+        lossless(Format::Aiff, AIFF, TO_48K),
+        lossless(Format::Alac, ALAC, TO_48K),
+        lossless(Format::Flac, FLAC, TO_48K),
+    ],
+};
+
+/// MPEG-1 Layer 3 and AAC LC at 32 to 48 kHz, WAV, AIFF and FLAC at 44.1 and
+/// 48 kHz, no Apple Lossless: the XDJ-XZ and the XDJ-RX3.
+const XDJ_XZ_ROWS: &[Row] = &[
+    MP3_MPEG1,
+    AAC_FROM_32K,
+    lossless(Format::Wav, WAV, TO_48K),
+    lossless(Format::Aiff, AIFF, TO_48K),
+    lossless(Format::Flac, FLAC, TO_48K),
+];
+
+/// XDJ-XZ operating instructions DRI1625B (2020), pp.7 to 8, "Supported music
+/// file formats". Pioneer DJ's news of 2020-03-10 says FLAC plays from
+/// firmware 1.10 on.
+/// <https://downloads.support.alphatheta.com/manuals/all-in-one-dj-systems/XDJ-XZ/XDJ-XZ_DRI1625B_manual.pdf>
+static XDJ_XZ: Table = Table {
+    label: "XDJ-XZ",
+    models: "XDJ-XZ",
+    rows: XDJ_XZ_ROWS,
+};
+
+/// XDJ-RX3 operating instructions DRI1702C (2024), p.10, "Supported file
+/// formats": the XDJ-XZ's table.
+/// <https://downloads.support.alphatheta.com/manuals/all-in-one-dj-systems/XDJ-RX3/XDJ-RX3_DRI1702C_manual.pdf>
+static XDJ_RX3: Table = Table {
+    label: "XDJ-RX3",
+    models: "XDJ-RX3",
+    rows: XDJ_XZ_ROWS,
+};
+
+/// XDJ-AZ operating instructions DRI1936C (2025), p.11, "Supported file
+/// formats": the CDJ-3000's table.
+/// <https://downloads.support.alphatheta.com/manuals/all-in-one-dj-systems/XDJ-AZ/XDJ-AZ_DRI1936C_manual_EN.pdf>
+static XDJ_AZ: Table = Table {
+    label: "XDJ-AZ",
+    models: "XDJ-AZ",
+    rows: CDJ_3000_ROWS,
+};
+
+/// OPUS-QUAD operating instructions DRI1795D (2024), p.10, "Supported file
+/// formats": the CDJ-3000's table.
+/// <https://downloads.support.alphatheta.com/manuals/all-in-one-dj-systems/OPUS-QUAD/OPUS-QUAD_DRI1795D_manual.pdf>
+static OPUS_QUAD: Table = Table {
+    label: "OPUS-QUAD",
+    models: "OPUS-QUAD",
+    rows: CDJ_3000_ROWS,
+};
+
+/// OMNIS-DUO operating instructions DRI1882B (2023), p.14, "Supported file
+/// formats": the CDJ-3000's lossy rows, lossless at 44.1 and 48 kHz only.
+/// <https://downloads.support.alphatheta.com/manuals/all-in-one-dj-systems/OMNIS-DUO/OMNIS_DUO_DRI1882B_manual.pdf>
+static OMNIS_DUO: Table = Table {
+    label: "OMNIS-DUO",
+    models: "OMNIS-DUO",
     rows: &[
         lossy(Format::Mp3, MP3, TO_48K, (32, 320)),
         lossy(Format::Aac, AAC, TO_48K, (16, 320)),
-        lossless(Format::Wav, WAV, TO_96K),
-        lossless(Format::Aiff, AIFF, TO_96K),
-        lossless(Format::Alac, ALAC, TO_96K),
-        lossless(Format::Flac, FLAC, TO_96K),
+        lossless(Format::Wav, WAV, TO_48K),
+        lossless(Format::Aiff, AIFF, TO_48K),
+        lossless(Format::Alac, ALAC, TO_48K),
+        lossless(Format::Flac, FLAC, TO_48K),
     ],
 };
 
@@ -289,71 +424,101 @@ mod tests {
         }
     }
 
-    fn verdicts(f: &Facts) -> [char; 3] {
-        Player::ALL.map(|p| match verdict(p, f) {
-            Verdict::Plays => 'y',
-            Verdict::Refuses(_) => 'n',
-            Verdict::Unknown(_) => '?',
-        })
+    /// One character per [`Player::ALL`]: pre-NXS2, CDJ-2000NXS2, CDJ-3000,
+    /// CDJ-3000X, XDJ-1000MK2, XDJ-XZ, XDJ-RX3, XDJ-AZ, OPUS-QUAD, OMNIS-DUO.
+    fn verdicts(f: &Facts) -> String {
+        Player::ALL
+            .iter()
+            .map(|&p| match verdict(p, f) {
+                Verdict::Plays => 'y',
+                Verdict::Refuses(_) => 'n',
+                Verdict::Unknown(_) => '?',
+            })
+            .collect()
     }
 
     #[test]
     fn lossless_formats_follow_each_manual() {
         let flac = file(Format::Flac, "flac", 96000, Some(24), Some(2800));
-        assert_eq!(verdicts(&flac), ['n', 'y', 'y']);
+        assert_eq!(verdicts(&flac), "nyyynnnyyn");
+        let flac48 = file(Format::Flac, "flac", 48000, Some(24), Some(1800));
+        assert_eq!(verdicts(&flac48), "nyyyyyyyyy");
         let alac = file(Format::Alac, "m4a", 44100, Some(16), Some(900));
-        assert_eq!(verdicts(&alac), ['n', 'y', 'y']);
+        assert_eq!(verdicts(&alac), "nyyyynnyyy");
         let wav96 = file(Format::Wav, "wav", 96000, Some(24), Some(4608));
-        assert_eq!(verdicts(&wav96), ['n', 'y', 'y']);
+        assert_eq!(verdicts(&wav96), "nyyynnnyyn");
         let aiff = file(Format::Aiff, "aif", 44100, Some(16), Some(1411));
-        assert_eq!(verdicts(&aiff), ['y', 'y', 'y']);
+        assert_eq!(verdicts(&aiff), "yyyyyyyyyy");
         let wav192 = file(Format::Wav, "wav", 192000, Some(24), Some(9216));
-        assert_eq!(verdicts(&wav192), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&wav192), "nnnnnnnnnn");
         let mut float = file(Format::Wav, "wav", 44100, Some(32), Some(2822));
         float.float = true;
-        assert_eq!(verdicts(&float), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&float), "nnnnnnnnnn");
     }
 
     #[test]
     fn low_rate_mp3_is_mpeg2_and_not_on_a_cdj_3000() {
         let mpeg2 = file(Format::Mp3, "mp3", 22050, None, Some(64));
-        assert_eq!(verdicts(&mpeg2), ['y', 'y', 'n']);
+        assert_eq!(verdicts(&mpeg2), "yynnynnnnn");
         let too_fast = file(Format::Mp3, "mp3", 22050, None, Some(192));
-        assert_eq!(verdicts(&too_fast), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&too_fast), "nnnnnnnnnn");
         let cbr = file(Format::Mp3, "mp3", 44100, None, Some(320));
-        assert_eq!(verdicts(&cbr), ['y', 'y', 'y']);
+        assert_eq!(verdicts(&cbr), "yyyyyyyyyy");
         let mp3_32k = file(Format::Mp3, "mp3", 32000, None, Some(128));
-        assert_eq!(verdicts(&mp3_32k), ['y', 'y', 'n']);
+        assert_eq!(verdicts(&mp3_32k), "yynnyyynnn");
     }
 
     #[test]
     fn aac_lc_only_and_no_drm() {
         let mut aac = file(Format::Aac, "m4a", 44100, None, Some(256));
-        assert_eq!(verdicts(&aac), ['y', 'y', 'y']);
+        assert_eq!(verdicts(&aac), "yyyyyyyyyy");
         aac.aac_profile = Some("HE-AAC".into());
-        assert_eq!(verdicts(&aac), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&aac), "nnnnnnnnnn");
         let mut drm = file(Format::Aac, "m4p", 44100, None, Some(256));
         drm.drm = true;
-        assert_eq!(verdicts(&drm), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&drm), "nnnnnnnnnn");
+    }
+
+    #[test]
+    fn low_rate_aac_follows_each_manual() {
+        let aac_32k = file(Format::Aac, "m4a", 32000, None, Some(128));
+        assert_eq!(verdicts(&aac_32k), "yynnyyynnn");
+        let aac_22k = file(Format::Aac, "m4a", 22050, None, Some(64));
+        assert_eq!(verdicts(&aac_22k), "yynnynnnnn");
     }
 
     #[test]
     fn what_no_manual_states_is_unknown() {
         let mut ext = file(Format::Wav, "wav", 48000, Some(24), Some(2304));
         ext.wav_format_tag = Some(WAVE_FORMAT_EXTENSIBLE);
-        assert_eq!(verdicts(&ext), ['?', '?', '?']);
+        assert_eq!(verdicts(&ext), "??????????");
         let mut mono = file(Format::Mp3, "mp3", 44100, None, Some(128));
         mono.channels = 1;
-        assert_eq!(verdicts(&mono), ['?', '?', '?']);
+        assert_eq!(verdicts(&mono), "??????????");
         let mut aifc = file(Format::Aiff, "aif", 44100, Some(16), Some(1411));
         aifc.aifc_compression = Some("sowt".into());
-        assert_eq!(verdicts(&aifc), ['?', '?', '?']);
+        assert_eq!(verdicts(&aifc), "??????????");
         aifc.extension = "aifc".into();
-        assert_eq!(verdicts(&aifc), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&aifc), "nnnnnnnnnn");
         // An unknown never hides a refusal.
         let mut flac = file(Format::Flac, "flac", 44100, Some(16), Some(900));
         flac.channels = 1;
-        assert_eq!(verdicts(&flac), ['n', '?', '?']);
+        assert_eq!(verdicts(&flac), "n?????????");
+    }
+
+    #[test]
+    fn players_are_found_by_label_or_model() {
+        assert_eq!(Player::from_name("xdj-az"), Some(Player::XdjAz));
+        assert_eq!(Player::from_name("XDJ AZ"), Some(Player::XdjAz));
+        assert_eq!(Player::from_name("CDJ-900NXS"), Some(Player::PreNxs2));
+        assert_eq!(Player::from_name("pre-nxs2"), Some(Player::PreNxs2));
+        assert_eq!(Player::from_name("cdj3000x"), Some(Player::Cdj3000X));
+        assert_eq!(Player::from_name("cdj-3000"), Some(Player::Cdj3000));
+        assert_eq!(Player::from_name("CDJ-2000"), None);
+        for (i, p) in Player::ALL.into_iter().enumerate() {
+            assert_eq!(p as usize, i, "{p:?} is out of Player::ALL order");
+            assert_eq!(Player::from_name(p.label()), Some(p));
+        }
     }
 
     #[test]
@@ -365,6 +530,6 @@ mod tests {
             None,
             Some(160),
         );
-        assert_eq!(verdicts(&ogg), ['n', 'n', 'n']);
+        assert_eq!(verdicts(&ogg), "nnnnnnnnnn");
     }
 }

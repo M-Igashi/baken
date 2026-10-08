@@ -4,7 +4,7 @@ use baken_core::cdjsafe::{self, Action, Plan, Report, SkipReason, CDJSAFE_FOLDER
 use baken_core::Error;
 use console::{measure_text_width, pad_str, style, truncate_str, Alignment};
 
-use crate::args::CdjsafeArgs;
+use crate::args::{CdjsafeArgs, PlayerChoice};
 use crate::progress::with_bar;
 use crate::report::print_counts;
 
@@ -151,11 +151,38 @@ fn run_check(args: &CdjsafeArgs, plan: &Plan) -> Result<()> {
     let report = with_bar(plan.len(), "Checking...", |p, c| {
         cdjsafe::check::check(plan, p, c)
     })?;
-    print_check(&report);
-    if report.is_flagged() {
+    let players = selected_players(&args.players);
+    print_check(&report, &players);
+    if report.is_flagged(&players) {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// The players `--player` names, in `Player::ALL` order; without it the three
+/// generations of CDJ found in most booths.
+fn selected_players(choices: &[PlayerChoice]) -> Vec<Player> {
+    if choices.is_empty() {
+        return vec![Player::PreNxs2, Player::Cdj2000Nxs2, Player::Cdj3000];
+    }
+    Player::ALL
+        .into_iter()
+        .filter(|&p| {
+            choices.iter().any(|c| match c {
+                PlayerChoice::All => true,
+                PlayerChoice::One(q) => *q == p,
+            })
+        })
+        .collect()
+}
+
+/// Labels are model names: "an XDJ-AZ", "an OPUS-QUAD", "an OMNIS-DUO".
+fn article(label: &str) -> &'static str {
+    if label.starts_with(['O', 'X']) {
+        "an"
+    } else {
+        "a"
+    }
 }
 
 fn mark(v: &Verdict) -> console::StyledObject<&'static str> {
@@ -173,7 +200,7 @@ fn describe(t: &TrackCheck) -> String {
     }
 }
 
-fn print_check(report: &CheckReport) {
+fn print_check(report: &CheckReport, players: &[Player]) {
     let name_width = report
         .tracks
         .iter()
@@ -198,7 +225,7 @@ fn print_check(report: &CheckReport) {
         left("Track", name_width),
         left("Format", format_width)
     );
-    for p in Player::ALL {
+    for &p in players {
         print!("  {}", p.label());
     }
     println!();
@@ -208,7 +235,7 @@ fn print_check(report: &CheckReport) {
             left(&t.name, name_width),
             left(&describe(t), format_width)
         );
-        for p in Player::ALL {
+        for &p in players {
             let w = measure_text_width(p.label());
             let m = mark(t.verdict(p)).to_string();
             print!("  {}", pad_str(&m, w, Alignment::Center, None));
@@ -221,7 +248,7 @@ fn print_check(report: &CheckReport) {
         .iter()
         .filter(|t| {
             t.facts.is_err()
-                || t.verdicts.iter().any(|v| *v != Verdict::Plays)
+                || players.iter().any(|&p| *t.verdict(p) != Verdict::Plays)
                 || t.low_cutoff().is_some()
         })
         .collect();
@@ -234,7 +261,7 @@ fn print_check(report: &CheckReport) {
             println!("    {} {}", style("✗").red(), e);
             continue;
         }
-        for p in Player::ALL {
+        for &p in players {
             let v = t.verdict(p);
             if let Verdict::Refuses(why) | Verdict::Unknown(why) = v {
                 let models = match p.models() {
@@ -256,7 +283,7 @@ fn print_check(report: &CheckReport) {
 
     let total = report.tracks.len();
     println!();
-    for p in Player::ALL {
+    for &p in players {
         let (refused, unknown) = (report.refused(p), report.unknown(p));
         let unknown_note = match unknown {
             0 => String::new(),
@@ -264,15 +291,17 @@ fn print_check(report: &CheckReport) {
         };
         if refused > 0 {
             println!(
-                "{} {refused} of {total} tracks will not play on a {} player; `baken cdjsafe` converts them.{unknown_note}",
+                "{} {refused} of {total} tracks will not play on {} {} player; `baken cdjsafe` converts them.{unknown_note}",
                 style("✗").red(),
+                article(p.label()),
                 p.label()
             );
         } else {
             println!(
-                "{} {} of {total} tracks are in formats a {} player plays.{unknown_note}",
+                "{} {} of {total} tracks are in formats {} {} player plays.{unknown_note}",
                 style("✓").green(),
                 total - unknown - report.unreadable(),
+                article(p.label()),
                 p.label()
             );
         }
