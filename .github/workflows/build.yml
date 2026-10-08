@@ -1,8 +1,9 @@
 name: Build
 
-# The release targets that cannot be built on a Mac: they compile OpenSSL
-# from source for SQLCipher (--onelibrary), so a broken native build shows up
-# here instead of at release time.
+# What a release builds and a Mac cannot check: the Linux and Windows
+# targets compile OpenSSL from source for SQLCipher (--onelibrary), and the
+# third-party notices come from cargo-about. A break shows up here instead of
+# at release time.
 on:
   pull_request:
     branches: ["main"]
@@ -10,6 +11,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "crates/**"
+      - "about.toml"
+      - "about.hbs"
       - ".github/workflows/build.yml"
 
 permissions:
@@ -45,3 +48,13 @@ jobs:
           toolchain: stable
       - run: cargo build --release
       - run: cargo test -p baken-export --lib onelibrary
+
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # stable
+        with:
+          toolchain: stable
+      - run: cargo install cargo-about --locked --version 0.9.2 --features cli
+      - run: cargo about generate -c about.toml -m crates/baken/Cargo.toml about.hbs -o THIRD_PARTY_LICENSES.md
