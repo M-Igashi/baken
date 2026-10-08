@@ -6,6 +6,7 @@
 //! writing, [`export`] writes.
 
 pub mod anlz;
+pub mod artwork;
 pub mod build;
 pub mod collection;
 mod error;
@@ -60,6 +61,9 @@ pub struct Options {
     /// XDJ-AZ, OPUS-QUAD and OMNIS-DUO read instead of `export.pdb` (issue
     /// #139). Without it, a OneLibrary on the stick is removed (issue #208).
     pub onelibrary: bool,
+    /// Put the picture embedded in each audio file on the stick as artwork
+    /// (issue #235): four small JPEG files per track.
+    pub artwork: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +140,8 @@ pub struct Plan {
     pub prune: bool,
     /// [`Options::onelibrary`].
     pub onelibrary: bool,
+    /// [`Options::artwork`].
+    pub artwork: bool,
 }
 
 impl Plan {
@@ -217,6 +223,11 @@ pub struct Report {
     /// Why it was not, though asked for. The run goes on as without the
     /// option, so the stick has no OneLibrary rather than the old one.
     pub onelibrary_error: Option<String>,
+    /// [`Options::artwork`]: tracks that got artwork, which are also the
+    /// artwork ids handed out (1 to this).
+    pub artwork: usize,
+    /// Artwork files already on the stick byte for byte, so not written again.
+    pub artwork_unchanged: usize,
     /// FLAC seek tables rebuilt because the file changed after rekordbox
     /// analysed it (issue #219).
     pub seek_tables_rebuilt: usize,
@@ -329,6 +340,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                     file_type,
                     bitrate,
                     sample_rate,
+                    artwork_id: 0,
                 },
                 source,
                 anlz: entry.cloned(),
@@ -420,6 +432,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
         onelibrary: opts.onelibrary,
+        artwork: opts.artwork,
     })
 }
 
@@ -429,6 +442,11 @@ const SPACE_MARGIN: u64 = 1 << 20;
 
 /// Tags and artwork a `--cdjsafe` MP3 carries over from its source.
 const CDJSAFE_TAGS: u64 = 1 << 20;
+
+/// Upper bounds of an 80 and a 240 pixel thumbnail at quality 85, which come
+/// to about 3 and 20 KB for a cover.
+const ARTWORK_SMALL: u64 = 16 << 10;
+const ARTWORK_MEDIUM: u64 = 64 << 10;
 
 /// What the run adds to the stick, counted from above, so that a stick that
 /// passes does not fill up halfway (issue #233):
@@ -443,6 +461,9 @@ const CDJSAFE_TAGS: u64 = 1 << 20;
 /// - `export.pdb` as built from the plan, `exportLibrary.db` as
 ///   [`onelibrary::estimated_len`] puts it, the settings files, and the
 ///   directories the run creates;
+/// - with `--artwork`, four thumbnails for every track (whether its audio
+///   carries a picture is only known once it is read), at most
+///   [`ARTWORK_SMALL`] and [`ARTWORK_MEDIUM`] bytes;
 /// - with `sidecars`, the 4 KiB `._` file macOS writes beside every file and
 ///   directory the run writes on FAT and exFAT, until the walk at the end of
 ///   [`export`] removes it;
@@ -483,6 +504,19 @@ fn space_needed(
             let path = device_path(&opts.device, &dt.anlz_path(kind.extension()));
             let old = tally.existing(&path);
             tally.file(len, old);
+        }
+    }
+    if opts.artwork {
+        for id in 1..=tracks.len() as u32 {
+            for (path, medium) in artwork::files(id) {
+                let len = if medium {
+                    ARTWORK_MEDIUM
+                } else {
+                    ARTWORK_SMALL
+                };
+                let old = tally.existing(&device_path(&opts.device, &path));
+                tally.file(len, old);
+            }
         }
     }
     tally.dir(&opts.device.join("PIONEER/rekordbox"));
@@ -834,6 +868,11 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                     for kind in FileKind::ALL {
                         wanted.insert(device_path(&plan.device, &dt.anlz_path(kind.extension())));
                     }
+                    if dt.artwork_id != 0 {
+                        for (path, _) in artwork::files(dt.artwork_id) {
+                            wanted.insert(device_path(&plan.device, &path));
+                        }
+                    }
                     exported.push(dt);
                 }
                 Err(e) => {
@@ -904,6 +943,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     } else if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
         report.pruned += prune_tree(&plan.device.join("PIONEER/USBANLZ"), &wanted)?;
+        report.pruned += prune_tree(&plan.device.join("PIONEER/Artwork"), &wanted)?;
     }
     // Only files written in this run can have gained an AppleDouble file, so
     // the two big trees are walked only when something was written into them.
@@ -916,6 +956,9 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     }
     if report.anlz_files > 0 || plan.prune {
         remove_apple_double(&plan.device.join("PIONEER/USBANLZ"), true, &mut report)?;
+    }
+    if report.artwork > 0 || plan.prune {
+        remove_apple_double(&plan.device.join("PIONEER/Artwork"), true, &mut report)?;
     }
     remove_apple_double(&plan.device.join("PIONEER"), false, &mut report)?;
     remove_apple_double(&rb_dir, false, &mut report)?;
@@ -1035,6 +1078,8 @@ struct Prepared {
     generated: bool,
     seek_table: Option<SeekTable>,
     audio: Audio,
+    /// `--artwork`: the thumbnails of the picture in the audio, if any.
+    artwork: Option<artwork::Thumbnails>,
 }
 
 /// Where the audio written to the stick comes from.
@@ -1090,6 +1135,9 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
         }
     }
     prepared.audio = audio;
+    if plan.artwork {
+        prepared.artwork = artwork::for_file(&pt.source);
+    }
     Ok(prepared)
 }
 
@@ -1171,6 +1219,7 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             generated: true,
             seek_table: None,
             audio: Audio::Source,
+            artwork: None,
         });
     };
     let mut files = Vec::new();
@@ -1204,6 +1253,7 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
         generated: false,
         seek_table,
         audio: Audio::Source,
+        artwork: None,
     })
 }
 
@@ -1288,6 +1338,24 @@ fn write_track(
         Some(SeekTable::Dropped) => report.seek_tables_dropped += 1,
         None => {}
     }
+    // Last, so that a track failing above takes no id: ids run 1, 2, 3 in
+    // the order tracks reach the database, one image per track as rekordbox
+    // writes them, even for the tracks of one album.
+    if let Some(art) = &prepared.artwork {
+        let id = report.artwork as u32 + 1;
+        for (path, medium) in artwork::files(id) {
+            let path = device_path(&plan.device, &path);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir).map_err(StickError::at(dir))?;
+            }
+            let bytes = if medium { &art.medium } else { &art.small };
+            if !write_if_changed(&path, bytes).map_err(StickError::at(&path))? {
+                report.artwork_unchanged += 1;
+            }
+        }
+        report.artwork += 1;
+        prepared.device.artwork_id = id;
+    }
     Ok(prepared.device)
 }
 
@@ -1323,14 +1391,21 @@ fn same_pieces(a: &Path, b: &Path, len: u64) -> bool {
 /// A re-run after a playlist change then writes only what changed, and on a
 /// USB stick writing is what takes the time.
 fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result<()> {
-    match std::fs::read(path) {
-        Ok(old) if old == bytes => report.anlz_unchanged += 1,
-        _ => {
-            std::fs::write(path, bytes)?;
-            report.anlz_files += 1;
-        }
+    if write_if_changed(path, bytes)? {
+        report.anlz_files += 1;
+    } else {
+        report.anlz_unchanged += 1;
     }
     Ok(())
+}
+
+/// Write `bytes` to `path` unless it holds them already; `true` if written.
+fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    if std::fs::read(path).is_ok_and(|old| old == bytes) {
+        return Ok(false);
+    }
+    std::fs::write(path, bytes)?;
+    Ok(true)
 }
 
 /// Copy the audio of `src` to `dst`: the bytes only, no extended attributes,
@@ -1518,6 +1593,7 @@ mod tests {
             file_type,
             bitrate: 0,
             sample_rate: 0,
+            artwork_id: 0,
         }
     }
 

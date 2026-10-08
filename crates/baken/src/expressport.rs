@@ -24,6 +24,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         generate_analysis: args.generate_analysis,
         prune: args.prune,
         onelibrary: args.onelibrary,
+        artwork: args.artwork,
     };
     let plan = plan(&opts)?;
     print_plan(&plan);
@@ -142,6 +143,12 @@ fn print_plan(plan: &Plan) {
             style("▸").cyan()
         );
     }
+    if plan.artwork {
+        println!(
+            "{} Artwork: the picture embedded in each audio file, as 80 and 240 pixel thumbnails",
+            style("▸").cyan()
+        );
+    }
     if plan.cdjsafe {
         println!(
             "{} CDJ-safe mode: every track becomes 320 kbps CBR MP3",
@@ -251,6 +258,7 @@ fn print_report(plan: &Plan, r: &Report) {
             r.seek_tables_dropped,
             "FLAC seek tables left out: the file's frames could not all be read",
         ),
+        (r.artwork, "tracks with artwork"),
         (r.pruned, "stale files removed"),
         (
             r.onelibrary_removed,
