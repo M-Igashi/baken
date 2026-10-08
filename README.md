@@ -427,6 +427,8 @@ baken cdjsafe ~/Music/rekordbox/collection.xml --playlist "Sets/Friday" --check
 
 Probes every track and prints, per track, what a pre-NXS2 player (CDJ-2000NXS, CDJ-900NXS), a CDJ-2000NXS2 and a CDJ-3000 will do with it: ✓ within the formats the player's operating instructions list, ✗ outside them (with the reason, such as FLAC on a pre-NXS2 player, a 32-bit float WAV, or a 192 kHz file), and ? where the manual says nothing (mono or multichannel files, `WAVE_FORMAT_EXTENSIBLE` WAVs, AIFF-C, VBR MP3 without a Xing header). A summary line per player follows, such as "3 of 42 tracks will not play on a pre-NXS2 player". Nothing is written and `--out-dir` is not needed. The exit code is 1 when a player refuses a track or a track is missing or unreadable, so a script can run it before an export.
 
+`--player` checks against other players instead of those three, and can be given more than once: `--player xdj-az --player cdj-3000x`, or `--player all` for every table at once. Known are the pre-NXS2 class (also `CDJ-2000NXS` or `CDJ-900NXS`), CDJ-2000NXS2, CDJ-3000, CDJ-3000X, XDJ-1000MK2, XDJ-XZ, XDJ-RX3, XDJ-AZ, OPUS-QUAD and OMNIS-DUO ([#220](https://github.com/M-Igashi/baken/issues/220)). The exit code then follows the players asked for. The CDJ-3000X, XDJ-AZ and OPUS-QUAD list exactly what the CDJ-3000 lists; the OMNIS-DUO and the XDJ-1000MK2 stop at 48 kHz for lossless files; the XDJ-XZ (FLAC from firmware 1.10) and the XDJ-RX3 also stop at 48 kHz, play MP3 and AAC down to 32 kHz, and list no Apple Lossless. The CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO need OneLibrary, which `baken expressport` does not write yet, so for them the check is about a stick rekordbox exports.
+
 The tables come from Pioneer's own operating instructions only, never from another tool's table; each one is cited in `crates/baken-core/src/cdjsafe/matrix.rs`. The CDJ-2000NXS2, for instance, lists WAV, AIFF, Apple Lossless and FLAC at up to 96 kHz from USB, while the CDJ-3000 lists MP3 and AAC at 44.1 and 48 kHz only. Every manual also says that some files do not play even in a supported format, so ✓ means "within the list", not a guarantee. `--check` only reports: a conversion still converts the whole playlist.
 
 MP3 and AAC tracks are also decoded to see where their audio stops. An encoder low-passes what its bitrate cannot pay for (LAME at about 17 kHz for 128 kbps, 19.5 kHz for 256 and 20 kHz for 320), and re-encoding at a higher bitrate keeps the lower cutoff, so a "320" made from a 128 kbps file has nothing above 17 kHz. A track of 256 kbps or more with nothing above 19 kHz, or of 192 kbps or more with nothing above 17 kHz, is listed with the measured frequency as likely transcoded from a lower bitrate ([#222](https://github.com/M-Igashi/baken/issues/222)). That is a measurement, not a verdict: some masters have little top end, so listen before deciding. It never changes the exit code, and nothing is skipped or converted because of it. Decoding costs about half a second of CPU per lossy track, spread over all cores: a 1374-track playlist with 533 MP3 and AAC files took 35 s instead of 8.
@@ -435,7 +437,7 @@ MP3 and AAC tracks are also decoded to see where their audio stops. An encoder l
 
 ```
 baken cdjsafe <XML> --playlist <PATH> --out-dir <DIR> [-o <PATH>]
-baken cdjsafe <XML> --playlist <PATH> --check
+baken cdjsafe <XML> --playlist <PATH> --check [--player <MODEL>]...
 ```
 
 | Argument / Flag | Description |

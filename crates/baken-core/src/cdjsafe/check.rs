@@ -95,9 +95,9 @@ impl TrackCheck {
         }
     }
 
-    /// Unreadable, or refused by at least one class of player.
-    pub fn is_flagged(&self) -> bool {
-        self.facts.is_err() || self.verdicts.iter().any(Verdict::is_refused)
+    /// Unreadable, or refused by at least one of `players`.
+    pub fn is_flagged(&self, players: &[Player]) -> bool {
+        self.facts.is_err() || players.iter().any(|&p| self.verdict(p).is_refused())
     }
 }
 
@@ -134,10 +134,10 @@ impl CheckReport {
         self.tracks.iter().filter(|t| f(t)).count()
     }
 
-    /// Anything a DJ has to look at: a track some player refuses, a file that
-    /// cannot be read, or one that is not there. Unknowns do not count.
-    pub fn is_flagged(&self) -> bool {
-        !self.skipped.is_empty() || self.tracks.iter().any(TrackCheck::is_flagged)
+    /// Anything a DJ has to look at: a track one of `players` refuses, a file
+    /// that cannot be read, or one that is not there. Unknowns do not count.
+    pub fn is_flagged(&self, players: &[Player]) -> bool {
+        !self.skipped.is_empty() || self.tracks.iter().any(|t| t.is_flagged(players))
     }
 }
 

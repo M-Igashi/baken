@@ -1,6 +1,7 @@
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
+use baken_core::cdjsafe::check::Player;
 use baken_core::headroom::{
     GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH,
     SPLIT_TARGET_TRUE_PEAK_LOW,
@@ -257,6 +258,29 @@ pub struct CdjsafeArgs {
     /// player refuses a track, or a track is missing or cannot be read.
     #[arg(long, conflicts_with = "out_dir")]
     pub check: bool,
+
+    /// With --check: the players to check against instead of those three,
+    /// repeatable. One of pre-NXS2 (or CDJ-2000NXS, CDJ-900NXS),
+    /// CDJ-2000NXS2, CDJ-3000, CDJ-3000X, XDJ-1000MK2, XDJ-XZ, XDJ-RX3,
+    /// XDJ-AZ, OPUS-QUAD, OMNIS-DUO, or `all`.
+    #[arg(long = "player", value_name = "MODEL", conflicts_with = "out_dir", value_parser = player)]
+    pub players: Vec<PlayerChoice>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum PlayerChoice {
+    All,
+    One(Player),
+}
+
+fn player(s: &str) -> Result<PlayerChoice, String> {
+    if s.eq_ignore_ascii_case("all") {
+        return Ok(PlayerChoice::All);
+    }
+    Player::from_name(s).map(PlayerChoice::One).ok_or_else(|| {
+        let known: Vec<&str> = Player::ALL.iter().map(|p| p.label()).collect();
+        format!("unknown player; one of {}, or all", known.join(", "))
+    })
 }
 
 #[derive(Args, Debug)]
