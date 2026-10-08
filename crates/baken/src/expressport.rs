@@ -119,7 +119,10 @@ fn print_plan(plan: &Plan) {
         Some(dir) => {
             let missing: Vec<&str> = baken_export::settings::OPTIONAL
                 .into_iter()
-                .filter(|f| !plan.settings_files.contains(f))
+                .filter(|f| {
+                    !plan.settings_files.contains(f)
+                        && plan.settings_kept.iter().all(|k| k.file != *f)
+                })
                 .collect();
             let note = match missing.as_slice() {
                 [] => String::new(),
@@ -130,7 +133,19 @@ fn print_plan(plan: &Plan) {
                 "{} My Settings from {}{note}",
                 style("▸").cyan(),
                 dir.display()
-            )
+            );
+            if !plan.settings_kept.is_empty() {
+                let kept: Vec<String> = plan
+                    .settings_kept
+                    .iter()
+                    .map(|k| format!("{} ({} {})", k.file, k.model, k.version))
+                    .collect();
+                println!(
+                    "{} Kept as a player saved them on the stick: {}",
+                    style("▸").cyan(),
+                    kept.join(", ")
+                );
+            }
         }
         None => println!(
             "{} No My Settings: the player keeps its own",

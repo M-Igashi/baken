@@ -2,8 +2,9 @@
 //! stick as ordinary files in its settings directory, in the same format:
 //! 104-byte header (`len_strings` u8 + 3 pad, brand, `rekordbox`, version as
 //! 32-byte fields, `len_data` u32), payload, CRC16-XMODEM, two zero bytes.
-//! They are copied verbatim into `PIONEER/` on the stick; an export without
-//! the three in `REQUIRED` is an error. The DJ profile `djprofile.nxs` sits
+//! They are copied verbatim into `PIONEER/` on the stick, except over a file
+//! a player saved there ([`player_saved`]); an export without the three in
+//! `REQUIRED` is an error. The DJ profile `djprofile.nxs` sits
 //! beside them, in the settings directory and on the stick, in a format of
 //! its own (`DJ_PROFILE_SIZE`).
 
@@ -158,6 +159,53 @@ pub fn files(dir: &Path) -> Result<Vec<&'static str>> {
     Ok(files)
 }
 
+/// A settings file on the stick that a player saved there (issue #234). The
+/// export leaves it as it is, so what the DJ set on the player survives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSaved {
+    pub file: &'static str,
+    /// The header's software field, the player's model (`CDJ-2000NXS2`).
+    pub model: String,
+    /// The player's firmware version (`1.85`).
+    pub version: String,
+}
+
+/// A 32-byte header string: NUL-terminated, then padded with NULs
+/// (rekordbox) or spaces (a player).
+fn header_field(b: &[u8], at: usize) -> Option<String> {
+    let field = b.get(at..at + 32)?;
+    let end = field.iter().position(|&c| c == 0).unwrap_or(field.len());
+    Some(String::from_utf8_lossy(&field[..end]).trim().to_string())
+}
+
+/// Those of `files` already on the stick at `device` whose header names
+/// another program than rekordbox. rekordbox writes `rekordbox` in the
+/// software field; the one player-written file seen, the reference stick's
+/// `DEVSETTING.DAT`, names the player and its firmware (`CDJ-2000NXS2`,
+/// `1.85`). `djprofile.nxs` has no such header and is never kept.
+pub fn player_saved(device: &Path, files: &[&'static str]) -> Vec<PlayerSaved> {
+    files
+        .iter()
+        .filter(|&&f| f != "djprofile.nxs")
+        .filter_map(|&file| {
+            let b = std::fs::read(device.join("PIONEER").join(file)).ok()?;
+            if b.get(..4) != Some(&[0x60, 0, 0, 0]) {
+                return None;
+            }
+            let model = header_field(&b, 0x24)?;
+            if model.is_empty() || model == "rekordbox" {
+                return None;
+            }
+            let version = header_field(&b, 0x44).unwrap_or_default();
+            Some(PlayerSaved {
+                file,
+                model,
+                version,
+            })
+        })
+        .collect()
+}
+
 /// Validate and copy `files` into `<device>/PIONEER/`, the bytes only, each
 /// through a temp file and a rename so that a failed write leaves the
 /// stick's old file whole.
@@ -267,6 +315,53 @@ mod tests {
     fn local_files_validate_when_present() {
         let Ok(dir) = locate(None) else { return };
         files(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_a_player_saved_is_kept() {
+        let device = std::env::temp_dir().join(format!("baken-player-{}", std::process::id()));
+        let pioneer = device.join("PIONEER");
+        std::fs::create_dir_all(&pioneer).unwrap();
+        for f in REQUIRED {
+            write_valid(&pioneer, f);
+        }
+        // Header of the reference stick's DEVSETTING.DAT, space padded.
+        let mut player = vec![b' '; 0x68];
+        player[..4].copy_from_slice(&[0x60, 0, 0, 0]);
+        player[0x04..0x0f].copy_from_slice(b"PIONEER DJ\0");
+        player[0x24..0x31].copy_from_slice(b"CDJ-2000NXS2\0");
+        player[0x44..0x49].copy_from_slice(b"1.85\0");
+        std::fs::write(pioneer.join("MYSETTING2.DAT"), &player).unwrap();
+        // The profile name starts at 0x20, where a header has its software.
+        let mut profile = vec![0u8; DJ_PROFILE_SIZE];
+        profile[0x20..0x2c].copy_from_slice(b"Some DJ Name");
+        std::fs::write(pioneer.join("djprofile.nxs"), &profile).unwrap();
+        let mut all = REQUIRED.to_vec();
+        all.extend(OPTIONAL);
+        let kept = player_saved(&device, &all);
+        std::fs::remove_dir_all(&device).unwrap();
+        assert_eq!(
+            kept,
+            [PlayerSaved {
+                file: "MYSETTING2.DAT",
+                model: "CDJ-2000NXS2".into(),
+                version: "1.85".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn the_fixture_stick_keeps_the_players_devsetting() {
+        let pioneer = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/fixtures/JPHFAREKORD-20260918/PIONEER");
+        if !pioneer.exists() {
+            return;
+        }
+        let mut all = REQUIRED.to_vec();
+        all.extend(OPTIONAL);
+        let kept = player_saved(pioneer.parent().unwrap(), &all);
+        let kept: Vec<_> = kept.iter().map(|k| (k.file, k.model.as_str())).collect();
+        assert_eq!(kept, [("DEVSETTING.DAT", "CDJ-2000NXS2")]);
     }
 
     /// The stick's `DEVSETTING.DAT` was written by the player, its

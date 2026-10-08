@@ -107,8 +107,12 @@ pub struct Plan {
     pub skipped: Vec<Skipped>,
     /// `None` with `no_settings`.
     pub settings_dir: Option<PathBuf>,
-    /// Settings files to copy, already validated so a bad one fails before anything is written.
+    /// Settings files to copy, already validated so a bad one fails before
+    /// anything is written. Those in `settings_kept` are left out.
     pub settings_files: Vec<&'static str>,
+    /// Settings files on the stick that a player saved there (issue #234).
+    /// The export leaves them as they are instead of copying rekordbox's.
+    pub settings_kept: Vec<settings::PlayerSaved>,
     pub anlz_roots: Vec<PathBuf>,
     pub anlz_files_indexed: usize,
     pub device: PathBuf,
@@ -247,13 +251,15 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     if !opts.device.is_dir() {
         return Err(Error::DeviceNotFound(opts.device.clone()));
     }
-    let (settings_dir, settings_files) = if opts.no_settings {
-        (None, Vec::new())
+    let (settings_dir, settings_files, settings_kept) = if opts.no_settings {
+        (None, Vec::new(), Vec::new())
     } else {
         let dir = settings::locate(opts.settings_dir.as_deref())
             .map_err(|searched| Error::SettingsNotFound { searched })?;
-        let files = settings::files(&dir)?;
-        (Some(dir), files)
+        let mut files = settings::files(&dir)?;
+        let kept = settings::player_saved(&opts.device, &files);
+        files.retain(|f| kept.iter().all(|k| k.file != *f));
+        (Some(dir), files, kept)
     };
 
     let library = Library::load(&opts.xml)?;
@@ -419,6 +425,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         skipped,
         settings_dir,
         settings_files,
+        settings_kept,
         anlz_roots,
         anlz_files_indexed: index.files,
         device: opts.device.clone(),
