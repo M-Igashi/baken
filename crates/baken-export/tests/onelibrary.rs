@@ -1,6 +1,7 @@
 //! rekordbox's OneLibrary and `exportExt.pdb` on a stick whose library
 //! expressport replaces (#208): the plan lists them, writing `export.pdb`
-//! removes them, and a dry run, a cancel or a failed run leaves them.
+//! removes them, and a dry run, a cancel or a failed run leaves them. With
+//! `Options::onelibrary` the database is replaced by ours instead (#139).
 
 use baken_core::CancelToken;
 use baken_export::{export, plan, Options, ONELIBRARY_FILES};
@@ -152,6 +153,54 @@ fn a_file_that_cannot_be_removed_is_counted_and_the_run_goes_on() {
     let report = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
     assert_eq!((report.onelibrary_removed, report.onelibrary_kept), (3, 1));
     assert_eq!(left(&opts), ["exportExt.pdb"]);
+    assert_eq!(report.tracks_in_database, 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// `--onelibrary` (#139): rekordbox's database is replaced by ours, its
+/// write-ahead log and `exportExt.pdb` go.
+#[test]
+fn with_the_option_the_database_is_replaced() {
+    let (root, mut opts) = rekordbox_stick("replace");
+    let without = plan(&opts).unwrap().space_needed;
+    opts.onelibrary = true;
+    let p = plan(&opts).unwrap();
+    assert!(p.onelibrary);
+    assert!(
+        p.space_needed > without,
+        "the database counts against the space"
+    );
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(report.onelibrary_written, "{:?}", report.onelibrary_error);
+    assert_eq!((report.onelibrary_removed, report.onelibrary_kept), (3, 0));
+    assert_eq!(left(&opts), ["exportLibrary.db"]);
+    let db = std::fs::read(rb(&opts).join("exportLibrary.db")).unwrap();
+    assert_eq!(db.len() % 4096, 0);
+    assert_ne!(&db[..16], b"SQLite format 3\0", "encrypted");
+    assert!(!rb(&opts).join("._exportLibrary.db").exists());
+
+    let again = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(again.onelibrary_written);
+    assert_eq!((again.onelibrary_removed, again.onelibrary_kept), (0, 0));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A write-ahead log that cannot be removed would be replayed into the new
+/// database, so none is written and the run goes on as without the option.
+#[test]
+fn a_stale_log_that_stays_keeps_the_database_off_the_stick() {
+    let (root, mut opts) = rekordbox_stick("stale-log");
+    opts.onelibrary = true;
+    let wal = rb(&opts).join("exportLibrary.db-wal");
+    std::fs::remove_file(&wal).unwrap();
+    std::fs::create_dir(&wal).unwrap();
+    let report = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(!report.onelibrary_written);
+    let error = report.onelibrary_error.unwrap();
+    assert!(error.contains("exportLibrary.db-wal"), "{error}");
+    assert_eq!((report.onelibrary_removed, report.onelibrary_kept), (3, 1));
+    assert_eq!(left(&opts), ["exportLibrary.db-wal"]);
     assert_eq!(report.tracks_in_database, 1);
     std::fs::remove_dir_all(&root).unwrap();
 }

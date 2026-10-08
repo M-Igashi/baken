@@ -10,6 +10,7 @@ pub mod build;
 pub mod collection;
 mod error;
 pub mod layout;
+pub mod onelibrary;
 pub mod pdb;
 pub mod settings;
 pub mod volume;
@@ -23,6 +24,7 @@ use anlz::hash::AnlzSlots;
 use anlz::locate::{read_optional, AnlzIndex, Entry};
 use anlz::rewrite::{self, FileKind, Mp3Audio};
 use anlz::section::AnlzFile;
+use anyhow::Context as _;
 use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
@@ -54,6 +56,10 @@ pub struct Options {
     pub generate_analysis: bool,
     /// Delete audio and analysis on the stick that this export does not reference.
     pub prune: bool,
+    /// Also write OneLibrary (`exportLibrary.db`), which the CDJ-3000X,
+    /// XDJ-AZ, OPUS-QUAD and OMNIS-DUO read instead of `export.pdb` (issue
+    /// #139). Without it, a OneLibrary on the stick is removed (issue #208).
+    pub onelibrary: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,12 +80,13 @@ pub struct PlanTrack {
     pub stale_seek_table: bool,
 }
 
-/// What rekordbox 7 writes into `PIONEER/rekordbox/` beside `export.pdb` and
-/// expressport does not: the OneLibrary database with its `-wal` and `-shm`,
-/// and `exportExt.pdb`, the Device Library's extension tables. Left next to a
-/// new `export.pdb` they describe rekordbox's old library, which rekordbox
-/// reports as "a library inconsistency on the device" and OneLibrary players
-/// show instead of ours (issue #208).
+/// What rekordbox 7 writes into `PIONEER/rekordbox/` beside `export.pdb`: the
+/// OneLibrary database with its `-wal` and `-shm`, and `exportExt.pdb`, the
+/// Device Library's extension tables (My Tags), which expressport never
+/// writes. Left next to a new `export.pdb` they describe rekordbox's old
+/// library, which rekordbox reports as "a library inconsistency on the
+/// device" and OneLibrary players show instead of ours (issue #208). With
+/// [`Options::onelibrary`] the database is replaced and the rest removed.
 pub const ONELIBRARY_FILES: [&str; 4] = [
     "exportLibrary.db",
     "exportLibrary.db-wal",
@@ -127,6 +134,8 @@ pub struct Plan {
     pub device_name: String,
     pub cdjsafe: bool,
     pub prune: bool,
+    /// [`Options::onelibrary`].
+    pub onelibrary: bool,
 }
 
 impl Plan {
@@ -203,6 +212,11 @@ pub struct Report {
     /// are still on the stick next to the new `export.pdb`. Counted rather
     /// than failing the run, which has written `export.pdb` by then.
     pub onelibrary_kept: usize,
+    /// [`Options::onelibrary`]: `exportLibrary.db` was written.
+    pub onelibrary_written: bool,
+    /// Why it was not, though asked for. The run goes on as without the
+    /// option, so the stick has no OneLibrary rather than the old one.
+    pub onelibrary_error: Option<String>,
     /// FLAC seek tables rebuilt because the file changed after rekordbox
     /// analysed it (issue #219).
     pub seek_tables_rebuilt: usize,
@@ -354,14 +368,13 @@ pub fn plan(opts: &Options) -> Result<Plan> {
 
     let space = volume::space(&opts.device);
     let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
-    let pdb_len = pdb::write(&build::build(
-        &library,
-        &devices,
-        &selected,
-        &device_name,
-        &build::today(),
-    ))
-    .len() as u64;
+    let model = build::build(&library, &devices, &selected, &device_name, &build::today());
+    let pdb_len = pdb::write(&model).len() as u64;
+    let onelibrary_len = if opts.onelibrary {
+        Some(onelibrary::write(&model, &devices)?.len() as u64)
+    } else {
+        None
+    };
     let settings_lens: Vec<u64> = match &settings_dir {
         Some(dir) => settings_files
             .iter()
@@ -380,6 +393,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         opts,
         &tracks,
         pdb_len,
+        onelibrary_len,
         &settings_lens,
         space.map_or(1, |s| s.unit),
         sidecars,
@@ -409,6 +423,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         device_name,
         cdjsafe: opts.cdjsafe,
         prune: opts.prune,
+        onelibrary: opts.onelibrary,
     })
 }
 
@@ -429,8 +444,8 @@ const CDJSAFE_TAGS: u64 = 1 << 20;
 ///   ([`newer_than_source`]);
 /// - every analysis file, see [`anlz_len`], whether or not the stick already
 ///   holds those bytes, which only writing them out would tell;
-/// - `export.pdb` as built from the plan, the settings files, and the
-///   directories the run creates;
+/// - `export.pdb` and `exportLibrary.db` as built from the plan, the settings
+///   files, and the directories the run creates;
 /// - with `sidecars`, the 4 KiB `._` file macOS writes beside every file and
 ///   directory the run writes on FAT and exFAT, until the walk at the end of
 ///   [`export`] removes it;
@@ -445,6 +460,7 @@ fn space_needed(
     opts: &Options,
     tracks: &[PlanTrack],
     pdb_len: u64,
+    onelibrary_len: Option<u64>,
     settings_lens: &[u64],
     unit: u64,
     sidecars: bool,
@@ -474,6 +490,9 @@ fn space_needed(
     }
     tally.dir(&opts.device.join("PIONEER/rekordbox"));
     tally.file(pdb_len, None);
+    if let Some(len) = onelibrary_len {
+        tally.file(len, None);
+    }
     for &len in settings_lens {
         tally.file(len, None);
     }
@@ -858,6 +877,9 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         &date,
     );
     report.tracks_in_database = exported.len();
+    let onelibrary = plan
+        .onelibrary
+        .then(|| onelibrary::write(&model, &exported));
     let pdb_path = rb_dir.join("export.pdb");
     // Beside the old one and renamed over it, so a full stick or a crash
     // leaves the stick with its old library rather than none.
@@ -865,7 +887,14 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         path: pdb_path,
         err,
     })?;
-    remove_onelibrary(&rb_dir, &mut report);
+    match onelibrary.map(|db| db.and_then(|db| replace_onelibrary(&rb_dir, &db, &mut report))) {
+        Some(Ok(())) => report.onelibrary_written = true,
+        Some(Err(e)) => {
+            report.onelibrary_error = Some(format!("{e:#}"));
+            remove_onelibrary(&rb_dir, &mut report);
+        }
+        None => remove_onelibrary(&rb_dir, &mut report),
+    }
 
     if let Some(dir) = &plan.settings_dir {
         settings::copy_all(dir, &plan.settings_files, &plan.device)?;
@@ -916,6 +945,23 @@ fn remove_onelibrary(rb_dir: &Path, report: &mut Report) {
             Err(_) => report.onelibrary_kept += 1,
         }
     }
+}
+
+/// Put `db` on the stick as `exportLibrary.db`, after `export.pdb` like
+/// [`remove_onelibrary`] and for the same reason. rekordbox's `-wal` and
+/// `-shm` go first: SQLite would replay an old write-ahead log into the new
+/// database. `exportExt.pdb` goes too, since it lists rekordbox's My Tags for
+/// rekordbox's track ids.
+fn replace_onelibrary(rb_dir: &Path, db: &[u8], report: &mut Report) -> anyhow::Result<()> {
+    for name in ONELIBRARY_FILES.iter().filter(|&&n| n != onelibrary::FILE) {
+        match fsname::remove_file(&rb_dir.join(name)) {
+            Ok(()) => report.onelibrary_removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("removing {name}"))),
+        }
+    }
+    let path = rb_dir.join(onelibrary::FILE);
+    fsname::write_atomic(&path, db).with_context(|| format!("writing {}", path.display()))
 }
 
 /// Hands out track indices to the workers that prepare tracks ahead of the

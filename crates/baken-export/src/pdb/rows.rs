@@ -164,6 +164,13 @@ pub struct TrackRow {
     pub file_path: String,
 }
 
+/// Track row constants rekordbox writes and whose meaning is unknown; the
+/// OneLibrary content rows carry them too (`masterDbId`, `contentLink`,
+/// `analysedBits`), with the same values on the reference stick.
+pub const MASTER_DB_ID: u32 = 3933607398;
+pub const TRACK_BITMASK: u32 = 0xC0700;
+pub const ANALYSED_BITS: u16 = 41;
+
 pub const FILE_TYPE_MP3: u16 = 1;
 pub const FILE_TYPE_M4A: u16 = 4;
 pub const FILE_TYPE_FLAC: u16 = 5;
@@ -179,12 +186,12 @@ impl TrackRow {
         u32s(
             &mut r,
             &[
-                0xC0700,
+                TRACK_BITMASK,
                 self.sample_rate,
                 self.composer_id,
                 self.file_size,
                 self.id + 20,
-                3933607398,
+                MASTER_DB_ID,
                 self.artwork_id,
                 self.key_id,
                 self.original_artist_id,
@@ -205,7 +212,7 @@ impl TrackRow {
             self.year,
             self.sample_depth,
             self.duration_seconds,
-            41,
+            ANALYSED_BITS,
         ] {
             r.extend_from_slice(&v.to_le_bytes());
         }
