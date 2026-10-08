@@ -323,6 +323,7 @@ fn pdb_from_fixture_collection_round_trips() {
                 file_type: build::file_type_for(&t.kind, t.file_name()),
                 bitrate: t.bit_rate,
                 sample_rate: t.sample_rate,
+                artwork_id: 0,
                 track: t,
             });
         }

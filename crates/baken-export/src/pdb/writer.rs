@@ -34,6 +34,8 @@ pub struct Export {
     /// `(id, name)`: only the keys the tracks use, spelled as in the XML.
     pub keys: Vec<(u32, String)>,
     pub playlists: Vec<ExportPlaylist>,
+    /// `(id, path of the small "a" file)`, see [`crate::artwork::path`].
+    pub artworks: Vec<(u32, String)>,
     pub device_name: String,
     /// `YYYY-MM-DD`.
     pub export_date: String,
@@ -116,6 +118,11 @@ fn tables(e: &Export) -> Vec<Table<'_>> {
                 })
             })
             .collect();
+    t[13].rows = e
+        .artworks
+        .iter()
+        .map(|(id, path)| row(move |_| rows::named(*id, path)))
+        .collect();
     t[16].style = HeaderStyle::Fixed;
     t[16].seq = Some(3);
     t[16].rows = COLUMNS
@@ -293,6 +300,49 @@ mod tests {
         a[0x28..0x30].fill(0);
         b[0x28..0x30].fill(0);
         assert_page_eq(&a, &b, "index page");
+    }
+
+    /// The artwork table (type 13) of the reference export: 455 rows naming
+    /// the small `a` file, 36 bytes each, 106 to a page (#235). Its first two
+    /// pages, ids 1 to 212, were filled in one go and equal ours; the later
+    /// ones are part-filled by the stick's later exports.
+    #[test]
+    fn artwork_pages_match_rekordbox() {
+        let Some(fx) = fixture("export.pdb") else {
+            return;
+        };
+        let out = write(&Export {
+            artworks: (1..=455)
+                .map(|id| (id, crate::artwork::path(id, 'a', false)))
+                .collect(),
+            ..Default::default()
+        });
+        let chain = |d: &[u8]| -> Vec<Vec<u8>> {
+            let n = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
+            let o = (0..n)
+                .map(|i| 0x1c + 16 * i)
+                .find(|&o| u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) == 13)
+                .unwrap();
+            let w = |k: usize| u32::from_le_bytes(d[o + 4 * k..o + 4 * k + 4].try_into().unwrap());
+            let (mut p, last) = (w(2) as usize, w(3) as usize);
+            let mut pages = Vec::new();
+            loop {
+                let pg = page(d, p);
+                if pg[0x1b] == 0x24 {
+                    pages.push(pg.to_vec());
+                }
+                if p == last {
+                    break;
+                }
+                p = u32::from_le_bytes(pg[0x0c..0x10].try_into().unwrap()) as usize;
+            }
+            pages
+        };
+        let (ours, theirs) = (chain(&out), chain(&fx));
+        assert_eq!(ours.len(), 5, "455 rows, 106 to a page");
+        for i in 0..2 {
+            assert_page_eq(&ours[i], &theirs[i], &format!("artwork page {i}"));
+        }
     }
 
     #[test]

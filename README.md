@@ -479,7 +479,7 @@ baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --pla
 ### Usage
 
 ```
-baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--prune] [--dry-run]
+baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--prune] [--dry-run]
 ```
 
 | Flag | Description |
@@ -493,6 +493,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 | `--generate-analysis` | Compute the analysis files from the audio for tracks with no rekordbox analysis (grid and cues still from the XML; no phrase data) |
 | `--cdjsafe` | 320 kbps CBR MP3 for every track (needs ffmpeg) |
 | `--onelibrary` | Also write OneLibrary (`exportLibrary.db`) for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO; untested on those players so far |
+| `--artwork` | Put the picture embedded in each audio file on the stick as its artwork |
 | `--prune` | Delete audio and analysis on the stick this export no longer references |
 | `--dry-run` | Resolve and report, write nothing |
 
@@ -507,7 +508,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 - **How long it takes**: an export runs at the stick's write speed, plus about 0.4 s per track for the directory and the three analysis files the format wants next to each audio file (measured on macOS 26 with a FAT32 stick: a new directory 150 ms, a file create 27 ms, a write and close 25 ms). A USB 3 stick that writes 25 MB/s needs about 40 s per GB, and many sticks slow down once warm: a 62-track, 3.3 GB playlist took 339 s on a cold stick and about 450 s later, and `cp -R` of the same files took 410 to 533 s. `--cdjsafe` adds the encoding, a few seconds per track ([#197](https://github.com/M-Igashi/baken/issues/197)). On Linux, check the mount options: udisks2 mounts FAT sticks with `flush`, which sends every closed file to the device at once, and cheap sticks are slow at that ([#173](https://github.com/M-Igashi/baken/issues/173)).
 - Check a finished stick on a player, not by opening it in rekordbox: rekordbox rewrites a device library it opens, and even changes a stick that is only mounted while it runs. [rbsync](https://github.com/aquarazorda/rbsync) measured it deleting 768 of 5,825 playlist entries from a stick it opened and adding an `exportLibrary.db`. If that happened, run `expressport` again: it rewrites `export.pdb` and removes the `exportLibrary.db`, or replaces it with `--onelibrary`.
 - On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.
-- Artwork is not exported yet.
+- **Artwork** comes with `--artwork`, from the picture embedded in each audio file: ID3 in MP3 and AIFF, the picture block of FLAC, the cover of M4A (not WAV), JPEG, PNG or BMP. The XML carries none, and rekordbox keeps its own thumbnails in its database. Every track with a picture gets the four files rekordbox writes in `PIONEER/Artwork`, 80 and 240 pixels square, the picture fitted on black, made like rekordbox's own (measured on 1091 of them). On the owner's library 24 of the 35 tracks of a playlist had a picture: 96 files, 856 KB, and no measurable time on a local disk. On a FAT32 stick through macOS each file costs 50 to 70 ms beyond its size (the per-file costs measured in [#196](https://github.com/M-Igashi/baken/issues/196) and [#221](https://github.com/M-Igashi/baken/issues/221)), so the first run with it takes about a quarter of a second more per track; later runs leave unchanged files alone, and `--prune` removes the ones no track uses ([#235](https://github.com/M-Igashi/baken/issues/235)).
 
 ## License
 

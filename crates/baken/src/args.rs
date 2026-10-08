@@ -112,6 +112,11 @@ pub struct ExpressportArgs {
     #[arg(long)]
     pub onelibrary: bool,
 
+    /// Put the picture embedded in each audio file on the stick as its artwork (MP3, FLAC,
+    /// AIFF and M4A; not WAV): four small JPEG files per track.
+    #[arg(long)]
+    pub artwork: bool,
+
     /// Resolve everything and print what would be written, without touching the stick.
     #[arg(long)]
     pub dry_run: bool,

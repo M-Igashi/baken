@@ -23,6 +23,8 @@ pub struct DeviceTrack {
     pub file_type: u16,
     pub bitrate: u32,
     pub sample_rate: u32,
+    /// The artwork row it points at (`--artwork`), 0 for none.
+    pub artwork_id: u32,
 }
 
 impl DeviceTrack {
@@ -155,7 +157,7 @@ pub fn build(
             sample_rate: dt.sample_rate,
             composer_id: artists.get(&t.composer),
             file_size: dt.file_size.min(u32::MAX as u64) as u32,
-            artwork_id: 0,
+            artwork_id: dt.artwork_id,
             key_id,
             original_artist_id: 0,
             label_id: labels.get(&t.label),
@@ -234,6 +236,17 @@ pub fn build(
         });
     }
 
+    let artworks = tracks
+        .iter()
+        .filter(|dt| dt.artwork_id != 0)
+        .map(|dt| {
+            (
+                dt.artwork_id,
+                crate::artwork::path(dt.artwork_id, 'a', false),
+            )
+        })
+        .collect();
+
     Export {
         tracks: rows_out,
         artists: artists.rows,
@@ -242,6 +255,7 @@ pub fn build(
         labels: labels.rows,
         keys,
         playlists,
+        artworks,
         device_name: device_name.to_string(),
         export_date: export_date.to_string(),
     }
@@ -302,6 +316,7 @@ mod tests {
                 file_type: 0,
                 bitrate: 0,
                 sample_rate: 0,
+                artwork_id: 0,
             })
             .collect()
     }

@@ -205,6 +205,10 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
             entry.execute(params![p.id, t, n as i64 + 1])?;
         }
     }
+    let mut s = db.prepare("INSERT INTO image VALUES (?, ?)")?;
+    for (i, _) in &model.artworks {
+        s.execute(params![i, crate::artwork::path(*i, 'b', false)])?;
+    }
     let mut s = db.prepare("INSERT INTO menuItem VALUES (?, ?, ?)")?;
     for (i, kind, name) in COLUMNS {
         s.execute(params![i, kind, name])?;
@@ -322,6 +326,7 @@ mod tests {
             file_type: 1,
             bitrate: 320,
             sample_rate: 44100,
+            artwork_id: 0,
         }
     }
 
@@ -343,6 +348,7 @@ mod tests {
                     genre_id: 1,
                     key_id: 1,
                     color_id: 3,
+                    artwork_id: 1,
                     rating: 4,
                     tempo: 14200,
                     duration_seconds: 294,
@@ -364,6 +370,7 @@ mod tests {
             genres: vec![(1, "Techno".into())],
             labels: vec![],
             keys: vec![(1, "5A".into())],
+            artworks: vec![(1, "/PIONEER/Artwork/00001/a1.jpg".into())],
             playlists: vec![
                 ExportPlaylist {
                     id: 1,
@@ -394,7 +401,7 @@ mod tests {
         assert_eq!(
             rows(&db, "SELECT content_id, title, artist_id_artist, artist_id_remixer, artist_id_lyricist, album_id, label_id, key_id, color_id, image_id, fileSize, masterDbId, masterContentId, analysedBits, contentLink, cueUpdateCount FROM content"),
             [
-                "1|Iconograph|1|NULL|0|1|NULL|1|3|NULL|5000000000|3933607398|119312542|41|788224|NULL",
+                "1|Iconograph|1|NULL|0|1|NULL|1|3|1|5000000000|3933607398|119312542|41|788224|NULL",
                 "2|No tags|NULL|NULL|0|NULL|NULL|NULL|0|NULL|5000000000|3933607398|7|41|788224|NULL",
             ]
         );
@@ -414,6 +421,10 @@ mod tests {
         assert_eq!(
             rows(&db, "SELECT * FROM property"),
             ["USB|1000|2|2026-10-08|0|0"]
+        );
+        assert_eq!(
+            rows(&db, "SELECT * FROM image"),
+            ["1|/PIONEER/Artwork/00001/b1.jpg"]
         );
         assert_eq!(rows(&db, "SELECT count(*) FROM cue"), ["0"]);
     }
@@ -504,6 +515,7 @@ mod tests {
                     file_type: crate::build::file_type_for(&t.kind, t.file_name()),
                     bitrate: t.bit_rate,
                     sample_rate: t.sample_rate,
+                    artwork_id: 0,
                     track: t,
                 });
             }
