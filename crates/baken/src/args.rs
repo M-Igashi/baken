@@ -35,15 +35,16 @@ pub enum Command {
     /// Library at the file once, then re-export and re-run whenever your
     /// playlists change.
     Rbsort(RbsortArgs),
-    /// Transcode a rekordbox playlist to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
-    /// with cues and beatgrid carried over via a new XML playlist.
+    /// Transcode rekordbox playlists to CDJ-safe MP3s (320 kbps CBR, 44.1 kHz)
+    /// with cues and beatgrid carried over via new XML playlists.
     ///
     /// Pre-NXS2 CDJs only play MP3 reliably. cdjsafe re-encodes every track in
-    /// the target playlist to 320 kbps CBR MP3 @ 44.1 kHz (sources already
-    /// matching that profile are copied byte-identically), and emits an updated
-    /// XML where each new track is a fresh entry that inherits the source's
-    /// beatgrid (TEMPO) and cue points (POSITION_MARK) verbatim. Import the XML
-    /// in rekordbox and use "Import to Collection" — no re-analysis needed.
+    /// the chosen playlists (all of them by default) to 320 kbps CBR MP3 @
+    /// 44.1 kHz (sources already matching that profile are copied
+    /// byte-identically), and emits an updated XML where each new track is a
+    /// fresh entry that inherits the source's beatgrid (TEMPO) and cue points
+    /// (POSITION_MARK) verbatim. Import the XML in rekordbox and use "Import to
+    /// Collection" — no re-analysis needed.
     Cdjsafe(CdjsafeArgs),
     /// Write a rekordbox USB export straight from collection.xml:
     /// export.pdb, the analysis files, audio and My Settings, without launching
@@ -248,10 +249,13 @@ pub struct CdjsafeArgs {
     #[arg(value_name = "XML")]
     pub xml: PathBuf,
 
-    /// Playlist to convert. Top-level playlists: just the name; nested:
-    /// '/'-separate folder/playlist names (e.g. "Sets/Friday").
+    /// Playlist to convert or check; repeat for several. Top-level playlists:
+    /// just the name; nested: '/'-separate folder/playlist names (e.g.
+    /// "Sets/Friday"). Omitted: every TrackID-referenced playlist in the XML,
+    /// except the ones an earlier run wrote. A track in several playlists is
+    /// converted once.
     #[arg(long, value_name = "PATH")]
-    pub playlist: String,
+    pub playlist: Vec<String>,
 
     /// Directory to write the CDJ-safe MP3 files into (created if missing).
     #[arg(long, value_name = "DIR", required_unless_present = "check")]
@@ -264,8 +268,9 @@ pub struct CdjsafeArgs {
 
     /// Write nothing: probe every track and print what a pre-NXS2 player
     /// (CDJ-2000NXS, CDJ-900NXS), a CDJ-2000NXS2 and a CDJ-3000 will do with
-    /// it, going by Pioneer's operating instructions. Exits with 1 when a
-    /// player refuses a track, or a track is missing or cannot be read.
+    /// it, going by Pioneer's operating instructions. With more than one
+    /// playlist, only the tracks that need a look are listed. Exits with 1
+    /// when a player refuses a track, or a track is missing or cannot be read.
     #[arg(long, conflicts_with = "out_dir")]
     pub check: bool,
 

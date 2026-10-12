@@ -1,4 +1,4 @@
-//! CDJ-safe MP3 transcode of one rekordbox playlist (`baken cdjsafe`).
+//! CDJ-safe MP3 transcode of rekordbox playlists (`baken cdjsafe`).
 //!
 //! Two phases: [`plan`] reads the XML and validates sources without touching
 //! any file; [`convert`] transcodes and writes the new XML. [`check::check`]
@@ -20,17 +20,21 @@ pub use xml::CDJSAFE_FOLDER_NAME;
 
 use anyhow::Context;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::fsname::write_atomic;
-use crate::rbsort::{find_playlist, split_playlist_path};
+use crate::rbsort::{find_playlists, split_playlist_path};
 use crate::{CancelToken, Error, Progress, Result};
 
-use xml::{NewTrack, SourceTrack};
+use xml::{NewPlaylist, NewTrack, SourceTrack};
+
+/// Appended to the name of every playlist [`convert`] writes, so importing it
+/// into rekordbox never collides with the original playlist.
+const OUTPUT_SUFFIX: &str = "-CDJ-safe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -64,18 +68,28 @@ pub struct SkippedTrack {
     pub reason: SkipReason,
 }
 
-/// A validated playlist ready to convert. Nothing on disk has been touched yet.
+/// Validated playlists ready to convert. Nothing on disk has been touched yet.
 #[derive(Debug)]
 pub struct Plan {
     xml_path: PathBuf,
     xml_data: Vec<u8>,
-    target: Vec<String>,
+    playlists: Vec<Selected>,
+    /// Every reachable track once, in the order the playlists first list it.
     sources: Vec<SourceTrack>,
     skipped: Vec<SkippedTrack>,
     max_track_id: u64,
 }
 
+/// One playlist of a [`Plan`]: its path under ROOT and its reachable tracks
+/// as indices into `Plan::sources`, in playlist order.
+#[derive(Debug)]
+struct Selected {
+    path: Vec<String>,
+    sources: Vec<usize>,
+}
+
 impl Plan {
+    /// Number of tracks to convert; a track in several playlists counts once.
     pub fn len(&self) -> usize {
         self.sources.len()
     }
@@ -84,16 +98,9 @@ impl Plan {
         self.sources.is_empty()
     }
 
-    /// Last segment of the playlist path.
-    pub fn playlist_name(&self) -> &str {
-        self.target.last().map(String::as_str).unwrap_or_default()
-    }
-
-    /// Name of the playlist [`convert`] adds to the XML: the source name with
-    /// `-CDJ-safe` appended, so importing it into rekordbox never collides
-    /// with the original playlist.
-    pub fn output_playlist_name(&self) -> String {
-        format!("{}-CDJ-safe", self.playlist_name())
+    /// Paths (`Folder/Name`) of the playlists the plan covers.
+    pub fn playlists(&self) -> Vec<String> {
+        self.playlists.iter().map(|p| p.path.join("/")).collect()
     }
 
     /// Playlist entries whose sources cannot be reached; they are left out of
@@ -102,7 +109,7 @@ impl Plan {
         &self.skipped
     }
 
-    /// Track names in playlist order.
+    /// Track names in plan order.
     pub fn track_names(&self) -> impl Iterator<Item = &str> {
         self.sources.iter().map(|s| s.name.as_str())
     }
@@ -118,13 +125,17 @@ impl Plan {
     }
 }
 
-/// What [`convert`] did, per track in playlist order.
+/// What [`convert`] did, per track in plan order.
 #[derive(Debug)]
 pub struct Report {
     pub tracks: Vec<(String, Action)>,
     pub output_xml: PathBuf,
-    /// Name of the playlist written to the XML (`<source>-CDJ-safe`).
+    /// Name of the playlist written to the XML (`<source>-CDJ-safe`); the
+    /// first one when there are several.
     pub playlist_name: String,
+    /// Every playlist written to the XML, as its path there:
+    /// `CDJ-safe (MP3)/Sets/Friday-CDJ-safe`.
+    pub playlists: Vec<String>,
     /// Names of tracks skipped because their sources could not be reached
     /// (see [`Plan::skipped`]).
     pub skipped: Vec<String>,
@@ -141,22 +152,48 @@ impl Report {
 /// decoded into a path, is recorded in [`Plan::skipped`] with its reason and
 /// left out; only a playlist with nothing reachable at all is an error.
 pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
-    let target = split_playlist_path(playlist);
-    if target.is_empty() {
-        return Err(Error::EmptyPlaylistPath);
+    plan_playlists(xml, &[playlist.to_string()])
+}
+
+/// [`plan`] for several playlists, each track once however many of them hold
+/// it. Empty `playlists` means every TrackID-referenced playlist except the
+/// ones an earlier conversion wrote (under the `CDJ-safe (MP3)` folder, or
+/// named `…-CDJ-safe`). Playlists without tracks are left out.
+pub fn plan_playlists(xml: &Path, playlists: &[String]) -> Result<Plan> {
+    let mut targets: Vec<Vec<String>> = Vec::new();
+    for playlist in playlists {
+        let path = split_playlist_path(playlist);
+        if path.is_empty() {
+            return Err(Error::EmptyPlaylistPath);
+        }
+        if !targets.contains(&path) {
+            targets.push(path);
+        }
     }
 
     let xml_data = fs::read(xml).with_context(|| format!("Failed to read {}", xml.display()))?;
 
-    let (track_ids, max_track_id) = find_playlist(&xml_data, &target)?;
-    if track_ids.is_empty() {
-        return Err(Error::EmptyPlaylist(playlist.to_string()));
+    let (mut found, max_track_id) = find_playlists(&xml_data, &targets)?;
+    found.retain(|p| !p.track_ids.is_empty() && !(targets.is_empty() && written_here(&p.path)));
+    if found.is_empty() {
+        return Err(match targets.as_slice() {
+            [one] => Error::EmptyPlaylist(one.join("/")),
+            _ => Error::NoSortablePlaylists,
+        });
     }
-    let all = xml::collect_tracks(&xml_data, &track_ids)?;
 
-    let mut sources = Vec::with_capacity(all.len());
+    let mut seen = HashSet::new();
+    let track_ids: Vec<String> = found
+        .iter()
+        .flat_map(|p| &p.track_ids)
+        .filter(|id| seen.insert(id.as_str()))
+        .cloned()
+        .collect();
+
+    let mut index = HashMap::new();
+    let mut sources = Vec::with_capacity(track_ids.len());
     let mut skipped = Vec::new();
-    for src in all {
+    for src in xml::collect_tracks(&xml_data, &track_ids)? {
         let reason = match &src.location_error {
             Some(why) => Some(SkipReason::BadLocation(why.clone())),
             None if !Path::new(&src.location).is_file() => Some(SkipReason::NotFound),
@@ -169,31 +206,60 @@ pub fn plan(xml: &Path, playlist: &str) -> Result<Plan> {
                 location: src.location,
                 reason,
             }),
-            None => sources.push(src),
+            None => {
+                index.insert(src.id.clone(), sources.len());
+                sources.push(src);
+            }
         }
     }
     if sources.is_empty() {
-        return Err(Error::AllSourcesMissing {
-            playlist: playlist.to_string(),
-            count: skipped.len(),
+        let count = skipped.len();
+        return Err(match found.as_slice() {
+            [one] => Error::AllSourcesMissing {
+                playlist: one.path.join("/"),
+                count,
+            },
+            _ => Error::NoSourcesFound {
+                playlists: found.len(),
+                count,
+            },
         });
     }
+
+    let playlists = found
+        .into_iter()
+        .map(|p| Selected {
+            sources: p
+                .track_ids
+                .iter()
+                .filter_map(|id| index.get(id).copied())
+                .collect(),
+            path: p.path,
+        })
+        .collect();
 
     Ok(Plan {
         xml_path: xml.to_path_buf(),
         xml_data,
-        target,
+        playlists,
         sources,
         skipped,
         max_track_id,
     })
 }
 
+/// A playlist an earlier [`convert`] wrote, imported back into rekordbox.
+fn written_here(path: &[String]) -> bool {
+    path.first().is_some_and(|p| p == CDJSAFE_FOLDER_NAME)
+        || path.last().is_some_and(|p| p.ends_with(OUTPUT_SUFFIX))
+}
+
 /// Transcode every present track in `plan` into `out_dir` (created if
 /// missing) and write the updated XML to `output_xml`, or next to the input as
-/// `<stem>-out.xml`. The new playlist is named `<playlist>-CDJ-safe`. Any
-/// conversion failure or cancellation aborts before the XML is written; a
-/// partial USB defeats the purpose. So does a collection XML that changed
+/// `<stem>-out.xml`. Each playlist is written as `<playlist>-CDJ-safe` in its
+/// own folders under `CDJ-safe (MP3)`; a playlist none of whose tracks could
+/// be reached is left out. Any conversion failure or cancellation aborts
+/// before the XML is written; a partial USB defeats the purpose. So does a collection XML that changed
 /// since [`plan`] read it: that returns [`Error::XmlChanged`] with the MP3s
 /// left in place, and a fresh plan picks them up as plain copies. The XML is
 /// written to a sibling temp file and renamed into place, so an interrupted
@@ -247,14 +313,32 @@ pub fn convert(
     ensure_xml_unchanged(plan)?;
 
     let new_tracks = build_new_tracks(&dest_paths, plan.max_track_id)?;
+    let new_playlists: Vec<NewPlaylist> = plan
+        .playlists
+        .iter()
+        .filter(|p| !p.sources.is_empty())
+        .map(|p| {
+            let mut path = p.path.clone();
+            if let Some(name) = path.last_mut() {
+                name.push_str(OUTPUT_SUFFIX);
+            }
+            NewPlaylist {
+                path,
+                track_ids: p
+                    .sources
+                    .iter()
+                    .map(|&i| new_tracks[i].track_id.to_string())
+                    .collect(),
+            }
+        })
+        .collect();
 
-    let playlist_name = plan.output_playlist_name();
     let output = match output_xml {
         Some(p) => p.to_path_buf(),
         None => default_output_path(&plan.xml_path)?,
     };
     let output_bytes =
-        xml::rewrite_xml(&plan.xml_data, &plan.sources, &new_tracks, &playlist_name)?;
+        xml::rewrite_xml(&plan.xml_data, &plan.sources, &new_tracks, &new_playlists)?;
     write_atomic(&output, &output_bytes)
         .with_context(|| format!("Failed to write {}", output.display()))?;
 
@@ -266,7 +350,11 @@ pub fn convert(
             .zip(actions)
             .collect(),
         output_xml: output,
-        playlist_name,
+        playlist_name: new_playlists[0].path.last().cloned().unwrap_or_default(),
+        playlists: new_playlists
+            .iter()
+            .map(|p| format!("{CDJSAFE_FOLDER_NAME}/{}", p.path.join("/")))
+            .collect(),
         skipped: plan.skipped.iter().map(|s| s.name.clone()).collect(),
     })
 }
@@ -434,7 +522,7 @@ mod tests {
         assert_eq!(plan.skipped().len(), 1);
         assert_eq!(plan.skipped()[0].name, "Gone");
         assert_eq!(plan.skipped()[0].reason, SkipReason::NotFound);
-        assert_eq!(plan.output_playlist_name(), "Set-CDJ-safe");
+        assert_eq!(plan.playlists(), ["Set"]);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -517,6 +605,109 @@ mod tests {
         let err = plan(&xml, "Set").unwrap_err();
         assert!(
             matches!(err, Error::AllSourcesMissing { count: 1, .. }),
+            "{err}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Tracks 1, 2 and 4 are on disk, 3 is not; 4 is an earlier conversion.
+    fn write_library(dir: &Path) -> PathBuf {
+        for name in ["a.wav", "b.wav", "c.mp3"] {
+            fs::write(dir.join(name), b"").unwrap();
+        }
+        let track = |id: u32, file: &str| {
+            format!(
+                r#"<TRACK TrackID="{id}" Name="T{id}" TotalTime="100" Location="file://localhost{}"/>"#,
+                dir.join(file).display()
+            )
+        };
+        let playlist = |name: &str, ids: &[u32]| {
+            let keys: String = ids
+                .iter()
+                .map(|id| format!(r#"<TRACK Key="{id}"/>"#))
+                .collect();
+            format!(
+                r#"<NODE Name="{name}" Type="1" KeyType="0" Entries="{}">{keys}</NODE>"#,
+                ids.len()
+            )
+        };
+        let xml = [
+            r#"<?xml version="1.0" encoding="UTF-8"?><DJ_PLAYLISTS Version="1.0.0"><COLLECTION Entries="4">"#.to_string(),
+            track(1, "a.wav"),
+            track(2, "b.wav"),
+            track(3, "gone.wav"),
+            track(4, "c.mp3"),
+            r#"</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="6"><NODE Type="0" Name="Sets" Count="2">"#.into(),
+            playlist("Friday", &[1, 2, 1]),
+            playlist("Saturday", &[2, 3]),
+            "</NODE>".into(),
+            playlist("Gone", &[3]),
+            playlist("Gone too", &[3]),
+            r#"<NODE Name="Empty" Type="1" KeyType="0" Entries="0"/><NODE Type="0" Name="CDJ-safe (MP3)" Count="1">"#.into(),
+            playlist("Friday-CDJ-safe", &[4]),
+            "</NODE>".into(),
+            playlist("Old-CDJ-safe", &[4]),
+            "</NODE></PLAYLISTS></DJ_PLAYLISTS>".into(),
+        ]
+        .concat();
+        let path = dir.join("collection.xml");
+        fs::write(&path, xml).unwrap();
+        path
+    }
+
+    #[test]
+    fn every_playlist_takes_each_track_once_and_leaves_earlier_output_out() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-all-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let xml = write_library(&dir);
+
+        let plan = plan_playlists(&xml, &[]).unwrap();
+        assert_eq!(
+            plan.playlists(),
+            ["Sets/Friday", "Sets/Saturday", "Gone", "Gone too"]
+        );
+        assert_eq!(plan.track_names().collect::<Vec<_>>(), ["T1", "T2"]);
+        assert_eq!(plan.skipped().len(), 1);
+        assert_eq!(plan.skipped()[0].name, "T3");
+        let sources: Vec<&[usize]> = plan.playlists.iter().map(|p| &p.sources[..]).collect();
+        assert_eq!(sources, [&[0, 1, 0][..], &[1], &[], &[]]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn named_playlists_are_taken_once_each_even_from_earlier_output() {
+        let dir = std::env::temp_dir().join(format!("baken-plan-named-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let xml = write_library(&dir);
+
+        let names = [
+            "CDJ-safe (MP3)/Friday-CDJ-safe",
+            "Sets/Friday",
+            " Sets / Friday ",
+        ];
+        let plan = plan_playlists(&xml, &names.map(String::from)).unwrap();
+        assert_eq!(
+            plan.playlists(),
+            ["CDJ-safe (MP3)/Friday-CDJ-safe", "Sets/Friday"]
+        );
+        assert_eq!(plan.len(), 3);
+
+        let err = plan_playlists(&xml, &["Gone".into(), "Gone too".into()]).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::NoSourcesFound {
+                    playlists: 2,
+                    count: 1
+                }
+            ),
+            "{err}"
+        );
+        let err = plan_playlists(&xml, &["Gone".into(), "Empty".into()]).unwrap_err();
+        assert!(
+            matches!(err, Error::AllSourcesMissing { ref playlist, count: 1 } if playlist == "Gone"),
             "{err}"
         );
 

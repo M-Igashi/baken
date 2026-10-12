@@ -26,10 +26,10 @@ pub struct SortedPlaylist {
 }
 
 #[derive(Debug, Clone)]
-struct CollectedPlaylist {
-    path: Vec<String>, // path under ROOT (excluding ROOT)
+pub(crate) struct CollectedPlaylist {
+    pub(crate) path: Vec<String>, // path under ROOT (excluding ROOT)
     key_type: String,
-    track_ids: Vec<String>,
+    pub(crate) track_ids: Vec<String>,
 }
 
 /// Sort one playlist (`target = Some(path)`) or every TrackID-referenced
@@ -47,7 +47,8 @@ pub fn sort_and_write(
 
     let (collection, all_playlists) = scan_xml(&xml_data)?;
 
-    let sorted: Vec<SortedPlaylist> = select_targets(all_playlists, target)?
+    let targets = target.map(<[String]>::to_vec);
+    let sorted: Vec<SortedPlaylist> = select_targets(all_playlists, targets.as_slice())?
         .into_iter()
         .map(|p| SortedPlaylist {
             track_ids: sort_tracks(&p.track_ids, &collection),
@@ -66,41 +67,42 @@ pub fn sort_and_write(
     Ok(sorted)
 }
 
-/// The TrackIDs of the playlist at `target` (path under ROOT) in playlist
-/// order, and the largest numeric TrackID in the collection. cdjsafe finds its
-/// playlist through this, so every subcommand resolves a path the same way.
-pub(crate) fn find_playlist(
+/// The playlists at `targets` (paths under ROOT; empty means every
+/// TrackID-referenced playlist, in document order), and the largest numeric
+/// TrackID in the collection. cdjsafe finds its playlists through this, so
+/// every subcommand resolves a path the same way.
+pub(crate) fn find_playlists(
     xml_data: &[u8],
-    target: &[String],
-) -> crate::Result<(Vec<String>, u64)> {
+    targets: &[Vec<String>],
+) -> crate::Result<(Vec<CollectedPlaylist>, u64)> {
     let (collection, playlists) = scan_xml(xml_data)?;
     let max_id = collection
         .keys()
         .filter_map(|id| id.parse().ok())
         .max()
         .unwrap_or(0);
-    Ok((find_target(playlists, target)?.track_ids, max_id))
+    Ok((select_targets(playlists, targets)?, max_id))
 }
 
 fn select_targets(
     all: Vec<CollectedPlaylist>,
-    target: Option<&[String]>,
+    targets: &[Vec<String>],
 ) -> crate::Result<Vec<CollectedPlaylist>> {
-    match target {
-        None => Ok(all.into_iter().filter(|p| p.key_type == "0").collect()),
-        Some(path) => find_target(all, path).map(|p| vec![p]),
+    if targets.is_empty() {
+        return Ok(all.into_iter().filter(|p| p.key_type == "0").collect());
     }
+    targets.iter().map(|path| find_target(&all, path)).collect()
 }
 
 /// The first playlist at `path`; it has to be TrackID-referenced.
-fn find_target(all: Vec<CollectedPlaylist>, path: &[String]) -> crate::Result<CollectedPlaylist> {
-    match all.into_iter().find(|p| p.path == path) {
+fn find_target(all: &[CollectedPlaylist], path: &[String]) -> crate::Result<CollectedPlaylist> {
+    match all.iter().find(|p| p.path == path) {
         None => Err(Error::PlaylistNotFound(path.join("/"))),
         Some(p) if p.key_type != "0" => Err(Error::UnsupportedPlaylistType {
             path: p.path.join("/"),
-            key_type: p.key_type,
+            key_type: p.key_type.clone(),
         }),
-        Some(p) => Ok(p),
+        Some(p) => Ok(p.clone()),
     }
 }
 
@@ -392,9 +394,9 @@ mod tests {
         assert_eq!(playlists[0].track_ids, vec!["2", "1", "3"]);
     }
 
-    fn sort_all(xml: &str, target: Option<&[String]>) -> Vec<SortedPlaylist> {
+    fn sort_all(xml: &str, targets: &[Vec<String>]) -> Vec<SortedPlaylist> {
         let (col, all) = scan_xml(xml.as_bytes()).unwrap();
-        select_targets(all, target)
+        select_targets(all, targets)
             .unwrap()
             .into_iter()
             .map(|p| SortedPlaylist {
@@ -406,8 +408,7 @@ mod tests {
 
     #[test]
     fn full_roundtrip_reorders_tracks_in_place() {
-        let target = vec!["MyList".to_string()];
-        let sorted = sort_all(SAMPLE_XML, Some(&target));
+        let sorted = sort_all(SAMPLE_XML, &[vec!["MyList".to_string()]]);
         assert_eq!(sorted[0].track_ids, vec!["1", "2", "3"]);
 
         let out = rewrite_xml(SAMPLE_XML.as_bytes(), &sorted).unwrap();
@@ -425,7 +426,7 @@ mod tests {
     #[test]
     fn missing_single_target_errors() {
         let (_, all) = scan_xml(SAMPLE_XML.as_bytes()).unwrap();
-        let result = select_targets(all, Some(&["Nope".to_string()]));
+        let result = select_targets(all, &[vec!["Nope".to_string()]]);
         assert!(result.is_err());
     }
 
@@ -497,7 +498,7 @@ mod tests {
         let (_, all) = scan_xml(MULTI_PLAYLIST_XML.as_bytes()).unwrap();
         // 2 KeyType=0 playlists + 1 KeyType=1 playlist
         assert_eq!(all.len(), 3);
-        let selected = select_targets(all, None).unwrap();
+        let selected = select_targets(all, &[]).unwrap();
         // KeyType=1 filtered out
         assert_eq!(selected.len(), 2);
         let names: Vec<&str> = selected
@@ -510,7 +511,7 @@ mod tests {
 
     #[test]
     fn all_mode_rewrites_each_playlist_where_it_lives() {
-        let sorted = sort_all(MULTI_PLAYLIST_XML, None);
+        let sorted = sort_all(MULTI_PLAYLIST_XML, &[]);
         let out = rewrite_xml(MULTI_PLAYLIST_XML.as_bytes(), &sorted).unwrap();
         let out_str = String::from_utf8(out).unwrap();
         let expected = MULTI_PLAYLIST_XML
@@ -533,7 +534,7 @@ mod tests {
     #[test]
     fn single_target_leaves_other_playlists_alone() {
         let target = vec!["Folder".to_string(), "Inner".to_string()];
-        let sorted = sort_all(MULTI_PLAYLIST_XML, Some(&target));
+        let sorted = sort_all(MULTI_PLAYLIST_XML, &[target]);
         let out = rewrite_xml(MULTI_PLAYLIST_XML.as_bytes(), &sorted).unwrap();
         let out_str = String::from_utf8(out).unwrap();
         // Top keeps its original 2,1 order; Inner becomes 4,3.
@@ -550,7 +551,7 @@ mod tests {
             r#"<NODE Name="LocBased" Type="1" KeyType="1" Entries="0"/>"#,
             r#"<NODE Name="Empty" Type="1" KeyType="0" Entries="0"/>"#,
         );
-        let sorted = sort_all(&xml, Some(&target));
+        let sorted = sort_all(&xml, &[target]);
         assert_eq!(sorted.len(), 1);
         assert!(sorted[0].track_ids.is_empty());
         let out = rewrite_xml(xml.as_bytes(), &sorted).unwrap();
@@ -560,7 +561,7 @@ mod tests {
     #[test]
     fn single_mode_rejects_non_keytype0_target() {
         let (_, all) = scan_xml(MULTI_PLAYLIST_XML.as_bytes()).unwrap();
-        let result = select_targets(all, Some(&["Folder".to_string(), "LocBased".to_string()]));
+        let result = select_targets(all, &[vec!["Folder".to_string(), "LocBased".to_string()]]);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(

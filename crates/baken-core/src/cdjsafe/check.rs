@@ -1,5 +1,5 @@
 //! `baken cdjsafe --check` (issue #183): what each class of player will do
-//! with every track of a playlist. Read-only: nothing is converted or
+//! with every track of the chosen playlists. Read-only: nothing is converted or
 //! written. It reports and never decides; converting stays `convert`'s job,
 //! which converts everything (issue #40). The same goes for MP3 and AAC files
 //! whose audio stops short of what their bitrate keeps (issue #222).
@@ -103,7 +103,7 @@ impl TrackCheck {
 
 #[derive(Debug)]
 pub struct CheckReport {
-    /// In playlist order.
+    /// In plan order, each track once.
     pub tracks: Vec<TrackCheck>,
     /// Missing files and undecodable Locations, as [`Plan::skipped`].
     pub skipped: Vec<SkippedTrack>,
