@@ -515,4 +515,4 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 
 MIT
 
-The binary also contains third-party code, among it SQLCipher (BSD 3-Clause) for `--onelibrary` and, in the Linux and Windows builds, OpenSSL (Apache 2.0). Every release archive carries `THIRD_PARTY_LICENSES.md` with their notices and those of all Rust crates in the binary, generated from `about.toml` and `about.hbs`.
+The binary also contains third-party code, among it SQLite (public domain) for `--onelibrary`. Every release archive carries `THIRD_PARTY_LICENSES.md` with their notices and those of all Rust crates in the binary, generated from `about.toml` and `about.hbs`.

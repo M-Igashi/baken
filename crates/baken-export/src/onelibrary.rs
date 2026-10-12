@@ -16,8 +16,10 @@ use crate::build::DeviceTrack;
 use crate::pdb::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
 use crate::pdb::rows::{ANALYSED_BITS, MASTER_DB_ID, TRACK_BITMASK};
 use crate::pdb::Export;
+use crate::sqlcipher;
 use anyhow::{ensure, Context};
-use rusqlite::{params, Connection};
+use rusqlite::{ffi, params, Connection};
+use std::ffi::c_int;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -91,8 +93,9 @@ pub fn estimated_len(model: &Export) -> u64 {
 }
 
 /// `exportLibrary.db` for `model`, whose track rows are `tracks` in order.
-/// Built in a temporary file, checkpointed, and returned whole: the stick
-/// gets one file, in WAL mode like rekordbox's, without `-wal` or `-shm`.
+/// Built in a temporary file as plain SQLite, checkpointed, encrypted and
+/// returned whole: the stick gets one file, in WAL mode like rekordbox's,
+/// without `-wal` or `-shm`.
 pub fn write(model: &Export, tracks: &[DeviceTrack]) -> anyhow::Result<Vec<u8>> {
     ensure!(
         model.tracks.len() == tracks.len(),
@@ -101,9 +104,7 @@ pub fn write(model: &Export, tracks: &[DeviceTrack]) -> anyhow::Result<Vec<u8>> 
     let tmp = TempDb::new();
     {
         let mut db = Connection::open(&tmp.0)?;
-        // The key is public, but an error here carries no SQL text either way.
-        db.pragma_update(None, "key", passphrase()?)
-            .map_err(|_| anyhow::anyhow!("setting the database key"))?;
+        reserve(&db)?;
         let mode: String = db.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))?;
         ensure!(mode == "wal", "journal mode {mode}");
         db.execute_batch(SCHEMA)?;
@@ -112,7 +113,26 @@ pub fn write(model: &Export, tracks: &[DeviceTrack]) -> anyhow::Result<Vec<u8>> 
         tx.commit()?;
         db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
     }
-    Ok(std::fs::read(&tmp.0)?)
+    let mut bytes = std::fs::read(&tmp.0)?;
+    sqlcipher::encrypt(&mut bytes, passphrase()?.as_bytes())?;
+    Ok(bytes)
+}
+
+/// Leaves the tail of every page free for SQLCipher's IV and HMAC. Takes
+/// effect only before the first page is written.
+fn reserve(db: &Connection) -> anyhow::Result<()> {
+    let mut n = sqlcipher::RESERVE as c_int;
+    // SAFETY: the connection is open, and this op reads and writes one int.
+    let rc = unsafe {
+        ffi::sqlite3_file_control(
+            db.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_RESERVE_BYTES,
+            (&raw mut n).cast(),
+        )
+    };
+    ensure!(rc == ffi::SQLITE_OK, "reserving bytes on every page");
+    Ok(())
 }
 
 /// 0 is "none" in `export.pdb`; rekordbox's content and album rows have NULL.
@@ -284,12 +304,11 @@ mod tests {
     use std::path::Path;
 
     /// Opens a database the way a player does: by the passphrase alone.
-    fn open(bytes: &[u8]) -> (TempDb, Connection) {
+    fn open(bytes: &[u8], wal: &[u8]) -> (TempDb, Connection) {
+        let plain = sqlcipher::decrypt(bytes, wal, passphrase().unwrap().as_bytes());
         let tmp = TempDb::new();
-        std::fs::write(&tmp.0, bytes).unwrap();
+        std::fs::write(&tmp.0, plain).unwrap();
         let db = Connection::open(&tmp.0).unwrap();
-        db.pragma_update(None, "key", passphrase().unwrap())
-            .unwrap();
         (tmp, db)
     }
 
@@ -396,7 +415,8 @@ mod tests {
         assert_eq!(bytes.len() % 4096, 0);
         assert!(estimated_len(&model) >= bytes.len() as u64);
         assert_ne!(&bytes[..16], b"SQLite format 3\0", "encrypted");
-        let (_tmp, db) = open(&bytes);
+        let (_tmp, db) = open(&bytes, &[]);
+        assert_eq!(rows(&db, "PRAGMA integrity_check"), ["ok"]);
         assert_eq!(rows(&db, "PRAGMA journal_mode"), ["wal"]);
         assert_eq!(
             rows(&db, "SELECT content_id, title, artist_id_artist, artist_id_remixer, artist_id_lyricist, album_id, label_id, key_id, color_id, image_id, fileSize, masterDbId, masterContentId, analysedBits, contentLink, cueUpdateCount FROM content"),
@@ -433,7 +453,7 @@ mod tests {
     #[test]
     fn defaults_match_rekordbox() {
         let bytes = write(&Export::default(), &[]).unwrap();
-        let (_tmp, db) = open(&bytes);
+        let (_tmp, db) = open(&bytes, &[]);
         assert_eq!(
             rows(&db, "SELECT * FROM category ORDER BY category_id").join(" "),
             "1|1|0|0 2|2|1|1 3|3|2|1 4|4|3|1 5|17|5|1 6|5|0|0 7|6|0|0 8|7|0|0 9|8|0|0 10|9|0|0 11|10|0|0 12|11|4|1 15|13|0|0 17|24|9|1 18|20|7|1 19|14|0|0 20|15|0|0 21|16|0|0 22|19|6|1 23|18|0|0 26|27|8|1 27|22|10|1"
@@ -468,20 +488,12 @@ mod tests {
             .then_some(p)
     }
 
-    /// rekordbox's own database on the reference stick, opened from a copy
-    /// with its `-wal`.
+    /// rekordbox's own database on the reference stick, with its `-wal`.
     fn rekordbox_db(root: &Path) -> (TempDb, Connection) {
-        let tmp = TempDb::new();
-        for ext in ["", "-wal", "-shm"] {
-            let src = root.join(format!("PIONEER/rekordbox/exportLibrary.db{ext}"));
-            let mut dst = tmp.0.clone().into_os_string();
-            dst.push(ext);
-            std::fs::copy(src, dst).unwrap();
-        }
-        let db = Connection::open(&tmp.0).unwrap();
-        db.pragma_update(None, "key", passphrase().unwrap())
-            .unwrap();
-        (tmp, db)
+        let file = |ext| {
+            std::fs::read(root.join(format!("PIONEER/rekordbox/exportLibrary.db{ext}"))).unwrap()
+        };
+        open(&file(""), &file("-wal"))
     }
 
     /// Every track of the reference export, built from its collection.xml,
@@ -523,7 +535,7 @@ mod tests {
         let model = crate::build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2025-04-11");
         let bytes = write(&model, &tracks).unwrap();
         assert!(estimated_len(&model) >= bytes.len() as u64);
-        let (_ours_tmp, baken) = open(&bytes);
+        let (_ours_tmp, baken) = open(&bytes, &[]);
         let (_theirs_tmp, rekordbox) = rekordbox_db(&root);
 
         const SQL: &str = "SELECT c.masterContentId, c.path, c.title, c.subtitle, c.trackNo, c.discNo, c.rating, c.releaseYear, c.djComment, c.dateAdded, c.fileSize, c.fileType, c.bitrate, c.samplingRate, c.fileName, c.analysisDataFilePath, ar.name, al.name, g.name, l.name, k.name FROM content c LEFT JOIN artist ar ON ar.artist_id = c.artist_id_artist LEFT JOIN album al ON al.album_id = c.album_id LEFT JOIN genre g ON g.genre_id = c.genre_id LEFT JOIN label l ON l.label_id = c.label_id LEFT JOIN key k ON k.key_id = c.key_id";

@@ -1,9 +1,9 @@
 name: Build
 
 # What a release builds and a Mac cannot check: the Linux and Windows
-# targets compile OpenSSL from source for SQLCipher (--onelibrary), and the
-# third-party notices come from cargo-about. A break shows up here instead of
-# at release time.
+# targets compile SQLite from source (--onelibrary), and the third-party
+# notices come from cargo-about. A break shows up here instead of at release
+# time.
 on:
   pull_request:
     branches: ["main"]
@@ -27,6 +27,7 @@ jobs:
         with:
           toolchain: stable
       - run: cargo build --release
+      - run: ls -l target/release/baken
       - run: cargo test -p baken-export --lib onelibrary
 
   linux-aarch64:
@@ -38,6 +39,7 @@ jobs:
           toolchain: stable
       - run: cargo install cross --git https://github.com/cross-rs/cross
       - run: cross build --release --target aarch64-unknown-linux-gnu
+      - run: ls -l target/aarch64-unknown-linux-gnu/release/baken
 
   windows:
     runs-on: windows-latest

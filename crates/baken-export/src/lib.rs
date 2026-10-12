@@ -14,6 +14,7 @@ pub mod layout;
 pub mod onelibrary;
 pub mod pdb;
 pub mod settings;
+mod sqlcipher;
 pub mod volume;
 
 pub use error::{Error, Result};
