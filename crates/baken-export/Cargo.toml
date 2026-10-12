@@ -27,12 +27,15 @@ symphonia.workspace = true
 # SQLite and encrypted page by page in `sqlcipher.rs`. SQLCipher itself needs
 # OpenSSL outside Apple, which doubled the Linux and Windows binaries (#256).
 rusqlite = { version = "0.40", features = ["bundled"] }
+getrandom = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Apple targets encrypt with CommonCrypto instead (baken-mac#83).
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
 aes = "0.9"
 cbc = "0.2"
 hmac = "0.13"
 sha2 = "0.11"
 pbkdf2 = "0.13"
-getrandom = "0.4"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
