@@ -25,4 +25,9 @@ symphonia = { version = "0.6", default-features = false, features = ["mp3", "aac
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = "debuginfo"
+strip = true
+
+# A OneLibrary database costs 256000 rounds of SHA-512 (PBKDF2), which takes
+# seconds unoptimised in every test that writes one.
+[profile.dev.package.sha2]
+opt-level = 3

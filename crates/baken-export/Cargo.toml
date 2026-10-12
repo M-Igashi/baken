@@ -23,14 +23,16 @@ miniz_oxide = "0.9"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
 jpeg-encoder = "0.7"
 symphonia.workspace = true
+# `exportLibrary.db` (OneLibrary) is a SQLCipher 4 database, built with plain
+# SQLite and encrypted page by page in `sqlcipher.rs`. SQLCipher itself needs
+# OpenSSL outside Apple, which doubled the Linux and Windows binaries (#256).
+rusqlite = { version = "0.40", features = ["bundled"] }
+aes = "0.9"
+cbc = "0.2"
+hmac = "0.13"
+sha2 = "0.11"
+pbkdf2 = "0.13"
+getrandom = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# `exportLibrary.db` (OneLibrary) is SQLCipher. Apple targets encrypt with
-# CommonCrypto; everything else builds OpenSSL from source, so the release
-# binaries need no system libcrypto.
-[target.'cfg(target_vendor = "apple")'.dependencies]
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
-[target.'cfg(not(target_vendor = "apple"))'.dependencies]
-rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
