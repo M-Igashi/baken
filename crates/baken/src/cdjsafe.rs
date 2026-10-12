@@ -11,7 +11,7 @@ use crate::report::print_counts;
 pub fn run(args: &CdjsafeArgs) -> Result<()> {
     baken_core::check_ffmpeg()?;
 
-    let plan = cdjsafe::plan(&args.xml, &args.playlist)?;
+    let plan = cdjsafe::plan_playlists(&args.xml, &args.playlist)?;
     print_skipped(&plan);
     if args.check {
         return run_check(args, &plan);
@@ -33,10 +33,10 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
         n => format!(" ({n} skipped)"),
     };
     println!(
-        "{} Converting {} tracks from '{}'{} → {}",
+        "{} Converting {} tracks from {}{} → {}",
         style("▸").cyan(),
         style(plan.len()).cyan(),
-        style(&args.playlist).bold(),
+        source(&plan),
         skipped_note,
         out_dir.display()
     );
@@ -57,6 +57,14 @@ pub fn run(args: &CdjsafeArgs) -> Result<()> {
             Err(Error::ConversionFailed { failures, total }.into())
         }
         Err(e) => Err(e.into()),
+    }
+}
+
+/// `'Sets/Friday'`, or `12 playlists`.
+fn source(plan: &Plan) -> String {
+    match plan.playlists().as_slice() {
+        [one] => format!("'{}'", style(one).bold()),
+        many => format!("{} playlists", style(many.len()).cyan()),
     }
 }
 
@@ -100,12 +108,18 @@ fn print_report(report: &Report) {
         }
     }
 
+    let written = match report.playlists.as_slice() {
+        [one] => format!("playlist '{}'", style(one).bold()),
+        many => format!(
+            "{} playlists in '{}'",
+            many.len(),
+            style(CDJSAFE_FOLDER_NAME).bold()
+        ),
+    };
     println!(
-        "\n{} XML written: {} (playlist '{}/{}')",
+        "\n{} XML written: {} ({written})",
         style("✓").green().bold(),
         report.output_xml.display(),
-        style(CDJSAFE_FOLDER_NAME).bold(),
-        style(&report.playlist_name).bold()
     );
     println!(
         "  {} rekordbox: Preferences > Advanced > Database > rekordbox xml → load the XML, restart rekordbox",
@@ -116,8 +130,9 @@ fn print_report(report: &Report) {
         style("ℹ").blue()
     );
     println!(
-        "  {} Cues and beatgrid are carried over — no re-analysis needed. Then export the playlist to USB.",
-        style("ℹ").blue()
+        "  {} Cues and beatgrid are carried over — no re-analysis needed. Then export the {} to USB.",
+        style("ℹ").blue(),
+        if report.playlists.len() == 1 { "playlist" } else { "playlists" }
     );
 }
 
@@ -143,16 +158,16 @@ fn print_skipped(plan: &Plan) {
 
 fn run_check(args: &CdjsafeArgs, plan: &Plan) -> Result<()> {
     println!(
-        "{} Checking {} tracks from '{}' against Pioneer's operating instructions (nothing is written)",
+        "{} Checking {} tracks from {} against Pioneer's operating instructions (nothing is written)",
         style("▸").cyan(),
         style(plan.len()).cyan(),
-        style(&args.playlist).bold()
+        source(plan)
     );
     let report = with_bar(plan.len(), "Checking...", |p, c| {
         cdjsafe::check::check(plan, p, c)
     })?;
     let players = selected_players(&args.players);
-    print_check(&report, &players);
+    print_check(&report, &players, plan.playlists().len() == 1);
     if report.is_flagged(&players) {
         std::process::exit(1);
     }
@@ -200,7 +215,59 @@ fn describe(t: &TrackCheck) -> String {
     }
 }
 
-fn print_check(report: &CheckReport, players: &[Player]) {
+/// `table`: every track in a table above the notes; without it only the notes,
+/// for tracks that need a look.
+fn print_check(report: &CheckReport, players: &[Player], table: bool) {
+    if table {
+        print_table(report, players);
+    }
+
+    let notes: Vec<&TrackCheck> = report
+        .tracks
+        .iter()
+        .filter(|t| {
+            t.facts.is_err()
+                || players.iter().any(|&p| *t.verdict(p) != Verdict::Plays)
+                || t.low_cutoff().is_some()
+        })
+        .collect();
+    if !notes.is_empty() {
+        println!();
+    }
+    for t in notes {
+        let format = match table {
+            true => String::new(),
+            false => format!("  {}", style(describe(t)).dim()),
+        };
+        println!("{} {}{format}", style("•").dim(), style(&t.name).bold());
+        if let Err(e) = &t.facts {
+            println!("    {} {}", style("✗").red(), e);
+            continue;
+        }
+        for &p in players {
+            let v = t.verdict(p);
+            if let Verdict::Refuses(why) | Verdict::Unknown(why) = v {
+                let models = match p.models() {
+                    m if m == p.label() => String::new(),
+                    m => format!(" ({m})"),
+                };
+                println!("    {} {}{models}: {why}", mark(v), p.label());
+            }
+        }
+        if let (Some(hz), Ok(f)) = (t.low_cutoff(), &t.facts) {
+            println!(
+                "    {} nothing above {:.1} kHz, low for {} kbps: likely transcoded from a lower bitrate",
+                style("⚠").yellow(),
+                f64::from(hz) / 1000.0,
+                f.bitrate_kbps.unwrap_or_default()
+            );
+        }
+    }
+
+    print_summary(report, players);
+}
+
+fn print_table(report: &CheckReport, players: &[Player]) {
     let name_width = report
         .tracks
         .iter()
@@ -242,45 +309,9 @@ fn print_check(report: &CheckReport, players: &[Player]) {
         }
         println!();
     }
+}
 
-    let notes: Vec<&TrackCheck> = report
-        .tracks
-        .iter()
-        .filter(|t| {
-            t.facts.is_err()
-                || players.iter().any(|&p| *t.verdict(p) != Verdict::Plays)
-                || t.low_cutoff().is_some()
-        })
-        .collect();
-    if !notes.is_empty() {
-        println!();
-    }
-    for t in notes {
-        println!("{} {}", style("•").dim(), style(&t.name).bold());
-        if let Err(e) = &t.facts {
-            println!("    {} {}", style("✗").red(), e);
-            continue;
-        }
-        for &p in players {
-            let v = t.verdict(p);
-            if let Verdict::Refuses(why) | Verdict::Unknown(why) = v {
-                let models = match p.models() {
-                    m if m == p.label() => String::new(),
-                    m => format!(" ({m})"),
-                };
-                println!("    {} {}{models}: {why}", mark(v), p.label());
-            }
-        }
-        if let (Some(hz), Ok(f)) = (t.low_cutoff(), &t.facts) {
-            println!(
-                "    {} nothing above {:.1} kHz, low for {} kbps: likely transcoded from a lower bitrate",
-                style("⚠").yellow(),
-                f64::from(hz) / 1000.0,
-                f.bitrate_kbps.unwrap_or_default()
-            );
-        }
-    }
-
+fn print_summary(report: &CheckReport, players: &[Player]) {
     let total = report.tracks.len();
     println!();
     for &p in players {

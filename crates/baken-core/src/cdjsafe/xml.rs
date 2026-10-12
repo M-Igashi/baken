@@ -11,7 +11,7 @@ use super::location::decode_location;
 use super::transcode::{SAFE_BITRATE_KBPS, SAFE_SAMPLE_RATE};
 use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, unescaped};
 
-/// Name of the Type=0 folder NODE that holds the CDJ-safe playlist.
+/// Name of the Type=0 folder NODE that holds the CDJ-safe playlists.
 pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
 
 /// Marker appended to the `Comments` attribute of every emitted track so the
@@ -45,6 +45,13 @@ pub struct NewTrack {
     pub track_id: u64,
     pub location_url: String,
     pub size: u64,
+}
+
+/// A playlist [`rewrite_xml`] writes under the `CDJ-safe (MP3)` folder: its
+/// folders and name there, and the new TrackIDs in playlist order.
+pub struct NewPlaylist {
+    pub path: Vec<String>,
+    pub track_ids: Vec<String>,
 }
 
 impl SourceTrack {
@@ -193,12 +200,12 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
 
 /// Stream-copy the source XML, appending the new `<TRACK>` entries to
 /// `<COLLECTION>` (bumping `Entries`) and a `CDJ-safe (MP3)` folder holding
-/// the new playlist under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
+/// the new playlists under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
 pub fn rewrite_xml(
     xml_data: &[u8],
     sources: &[SourceTrack],
     new_tracks: &[NewTrack],
-    playlist_name: &str,
+    playlists: &[NewPlaylist],
 ) -> Result<Vec<u8>> {
     assert_eq!(sources.len(), new_tracks.len());
 
@@ -247,7 +254,8 @@ pub fn rewrite_xml(
                     }
                     "NODE" if in_playlists => {
                         if playlists_depth == 1 {
-                            emit_playlist_folder(&mut writer, playlist_name, new_tracks)?;
+                            let folder = Node::Folder(CDJSAFE_FOLDER_NAME, tree(playlists));
+                            emit_node(&mut writer, &folder)?;
                         }
                         playlists_depth -= 1;
                         writer.write_event(Event::End(e))?;
@@ -330,29 +338,70 @@ fn push_raw_attr(e: &mut BytesStart, key: &str, value: &str) {
     });
 }
 
-fn emit_playlist_folder<W: std::io::Write>(
-    writer: &mut Writer<W>,
-    playlist_name: &str,
-    new_tracks: &[NewTrack],
-) -> Result<()> {
-    let mut folder = BytesStart::new("NODE");
-    folder.push_attribute(("Type", "0"));
-    folder.push_attribute(("Name", CDJSAFE_FOLDER_NAME));
-    folder.push_attribute(("Count", "1"));
-    writer.write_event(Event::Start(folder))?;
+enum Node<'a> {
+    Folder(&'a str, Vec<Node<'a>>),
+    Playlist(&'a NewPlaylist),
+}
 
-    let ids: Vec<String> = new_tracks.iter().map(|t| t.track_id.to_string()).collect();
-    emit_playlist(writer, playlist_name, &ids)?;
+/// Nest `playlists` by their folders; playlists with the same folders share
+/// one folder NODE.
+fn tree(playlists: &[NewPlaylist]) -> Vec<Node<'_>> {
+    let mut root = Vec::new();
+    for playlist in playlists {
+        let mut level = &mut root;
+        for folder in &playlist.path[..playlist.path.len().saturating_sub(1)] {
+            let i = match level
+                .iter()
+                .position(|n| matches!(n, Node::Folder(name, _) if name == folder))
+            {
+                Some(i) => i,
+                None => {
+                    level.push(Node::Folder(folder, Vec::new()));
+                    level.len() - 1
+                }
+            };
+            let Node::Folder(_, children) = &mut level[i] else {
+                unreachable!("position matched a folder")
+            };
+            level = children;
+        }
+        level.push(Node::Playlist(playlist));
+    }
+    root
+}
 
-    writer.write_event(Event::End(BytesEnd::new("NODE")))?;
+fn emit_node<W: std::io::Write>(writer: &mut Writer<W>, node: &Node) -> Result<()> {
+    match node {
+        Node::Playlist(p) => {
+            let name = p.path.last().map(String::as_str).unwrap_or_default();
+            emit_playlist(writer, name, &p.track_ids)?;
+        }
+        Node::Folder(name, children) => {
+            let mut folder = BytesStart::new("NODE");
+            folder.push_attribute(("Type", "0"));
+            folder.push_attribute(("Name", *name));
+            folder.push_attribute(("Count", children.len().to_string().as_str()));
+            writer.write_event(Event::Start(folder))?;
+            for child in children {
+                emit_node(writer, child)?;
+            }
+            writer.write_event(Event::End(BytesEnd::new("NODE")))?;
+        }
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rbsort::find_playlist;
+    use crate::rbsort::find_playlists;
     use crate::Error;
+
+    /// TrackIDs of the one playlist at `target`, and the largest TrackID.
+    fn find_playlist(xml: &[u8], target: &[String]) -> crate::Result<(Vec<String>, u64)> {
+        let (mut found, max_id) = find_playlists(xml, &[target.to_vec()])?;
+        Ok((found.remove(0).track_ids, max_id))
+    }
 
     const SAMPLE_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <DJ_PLAYLISTS Version="1.0.0">
@@ -483,7 +532,11 @@ mod tests {
                 size: 9800000,
             },
         ];
-        let out = rewrite_xml(SAMPLE_XML.as_bytes(), &sources, &new_tracks, "Gig").unwrap();
+        let playlists = [NewPlaylist {
+            path: vec!["Gig".into()],
+            track_ids: vec!["8".into(), "9".into()],
+        }];
+        let out = rewrite_xml(SAMPLE_XML.as_bytes(), &sources, &new_tracks, &playlists).unwrap();
         let out_str = String::from_utf8(out).unwrap();
 
         // Collection Entries bumped 3 -> 5
@@ -513,6 +566,42 @@ mod tests {
         // Original tracks untouched
         assert!(out_str.contains(r#"TrackID="1" Name="Alpha &amp; Beta""#));
         assert!(out_str.contains(r#"Kind="FLAC File""#));
+    }
+
+    #[test]
+    fn playlists_keep_their_folders_under_the_cdjsafe_folder() {
+        let playlist = |path: &[&str], ids: &[&str]| NewPlaylist {
+            path: path.iter().map(|s| s.to_string()).collect(),
+            track_ids: ids.iter().map(|s| s.to_string()).collect(),
+        };
+        let playlists = [
+            playlist(&["Sets", "Friday-CDJ-safe"], &["8", "9"]),
+            playlist(&["Top-CDJ-safe"], &["9"]),
+            playlist(&["Sets", "Deep", "Late-CDJ-safe"], &["8"]),
+            playlist(&["Sets", "Saturday-CDJ-safe"], &["9", "9"]),
+        ];
+        let mut out = Vec::new();
+        let mut writer = Writer::new(&mut out);
+        let folder = Node::Folder(CDJSAFE_FOLDER_NAME, tree(&playlists));
+        emit_node(&mut writer, &folder).unwrap();
+        let entries = |name: &str, n: usize| {
+            format!(r#"<NODE Name="{name}" Type="1" KeyType="0" Entries="{n}">"#)
+        };
+        let expected = [
+            r#"<NODE Type="0" Name="CDJ-safe (MP3)" Count="2">"#.to_string(),
+            r#"<NODE Type="0" Name="Sets" Count="3">"#.into(),
+            entries("Friday-CDJ-safe", 2),
+            r#"<TRACK Key="8"/><TRACK Key="9"/></NODE>"#.into(),
+            r#"<NODE Type="0" Name="Deep" Count="1">"#.into(),
+            entries("Late-CDJ-safe", 1),
+            r#"<TRACK Key="8"/></NODE></NODE>"#.into(),
+            entries("Saturday-CDJ-safe", 2),
+            r#"<TRACK Key="9"/><TRACK Key="9"/></NODE></NODE>"#.into(),
+            entries("Top-CDJ-safe", 1),
+            r#"<TRACK Key="9"/></NODE></NODE>"#.into(),
+        ]
+        .concat();
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
     }
 
     #[test]

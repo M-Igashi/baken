@@ -22,7 +22,7 @@ pub enum Error {
     #[error("Playlist '{path}' is not a TrackID-referenced playlist (KeyType={key_type}). Only KeyType=\"0\" playlists are supported.")]
     UnsupportedPlaylistType { path: String, key_type: String },
 
-    #[error("No TrackID-referenced playlists found to sort")]
+    #[error("No TrackID-referenced playlists with tracks found")]
     NoSortablePlaylists,
 
     #[error("Playlist '{0}' has no tracks")]
@@ -30,6 +30,9 @@ pub enum Error {
 
     #[error("None of the {count} tracks in playlist '{playlist}' were found on disk")]
     AllSourcesMissing { playlist: String, count: usize },
+
+    #[error("None of the {count} tracks in the {playlists} playlists were found on disk")]
+    NoSourcesFound { playlists: usize, count: usize },
 
     #[error("{} of {total} tracks failed to convert; no XML written. A partial USB defeats the point — fix the sources above and re-run.", failures.len())]
     ConversionFailed { failures: Vec<String>, total: usize },
