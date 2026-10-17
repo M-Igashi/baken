@@ -16,9 +16,21 @@ rekordbox does three things in software that never survive the trip to a CDJ. Ba
 | [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
 | [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Alphanumeric key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
 | [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes whole playlists to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
-| [`baken expressport`](#direct-usb-export-baken-expressport) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from `collection.xml`: device library, analysis files, audio, My Settings |
+| [`baken expressport`](#direct-usb-export-baken-expressport) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from the `collection.xml` rekordbox exports: device library, rekordbox's own analysis files, audio, My Settings |
 
 🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
+
+## Built for rekordbox, not instead of it
+
+There is no shortage of tools that set out to replace rekordbox. Bake'n Deck is not one of them. rekordbox is where you analyse tracks, set beat grids and cues, build playlists and keep your library. Bake'n Deck takes on only the few steps rekordbox leaves out of the trip to the CDJ, and it goes through the doors rekordbox itself provides.
+
+- **Your library stays in rekordbox.** Every subcommand works on the collection XML rekordbox exports, and results go back through rekordbox's own Imported Library (the `rekordbox xml` tree). Nothing to migrate, nothing to sync back.
+- **rekordbox's database is never touched.** Its `master.db` is never read, decrypted or written.
+- **rekordbox's own analysis is copied, not re-guessed.** On a stick, the waveforms and phrases are rekordbox's analysis files, byte for byte apart from the rewrites rekordbox itself makes at export time. Analysis is generated only for tracks rekordbox has never seen, and only when you ask for it.
+- **Measured, not guessed.** The stick format was worked out from real rekordbox 7 exports and is checked against them byte for byte. Player limits come from Pioneer DJ's operating instructions only, cited page by page. Whatever has not been measured or tried on a player is labelled as such.
+- **Tried on real CDJs.** DJs have played sticks written by `baken` on a CDJ-3000, CDJ-2000NXS2 players and a CDJ-2000NXS ([#116](https://github.com/M-Igashi/baken/issues/116), [#242](https://github.com/M-Igashi/baken/issues/242)). Where rekordbox is still the safer route, the docs say so.
+- **Supply chain, handled with care.** A tool that rewrites your music library and writes your gig stick has to be trustworthy down to its dependencies. Each new dependency is weighed before it comes in: SQLCipher and a vendored OpenSSL were dropped in 4.6.0, and on Apple platforms the encryption uses the operating system's own CommonCrypto since 4.6.1. Every pull request goes through dependency review, which fails on a known vulnerability of moderate severity or higher, and a licence check stops the build on any licence not on the accepted list. Every GitHub Action is pinned to a full commit SHA and workflows are read-only unless a job needs more; crates.io releases use Trusted Publishing, so no crates.io token is stored anywhere. Release archives carry SHA-256 checksums.
+- **The DJ decides.** Bake'n Deck reports facts and leaves the call to you: a suspect file is flagged, not quietly fixed, and no feature, AI or otherwise, takes over a decision that belongs to the DJ.
 
 ## Bake'n Deck for Mac
 
