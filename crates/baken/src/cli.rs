@@ -356,8 +356,26 @@ fn analyze_files(
         outcome.analyses.len()
     );
 
+    print_he_aac(&outcome.he_aac);
     print_damaged(&outcome.analyses);
     Ok(outcome.analyses)
+}
+
+/// HE-AAC is skipped, not failed (issue #268): nothing is wrong with the
+/// file, its gain just cannot be changed without re-encoding.
+fn print_he_aac(files: &[PathBuf]) {
+    if files.is_empty() {
+        return;
+    }
+    println!(
+        "\n{} {} HE-AAC {} skipped: native gain cannot reach the SBR high band, and baken never re-encodes.",
+        style("ℹ").blue(),
+        files.len(),
+        if files.len() == 1 { "file" } else { "files" }
+    );
+    for path in files {
+        println!("  {} {}", style("•").dim(), path.display());
+    }
 }
 
 /// Damaged files get no gain (issue #223); say which and why, since the same

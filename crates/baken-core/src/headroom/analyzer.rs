@@ -444,9 +444,16 @@ fn decide_gain(headroom: f64, codec: Codec, mode: GainMode) -> (GainMethod, f64,
 /// Decodes in-process with symphonia and measures with mp3rgain's BS.1770-4
 /// analyzer (issue #129): about 15x faster than ffmpeg's `loudnorm`, whose
 /// 192 kHz resample and full normalisation pass were 97% of the analysis
-/// time. Anything symphonia cannot open or finish (HE-AAC, odd containers,
-/// a truncated stream) falls back to the loudnorm run, so every file that
+/// time. Anything symphonia cannot open or finish (odd containers, a
+/// truncated stream) falls back to the loudnorm run, so every file that
 /// measured before still does.
+///
+/// HE-AAC never gets here: `headroom::measure` turns it away first (issue
+/// #268). symphonia fails on some of it, but decodes the core band of the
+/// rest without an error (Apple's encoder signals SBR backward-compatibly,
+/// and raw ADTS), at half the sample rate and without the SBR high band: on
+/// the files tried the true peak came out 0.7 to 0.8 dB under ffmpeg's, and
+/// HE-AAC v2, decoded mono, 3 LU quiet.
 pub fn measure(path: &Path) -> Result<Measurement> {
     match measure_native(path) {
         Ok(m) => Ok(m),
@@ -617,16 +624,6 @@ pub fn decide(measurement: &Measurement, tp_mode: TpTargetMode, gain_mode: GainM
         lossless_gain_steps,
         damage,
     }
-}
-
-pub fn analyze_file_with_target(
-    path: &Path,
-    tp_mode: TpTargetMode,
-    gain_mode: GainMode,
-) -> Result<AudioAnalysis> {
-    let measurement = measure(path)?;
-    let decision = decide(&measurement, tp_mode, gain_mode);
-    Ok(AudioAnalysis::new(path, &measurement, decision))
 }
 
 #[cfg(test)]

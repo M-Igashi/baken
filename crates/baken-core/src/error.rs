@@ -43,6 +43,9 @@ pub enum Error {
     #[error("XML path has no filename: {}", .0.display())]
     InvalidXmlPath(PathBuf),
 
+    #[error("HE-AAC: native gain only reaches the AAC core, not the SBR high band, and baken never re-encodes, so the file is left as it is")]
+    HeAac,
+
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
