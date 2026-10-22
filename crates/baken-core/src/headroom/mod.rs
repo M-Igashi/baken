@@ -28,6 +28,8 @@ use crate::{CancelToken, Error, Progress, Result};
 pub struct AnalyzeOutcome {
     pub analyses: Vec<AudioAnalysis>,
     pub failures: Vec<(PathBuf, Error)>,
+    /// HE-AAC files, left out before measuring ([`Error::HeAac`]).
+    pub he_aac: Vec<PathBuf>,
 }
 
 /// Result of [`apply`]. Files already written before a cancellation stay written.
@@ -47,13 +49,27 @@ pub struct ApplyOutcome {
 /// [`analyze`] does exactly that for a whole list; this entry point exists
 /// so a front-end can cache measurements and re-decide when the ceiling or
 /// the mode changes, or when a new release changes the decision rules.
+///
+/// HE-AAC returns [`Error::HeAac`] without being measured (issue #268): its
+/// gain cannot be changed, and symphonia decodes some of it without SBR, so
+/// the peak would be read from the core band only.
 pub fn measure(file: &Path) -> Result<Measurement> {
+    if is_he_aac(file) {
+        return Err(Error::HeAac);
+    }
     analyzer::measure(file).map_err(Error::from)
+}
+
+/// Reads only the `moov` box and the first frames (or a 64 KiB window of a
+/// raw ADTS stream), so checking every AAC file costs next to nothing.
+fn is_he_aac(file: &Path) -> bool {
+    scanner::is_aac(file) && mp3rgain::mp4meta::unsupported_audio_format(file) == Some("HE-AAC")
 }
 
 /// Measure loudness and True Peak for every file in parallel and decide the
 /// gain method per file. `gain_mode` selects whether files above the ceiling
 /// are lowered ([`GainMode::Normalize`]) or skipped ([`GainMode::BoostOnly`]).
+/// HE-AAC files land in [`AnalyzeOutcome::he_aac`], not among the failures.
 /// Returns `Error::Cancelled` if the token fires; a partial analysis is not
 /// useful to anyone.
 pub fn analyze(
@@ -65,16 +81,16 @@ pub fn analyze(
 ) -> Result<AnalyzeOutcome> {
     let done = AtomicUsize::new(0);
     // par_iter preserves input order in the collected Vec.
-    let results: Vec<Option<std::result::Result<AudioAnalysis, (PathBuf, Error)>>> = files
+    let results: Vec<Option<(&PathBuf, Result<AudioAnalysis>)>> = files
         .par_iter()
         .map(|file| {
             if cancel.is_cancelled() {
                 return None;
             }
-            let result = analyzer::analyze_file_with_target(file, tp_mode, gain_mode)
-                .map_err(|e| (file.clone(), Error::from(e)));
+            let result =
+                measure(file).map(|m| AudioAnalysis::new(file, &m, decide(&m, tp_mode, gain_mode)));
             progress.on_file_done(done.fetch_add(1, Ordering::Relaxed) + 1, files.len(), file);
-            Some(result)
+            Some((file, result))
         })
         .collect();
 
@@ -83,10 +99,11 @@ pub fn analyze(
     }
 
     let mut outcome = AnalyzeOutcome::default();
-    for result in results.into_iter().flatten() {
+    for (file, result) in results.into_iter().flatten() {
         match result {
             Ok(a) => outcome.analyses.push(a),
-            Err(f) => outcome.failures.push(f),
+            Err(Error::HeAac) => outcome.he_aac.push(file.clone()),
+            Err(e) => outcome.failures.push((file.clone(), e)),
         }
     }
     Ok(outcome)

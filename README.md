@@ -207,10 +207,12 @@ baken selects the optimal method for each file based on format and headroom:
 | Format | Method | Precision | Quality Loss |
 |--------|--------|-----------|--------------|
 | FLAC, AIFF, WAV | ffmpeg | Arbitrary | None |
-| MP3, AAC/M4A | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
+| MP3, AAC-LC (`.m4a`, `.mp4`, raw `.aac`) | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
 | ALAC/M4A | ffmpeg (re-encoded as ALAC) | Arbitrary | **None** (lossless codec) |
 
 A lossy file closer to the ceiling than one 1.5 dB step is left alone rather than re-encoded, so no MP3 or AAC ever loses a generation to a gain change.
+
+HE-AAC (v1 and v2, in `.m4a` or raw `.aac`) is skipped and listed after the analysis. `global_gain` only reaches its AAC core: the decoder rebuilds the high band from SBR data stored at absolute levels, so a native gain change would leave the top end where it was, and nothing short of a re-encode can move it ([#268](https://github.com/M-Igashi/baken/issues/268)).
 
 Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
 
@@ -314,6 +316,7 @@ The native-lossless raise threshold scales with the chosen ceiling: it is always
 - Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
 - MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
 - MP3/AAC files closer to the ceiling than one step are left alone; nothing is re-encoded for gain
+- An AAC file with frames mp3rgain cannot parse is left alone: those frames would keep their old level while the rest moved, which plays as a click on each one
 - macOS resource fork files (`._*`) are automatically ignored
 
 #### Why 1.5dB Steps?

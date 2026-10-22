@@ -232,6 +232,29 @@ fn restore_tags(temp_path: &Path, tags: Option<&Tags>) -> Result<()> {
     })
 }
 
+/// Parse every AAC frame before anything is copied or written. mp3rgain
+/// refuses HE-AAC itself, but only after the backup, and an analysis cached
+/// by an older version may still ask for it (issue #268). A frame mp3rgain
+/// cannot parse keeps its old level while the rest moves, which plays as a
+/// click (mp3rgain#402), so such a file is left alone too.
+fn ensure_aac_gainable(path: &Path) -> Result<()> {
+    let frames = if mp3rgain::adts::is_adts_file(path) {
+        mp3rgain::adts::analyze_adts_gains(path)
+    } else {
+        mp3rgain::aac::analyze_aac_gains(path)
+    }
+    .context("mp3rgain could not read the AAC frames")?;
+    if frames.has_sbr() {
+        return Err(crate::Error::HeAac.into());
+    }
+    match frames.parse_warnings() {
+        0 => Ok(()),
+        n => bail!(
+            "{n} AAC frames could not be parsed; a gain change would leave them at their old level, heard as clicks, so the file is left as it is"
+        ),
+    }
+}
+
 pub fn process_file(
     analysis: &AudioAnalysis,
     base_dir: &Path,
@@ -247,6 +270,9 @@ pub fn process_file(
     // no reason to copy (issue #134), and the lossless path would otherwise
     // replace it regardless of its permissions (issue #131).
     ensure_writable(file_path)?;
+    if analysis.gain_method == GainMethod::AacLossless {
+        ensure_aac_gainable(file_path)?;
+    }
 
     if let Some(backup) = backup_dir {
         backup_file(file_path, base_dir, backup).context("Backup failed")?;
@@ -259,11 +285,13 @@ pub fn process_file(
         GainMethod::Mp3Lossless if steps != 0 => mp3rgain::apply_gain(file_path, steps)
             .map(|_| ())
             .context("mp3rgain failed to apply MP3 gain"),
-        GainMethod::AacLossless if steps != 0 => {
-            mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, steps)
-                .map(|_| ())
-                .context("mp3rgain failed to apply AAC gain")
+        // Raw ADTS has no `moov`, so the MP4 path refused every `.aac` file.
+        GainMethod::AacLossless if steps != 0 => if mp3rgain::adts::is_adts_file(file_path) {
+            mp3rgain::adts::apply_adts_gain(file_path, file_path, steps, None).map(|_| ())
+        } else {
+            mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, steps).map(|_| ())
         }
+        .context("mp3rgain failed to apply AAC gain"),
         _ => Ok(()),
     }
 }
