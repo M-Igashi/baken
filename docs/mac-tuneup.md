@@ -78,6 +78,13 @@ Quit and reopen rekordbox once, then let it sit for a minute so any analysis que
 
 If rekordbox is still slow after all five, the remaining usual suspects are not macOS settings: a collection with tens of thousands of tracks on a slow USB 2 drive, a nearly full boot volume, or an antivirus product scanning audio files on access.
 
+## rekordbox windows that stay on top of other apps
+
+Not a speed item, but it comes up next to one. Some rekordbox windows float above every other app, even while you work in something else: the splash screen, the update notice, the dialogs that open when a USB export starts, and the one that reports its end. rekordbox sets that window level itself, so no macOS setting changes it, and an App Store app cannot change it for another app. Two things keep those windows out of your way. Both were checked with rekordbox 7.2.18 on macOS 27 ([#258](https://github.com/M-Igashi/baken/issues/258)).
+
+- **Hide rekordbox during an export.** Choose *Hide* from its Dock icon's menu, or press ⌘H while it is in front. The floating windows hide with it, and the export keeps its speed: an 8.5 GB export to a FAT32 stick wrote 12.7 MB/s while rekordbox was hidden, against 11.2 MB/s in the minute before and 12.3 MB/s in the minute after. The progress is shown in the status bar of the main window, so click the Dock icon when you want to look.
+- **Give rekordbox a desktop of its own.** In Mission Control, add a desktop and move rekordbox's window there; then, on that desktop, right-click the Dock icon and choose *Options* → *Assign To* → *This Desktop*. From then on its windows open there, export dialogs included: a dialog that opens while you work on another desktop waits on rekordbox's desktop. Opening rekordbox from the Dock switches to its desktop. Full screen is not needed.
+
 ## What Bake'n Deck for Mac adds
 
 Nothing that is not on this page. It runs all five checks against your actual library (it reads the track locations out of your exported collection XML), writes the Spotlight marker on external drives, deletes the `._` files after a confirmation, opens the exact System Settings pane for the steps that need one, and explains next to each row why it makes rekordbox faster. The one step it cannot do for you is the quarantine attribute: the App Store sandbox refuses `removexattr` on `com.apple.quarantine`, so the app hands you the command for your own folders instead, which is the same command as above.
