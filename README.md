@@ -79,6 +79,8 @@ Run `baken --help` or `baken <subcommand> --help` for the full reference.
 
 ## Loudness Normalizer (`baken headroom`)
 
+Why rekordbox's Auto Gain never reaches a CDJ, where the setting is and what writing the gain into the file changes: **[rekordbox Auto Gain: why it does not reach your CDJ](https://baken.ravers.workers.dev/auto-gain)** ([日本語](https://baken.ravers.workers.dev/ja/auto-gain)). The two ways to even out levels in the file, compared: **[Loudness normalization for DJs: a LUFS target or a true peak ceiling?](https://baken.ravers.workers.dev/loudness-normalization)** ([日本語](https://baken.ravers.workers.dev/ja/loudness-normalization)).
+
 ### How It Works
 
 1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A, ALAC/M4A)
@@ -482,6 +484,8 @@ baken cdjsafe <XML> [--playlist <PATH>]... --check [--player <MODEL>]...
 ```bash
 baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday" --playlist "Sets/Warmup"
 ```
+
+How it works, FAT32 and MBR, which players, and what rekordbox 7's library inconsistency warning means: **[Export rekordbox playlists to a USB stick without opening rekordbox](https://baken.ravers.workers.dev/usb-export)** ([日本語](https://baken.ravers.workers.dev/ja/usb-export)).
 
 ### How it works
 
