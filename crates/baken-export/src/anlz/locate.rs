@@ -45,18 +45,36 @@ pub fn default_roots() -> Vec<PathBuf> {
     if let Some(appdata) = std::env::var_os("APPDATA") {
         roots.push(PathBuf::from(appdata).join(r"Pioneer\rekordbox\share\PIONEER\USBANLZ"));
     }
-    for mounts in mount_points() {
-        let Ok(entries) = std::fs::read_dir(mounts) else {
-            continue;
-        };
-        for v in entries.flatten() {
-            roots.push(v.path().join("PIONEER/Master/share/PIONEER/USBANLZ"));
-        }
-    }
+    roots.extend(volumes().into_iter().map(library_anlz));
     roots.into_iter().filter(|p| p.is_dir()).collect()
 }
 
+/// The analysis cache of a library kept on `volume`, joined by component so
+/// a Windows path prints with backslashes.
+fn library_anlz(mut volume: PathBuf) -> PathBuf {
+    volume.extend(["PIONEER", "Master", "share", "PIONEER", "USBANLZ"]);
+    volume
+}
+
+/// Volumes that may be a library drive. Windows mounts each volume as a
+/// drive letter rather than inside a directory, so there was nothing to list
+/// and a library on `M:\` needed `--anlz-dir` on every run. Every letter is
+/// a candidate: one with nothing mounted fails `is_dir`.
+fn volumes() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    return (b'A'..=b'Z')
+        .map(|l| PathBuf::from(format!("{}:\\", l as char)))
+        .collect();
+    #[cfg(not(target_os = "windows"))]
+    return mount_points()
+        .into_iter()
+        .filter_map(|m| std::fs::read_dir(m).ok())
+        .flat_map(|entries| entries.flatten().map(|v| v.path()))
+        .collect();
+}
+
 /// Where this platform mounts removable volumes.
+#[cfg(not(target_os = "windows"))]
 fn mount_points() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     return vec![PathBuf::from("/Volumes")];
@@ -250,5 +268,19 @@ mod tests {
         assert_eq!(picked(&gridded, &track(None, 476)), None);
         let bare = index(vec![entry("grid", 0, 1000), entry("bare", 0, 0)]);
         assert_eq!(picked(&bare, &track(None, 476)), Some("bare"));
+    }
+
+    /// Every drive letter is tried, mounted or not; `default_roots` drops
+    /// the ones without a library.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_library_drive_is_any_drive_letter() {
+        let vols = volumes();
+        assert_eq!(vols.len(), 26);
+        assert!(vols.contains(&PathBuf::from(r"M:\")));
+        assert_eq!(
+            library_anlz(PathBuf::from(r"M:\")).to_str(),
+            Some(r"M:\PIONEER\Master\share\PIONEER\USBANLZ")
+        );
     }
 }
