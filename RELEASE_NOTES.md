@@ -1,25 +1,22 @@
-# Bake'n Deck 4.7.0 - AAC in `headroom`: no more FDK-AAC clicks, HE-AAC skipped, raw `.aac` fixed
+# Bake'n Deck 4.8.0 - mp3rgain 3.14.0, OneLibrary read on an XDJ-AZ
 
-A minor release about AAC in `baken headroom`, built on mp3rgain 3.12.0. It is a minor rather than a patch because `baken-core` gained an error variant and a field (see "Library users").
+A minor release built on mp3rgain 3.14.0. Neither library crate changes its API.
 
 ## Highlights
 
-- **AAC encoded with FDK-AAC no longer clicks after `baken headroom`.** FDK-AAC (fdkaac, ffmpeg's `libfdk_aac`, foobar2000 through fdkaac, Android) ends some frames with a 14-byte fill element, which mp3rgain misread from 2.8.0 to 3.11.1. Those frames kept their original level while every other frame moved, so each one played louder or quieter than its neighbours for 23 ms: a 4.5-minute fdkaac encode at 256 kbps had 13 such clicks. mp3rgain 3.12.0 reads them correctly ([M-Igashi/mp3rgain#402](https://github.com/M-Igashi/mp3rgain/issues/402)). Apple's encoder, ffmpeg's own `aac` and faac were never affected.
-- **HE-AAC is skipped.** `global_gain` only reaches the AAC core of HE-AAC; the decoder rebuilds the high band from SBR data stored at absolute levels, so a native gain change left the top end at its old level, as many dB too loud or too quiet as the change. Nothing short of a re-encode can move it, and `headroom` never re-encodes, so HE-AAC files (v1 and v2, in `.m4a` or raw `.aac`) are now recognised before they are measured or backed up and listed as skipped after the analysis, not counted as failed. Their measurement was off too: the built-in decoder reads some HE-AAC without its SBR band, which put the true peak 0.7 to 0.8 dB low ([#268](https://github.com/M-Igashi/baken/issues/268)).
-
-## Already processed AAC files that click
-
-Running `headroom` again does not repair an FDK-AAC file an earlier version processed: the next run moves every frame by the same step count, so the frames that were skipped keep their offset. Every version from 2.1.0 to 4.6.1 is affected. Restore such a file from a `--backup` copy or from its source, then run 4.7.0 on it.
-
-## Fixes
-
-- **Raw ADTS `.aac` files are adjusted.** They went through the MP4 path, so every `.aac` was measured, backed up and then failed with `No moov box found in MP4 file`. They now go through mp3rgain's ADTS path ([#269](https://github.com/M-Igashi/baken/pull/269)).
-- **An AAC file with frames mp3rgain cannot parse is left alone**, with a message, before anything is backed up. Such frames would keep their level while the rest moved, which plays as a click. No encoder tested produces them with mp3rgain 3.12.0 ([#269](https://github.com/M-Igashi/baken/pull/269)).
+- **Silent MP3 frames stay silent when `baken headroom` raises a file.** Encoders write a `global_gain` of 0 for silent frames, and some leave audio data behind it that a raised gain would make audible. Up to 4.7.0 a raise moved those frames up with the rest; mp3rgain 3.14.0 leaves a 0 where it is, as mp3gain does ([M-Igashi/mp3rgain#417](https://github.com/M-Igashi/mp3rgain/issues/417)). Every other frame moves by the same step count as before, and lowering, the measurement, and AAC are unchanged.
+- **OneLibrary has been read on a player.** An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with `--onelibrary --artwork` like a rekordbox stick: playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues, and artwork. `--help` and the README now say "checked on an XDJ-AZ so far" instead of "untested" ([#139](https://github.com/M-Igashi/baken/issues/139), [#274](https://github.com/M-Igashi/baken/pull/274)). The CDJ-3000X, OPUS-QUAD, and OMNIS-DUO read the same database but have not been tried yet; reports are welcome in #139.
 
 ## Other changes
 
-- The README opens with what baken is and is not: built for rekordbox, not instead of it ([#267](https://github.com/M-Igashi/baken/pull/267)). It also says that native AAC gain means AAC-LC and why HE-AAC is skipped.
-- Dependencies: mp3rgain 3.12.0, serde_json 1.0.154, getrandom 0.4.3, rustls 0.23.46 ([#266](https://github.com/M-Igashi/baken/pull/266)). CI: actions/upload-artifact 7.0.2, actions/download-artifact 8.0.2, dtolnay/rust-toolchain ([#263](https://github.com/M-Igashi/baken/pull/263), [#264](https://github.com/M-Igashi/baken/pull/264), [#265](https://github.com/M-Igashi/baken/pull/265)).
+- The README links the Auto Gain, loudness normalization, and USB export guides on the website ([#273](https://github.com/M-Igashi/baken/pull/273)).
+- The Mac tune-up guide (English and Japanese) has two workarounds for rekordbox windows that float above every other app, such as the dialogs of a USB export: hide rekordbox during the export (it keeps its speed), or give it a desktop of its own ([#258](https://github.com/M-Igashi/baken/issues/258), [#272](https://github.com/M-Igashi/baken/pull/272)).
+- The copyright line in `LICENSE` and the crates' author field now read Jesse Pinkman (JPHFA), the name on the GitHub account. The licence is still MIT.
+- Dependencies: mp3rgain 3.14.0, unicode-normalization 0.1.26, libc 0.2.191 ([#271](https://github.com/M-Igashi/baken/pull/271)).
+
+## Upgrading from 4.6.1 or earlier
+
+4.7.0 fixed clicks in AAC files encoded with FDK-AAC and skips HE-AAC. An FDK-AAC file that an earlier version processed keeps its clicks after another run; restore it from a `--backup` copy or its source first. The [4.7.0 release notes](https://github.com/M-Igashi/baken/releases/tag/v4.7.0) have the details.
 
 ## Upgrading from 4.5.0
 
@@ -31,7 +28,7 @@ Running `headroom` again does not repair an FDK-AAC file an earlier version proc
 
 ## Library users
 
-- `baken-core`: new `Error::HeAac`. `headroom::measure` returns it for an HE-AAC file without decoding it, and `headroom::analyze` puts such files in the new `AnalyzeOutcome::he_aac` instead of `failures`. `headroom::apply` refuses HE-AAC with the same message before the backup, so an analysis cached by an earlier version cannot reach mp3rgain's refusal after a copy was made. Code that matches `Error` exhaustively or builds `AnalyzeOutcome` with a struct literal needs the new variant and field.
+- `baken-core`: no API change. It depends on mp3rgain 3.14.0, so `headroom::apply` leaves MP3 frames with a `global_gain` of 0 unchanged on a raise.
 - `baken-export`: no API change.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
