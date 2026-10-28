@@ -32,6 +32,11 @@ getrandom = "0.4"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Library drive search (anlz::locate): skip network and optical drives, and
+# keep an empty card reader from prompting for a disk.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_WindowsProgramming"] }
+
 # Apple targets encrypt with CommonCrypto instead (baken-mac#83).
 [target.'cfg(not(target_vendor = "apple"))'.dependencies]
 aes = "0.9"

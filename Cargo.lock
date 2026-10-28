@@ -150,6 +150,7 @@ dependencies = [
  "sha2",
  "symphonia",
  "thiserror",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

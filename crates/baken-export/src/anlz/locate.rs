@@ -46,7 +46,7 @@ pub fn default_roots() -> Vec<PathBuf> {
         roots.push(PathBuf::from(appdata).join(r"Pioneer\rekordbox\share\PIONEER\USBANLZ"));
     }
     roots.extend(volumes().into_iter().map(library_anlz));
-    roots.into_iter().filter(|p| p.is_dir()).collect()
+    without_disk_prompts(|| roots.into_iter().filter(|p| p.is_dir()).collect())
 }
 
 /// The analysis cache of a library kept on `volume`, joined by component so
@@ -56,21 +56,58 @@ fn library_anlz(mut volume: PathBuf) -> PathBuf {
     volume
 }
 
-/// Volumes that may be a library drive. Windows mounts each volume as a
+/// Drive roots that may be a library drive. Windows mounts each volume as a
 /// drive letter rather than inside a directory, so there was nothing to list
-/// and a library on `M:\` needed `--anlz-dir` on every run. Every letter is
-/// a candidate: one with nothing mounted fails `is_dir`.
+/// and a library on `M:\` needed `--anlz-dir` on every run. Network and
+/// optical drives are left out: probing a share whose server is gone takes
+/// about 20 s, and a disc spins up, on every run.
+#[cfg(target_os = "windows")]
 fn volumes() -> Vec<PathBuf> {
-    #[cfg(target_os = "windows")]
-    return (b'A'..=b'Z')
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE,
+    };
+    (b'A'..=b'Z')
+        .filter(|&l| {
+            let root = [l, b':', b'\\', 0].map(u16::from);
+            // SAFETY: `root` is a NUL-terminated UTF-16 string.
+            let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+            !matches!(kind, DRIVE_NO_ROOT_DIR | DRIVE_REMOTE | DRIVE_CDROM)
+        })
         .map(|l| PathBuf::from(format!("{}:\\", l as char)))
-        .collect();
-    #[cfg(not(target_os = "windows"))]
-    return mount_points()
+        .collect()
+}
+
+/// Volumes that may be a library drive: what sits in the mount points.
+#[cfg(not(target_os = "windows"))]
+fn volumes() -> Vec<PathBuf> {
+    mount_points()
         .into_iter()
         .filter_map(|m| std::fs::read_dir(m).ok())
         .flat_map(|entries| entries.flatten().map(|v| v.path()))
-        .collect();
+        .collect()
+}
+
+/// Runs `f` with Windows' "There is no disk in the drive" box off for this
+/// thread, so an empty card reader fails `is_dir` instead of holding the run
+/// on a prompt. Microsoft advises turning it off at startup; nothing in
+/// baken does.
+#[cfg(target_os = "windows")]
+fn without_disk_prompts<T>(f: impl FnOnce() -> T) -> T {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        GetThreadErrorMode, SetThreadErrorMode, SEM_FAILCRITICALERRORS,
+    };
+    // SAFETY: these only read and set this thread's error mode flags.
+    let old = unsafe { GetThreadErrorMode() };
+    unsafe { SetThreadErrorMode(old | SEM_FAILCRITICALERRORS, std::ptr::null_mut()) };
+    let out = f();
+    unsafe { SetThreadErrorMode(old, std::ptr::null_mut()) };
+    out
+}
+
+#[cfg(not(target_os = "windows"))]
+fn without_disk_prompts<T>(f: impl FnOnce() -> T) -> T {
+    f()
 }
 
 /// Where this platform mounts removable volumes.
@@ -270,17 +307,29 @@ mod tests {
         assert_eq!(picked(&bare, &track(None, 476)), Some("bare"));
     }
 
-    /// Every drive letter is tried, mounted or not; `default_roots` drops
-    /// the ones without a library.
+    /// The system drive is always a candidate, and a library path on a
+    /// drive letter prints with backslashes.
     #[cfg(target_os = "windows")]
     #[test]
-    fn a_library_drive_is_any_drive_letter() {
-        let vols = volumes();
-        assert_eq!(vols.len(), 26);
-        assert!(vols.contains(&PathBuf::from(r"M:\")));
+    fn a_library_drive_is_a_local_drive_letter() {
+        let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+        assert!(volumes().contains(&PathBuf::from(format!(r"{system}\"))));
         assert_eq!(
             library_anlz(PathBuf::from(r"M:\")).to_str(),
             Some(r"M:\PIONEER\Master\share\PIONEER\USBANLZ")
         );
+    }
+
+    /// The prompt is off while the drives are probed, and only then.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn disk_prompts_come_back_after_the_probe() {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            GetThreadErrorMode, SEM_FAILCRITICALERRORS,
+        };
+        let before = unsafe { GetThreadErrorMode() };
+        let during = without_disk_prompts(|| unsafe { GetThreadErrorMode() });
+        assert_ne!(during & SEM_FAILCRITICALERRORS, 0);
+        assert_eq!(unsafe { GetThreadErrorMode() }, before);
     }
 }
