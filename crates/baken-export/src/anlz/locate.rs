@@ -45,18 +45,36 @@ pub fn default_roots() -> Vec<PathBuf> {
     if let Some(appdata) = std::env::var_os("APPDATA") {
         roots.push(PathBuf::from(appdata).join(r"Pioneer\rekordbox\share\PIONEER\USBANLZ"));
     }
-    for mounts in mount_points() {
-        let Ok(entries) = std::fs::read_dir(mounts) else {
-            continue;
-        };
-        for v in entries.flatten() {
-            roots.push(v.path().join("PIONEER/Master/share/PIONEER/USBANLZ"));
-        }
-    }
+    let library: PathBuf = LIBRARY_ANLZ.iter().collect();
+    roots.extend(volumes().into_iter().map(|v| v.join(&library)));
+    #[cfg(target_os = "windows")]
+    let _no_prompt = drives::NoDiskPrompt::new();
     roots.into_iter().filter(|p| p.is_dir()).collect()
 }
 
+/// Where a library drive keeps rekordbox's analysis, from its root. Joined
+/// by component, so a Windows path shows backslashes only.
+const LIBRARY_ANLZ: [&str; 5] = ["PIONEER", "Master", "share", "PIONEER", "USBANLZ"];
+
+/// Roots of the volumes a library drive may be: whatever is mounted under
+/// this platform's mount points.
+#[cfg(not(target_os = "windows"))]
+fn volumes() -> Vec<PathBuf> {
+    mount_points()
+        .iter()
+        .filter_map(|m| std::fs::read_dir(m).ok())
+        .flat_map(|entries| entries.flatten().map(|v| v.path()))
+        .collect()
+}
+
+/// Windows mounts each volume as a drive letter, not in a directory.
+#[cfg(target_os = "windows")]
+fn volumes() -> Vec<PathBuf> {
+    drives::local()
+}
+
 /// Where this platform mounts removable volumes.
+#[cfg(not(target_os = "windows"))]
 fn mount_points() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     return vec![PathBuf::from("/Volumes")];
@@ -71,6 +89,89 @@ fn mount_points() -> Vec<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     return Vec::new();
+}
+
+#[cfg(target_os = "windows")]
+mod drives {
+    use std::path::PathBuf;
+
+    const DRIVE_REMOVABLE: u32 = 2;
+    const DRIVE_FIXED: u32 = 3;
+    const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+
+    extern "system" {
+        fn GetDriveTypeW(root: *const u16) -> u32;
+        fn GetThreadErrorMode() -> u32;
+        fn SetThreadErrorMode(mode: u32, old_mode: *mut u32) -> i32;
+    }
+
+    /// Roots of the drive letters that are local disks, fixed or removable.
+    /// A network drive is left out because a share whose server is gone
+    /// holds every probe until the connection times out, an optical drive
+    /// because a probe spins up the disc. Unassigned letters are neither.
+    pub fn local() -> Vec<PathBuf> {
+        (b'A'..=b'Z')
+            .map(char::from)
+            .filter(|letter| {
+                let root: Vec<u16> = format!("{letter}:\\\0").encode_utf16().collect();
+                // SAFETY: `root` is NUL-terminated and outlives the call.
+                let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+                matches!(kind, DRIVE_FIXED | DRIVE_REMOVABLE)
+            })
+            .map(|letter| PathBuf::from(format!("{letter}:\\")))
+            .collect()
+    }
+
+    /// While alive, a probe of an empty card reader fails on this thread
+    /// instead of opening Windows' "There is no disk in the drive" box, which
+    /// would hold the run until someone closes it.
+    pub struct NoDiskPrompt(u32);
+
+    impl NoDiskPrompt {
+        pub fn new() -> Self {
+            // SAFETY: both calls only read or set this thread's error mode.
+            unsafe {
+                let old = GetThreadErrorMode();
+                SetThreadErrorMode(old | SEM_FAILCRITICALERRORS, std::ptr::null_mut());
+                Self(old)
+            }
+        }
+    }
+
+    impl Drop for NoDiskPrompt {
+        fn drop(&mut self) {
+            // SAFETY: as in `new`.
+            unsafe { SetThreadErrorMode(self.0, std::ptr::null_mut()) };
+        }
+    }
+
+    /// No runner has a library drive, so these hold the system calls: the
+    /// system disk is a candidate and the error mode comes back.
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_system_drive_is_searched() {
+            let system = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+            let root = PathBuf::from(format!("{system}\\"));
+            assert!(local().contains(&root), "{:?}", local());
+            let library = root.join(super::super::LIBRARY_ANLZ.iter().collect::<PathBuf>());
+            let expected = format!(r"{system}\PIONEER\Master\share\PIONEER\USBANLZ");
+            assert_eq!(library.to_str(), Some(expected.as_str()));
+        }
+
+        #[test]
+        fn the_disk_prompt_is_off_only_while_the_guard_lives() {
+            // SAFETY: reads this thread's error mode.
+            let mode = || unsafe { GetThreadErrorMode() };
+            let before = mode();
+            let guard = NoDiskPrompt::new();
+            assert_eq!(mode(), before | SEM_FAILCRITICALERRORS);
+            drop(guard);
+            assert_eq!(mode(), before);
+        }
+    }
 }
 
 fn pqtz_summary(file: &AnlzFile) -> (u32, u32, u16) {

@@ -49,7 +49,7 @@ jobs:
         with:
           toolchain: stable
       - run: cargo build --release
-      - run: cargo test -p baken-export --lib -- onelibrary sqlcipher
+      - run: cargo test -p baken-export --lib -- onelibrary sqlcipher locate
 
   licenses:
     runs-on: ubuntu-latest
