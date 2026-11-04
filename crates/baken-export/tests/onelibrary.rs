@@ -204,3 +204,94 @@ fn a_stale_log_that_stays_keeps_the_database_off_the_stick() {
     assert_eq!(report.tracks_in_database, 1);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A My Tags file beside the XML (#281).
+fn with_my_tags(root: &Path, opts: &mut Options, json: &str) {
+    let path = root.join("mytags.json");
+    std::fs::write(&path, json).unwrap();
+    opts.my_tags = Some(path);
+}
+
+const MY_TAGS: &str =
+    r#"{"columns": [{"name": "Genre", "tags": ["Techno"]}], "tracks": {"1": ["Techno"]}}"#;
+
+/// `--my-tags` (#281): rekordbox's `exportExt.pdb` is replaced by ours and
+/// stays, with or without `--onelibrary`.
+#[test]
+fn with_my_tags_export_ext_is_replaced() {
+    let (root, mut opts) = rekordbox_stick("my-tags");
+    let without = plan(&opts).unwrap().space_needed;
+    with_my_tags(&root, &mut opts, MY_TAGS);
+    let p = plan(&opts).unwrap();
+    let tags = p.my_tags.as_ref().unwrap();
+    assert_eq!(
+        (tags.tag_count(), tags.tagged([p.tracks[0].device.track.id])),
+        (1, 1)
+    );
+    assert!(
+        p.space_needed > without,
+        "exportExt.pdb counts against the space"
+    );
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert!(report.my_tags_written, "{:?}", report.my_tags_error);
+    assert_eq!((report.onelibrary_removed, report.onelibrary_kept), (3, 0));
+    assert_eq!(left(&opts), ["exportExt.pdb"]);
+    let ext = std::fs::read(rb(&opts).join("exportExt.pdb")).unwrap();
+    assert_eq!(ext.len() % 4096, 0);
+    assert_eq!(
+        &ext[4..12],
+        &[0, 0x10, 0, 0, 9, 0, 0, 0],
+        "4096-byte pages, nine tables"
+    );
+    assert!(!rb(&opts).join("._exportExt.pdb").exists());
+
+    opts.onelibrary = true;
+    let again = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(again.my_tags_written && again.onelibrary_written);
+    assert_eq!((again.onelibrary_removed, again.onelibrary_kept), (0, 0));
+    assert_eq!(left(&opts), ["exportLibrary.db", "exportExt.pdb"]);
+
+    // without the option, the next run takes it off again
+    opts.my_tags = None;
+    opts.onelibrary = false;
+    let plain = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert_eq!(plain.onelibrary_removed, 2);
+    assert!(left(&opts).is_empty());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// A file naming a tag no column lists fails the plan, before the stick is touched.
+#[test]
+fn a_bad_my_tags_file_fails_the_plan() {
+    let (root, mut opts) = rekordbox_stick("bad-tags");
+    with_my_tags(
+        &root,
+        &mut opts,
+        r#"{"columns": [{"name": "Genre", "tags": ["Techno"]}], "tracks": {"1": ["Tehcno"]}}"#,
+    );
+    let err = plan(&opts).unwrap_err().to_string();
+    assert!(
+        err.contains("mytags.json") && err.contains("\"Tehcno\""),
+        "{err}"
+    );
+    assert_eq!(left(&opts), ONELIBRARY_FILES);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// An `exportExt.pdb` that cannot be written leaves the stick without My
+/// Tags rather than with rekordbox's, and the run goes on.
+#[test]
+fn export_ext_that_cannot_be_written_is_reported() {
+    let (root, mut opts) = rekordbox_stick("ext-fails");
+    with_my_tags(&root, &mut opts, MY_TAGS);
+    let ext = rb(&opts).join("exportExt.pdb");
+    std::fs::remove_file(&ext).unwrap();
+    std::fs::create_dir(&ext).unwrap();
+    std::fs::write(ext.join("x"), b"").unwrap();
+    let report = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(!report.my_tags_written);
+    assert!(report.my_tags_error.is_some());
+    assert_eq!((report.onelibrary_removed, report.onelibrary_kept), (3, 1));
+    assert_eq!(report.tracks_in_database, 1);
+    std::fs::remove_dir_all(&root).unwrap();
+}

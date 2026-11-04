@@ -25,6 +25,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         prune: args.prune,
         onelibrary: args.onelibrary,
         artwork: args.artwork,
+        my_tags: args.my_tags.clone(),
     };
     let plan = plan(&opts)?;
     print_plan(&plan);
@@ -57,7 +58,13 @@ fn print_plan(plan: &Plan) {
     for w in plan.format_warnings() {
         println!("{} {w}", style("⚠").yellow());
     }
-    let onelibrary = &plan.onelibrary_files;
+    // an exportExt.pdb on the stick is replaced by ours, not removed
+    let onelibrary: Vec<&str> = plan
+        .onelibrary_files
+        .iter()
+        .copied()
+        .filter(|&f| plan.my_tags.is_none() || f != baken_export::EXT_FILE)
+        .collect();
     if plan.onelibrary {
         if !onelibrary.is_empty() {
             println!(
@@ -154,7 +161,7 @@ fn print_plan(plan: &Plan) {
     }
     if plan.onelibrary {
         println!(
-            "{} OneLibrary: exportLibrary.db is written too, for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO (not yet tested on those players)",
+            "{} OneLibrary: exportLibrary.db is written too, for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO",
             style("▸").cyan()
         );
     }
@@ -163,6 +170,22 @@ fn print_plan(plan: &Plan) {
             "{} Artwork: the picture embedded in each audio file, as 80 and 240 pixel thumbnails",
             style("▸").cyan()
         );
+    }
+    if let Some(tags) = &plan.my_tags {
+        let tagged = tags.tagged(plan.tracks.iter().map(|t| t.device.track.id));
+        println!(
+            "{} My Tags: {} tags in the columns {}; {tagged} of the {} tracks carry some",
+            style("▸").cyan(),
+            tags.tag_count(),
+            tags.columns().join(", "),
+            plan.tracks.len()
+        );
+        if tagged == 0 {
+            println!(
+                "{} None of the tracks to export has My Tags in the file. Its track keys must be the XML's TrackIDs.",
+                style("⚠").yellow()
+            );
+        }
     }
     if plan.cdjsafe {
         println!(
@@ -241,6 +264,12 @@ fn print_report(plan: &Plan, r: &Report) {
             style("⚠").yellow()
         );
     }
+    if let Some(e) = &r.my_tags_error {
+        println!(
+            "{} My Tags could not be written ({e}), so the stick carries none.",
+            style("⚠").yellow()
+        );
+    }
     if r.onelibrary_kept > 0 {
         println!(
             "{} {} of rekordbox's old library files could not be removed. Delete what is left of {} in {}, so that the stick carries one library.",
@@ -290,13 +319,17 @@ fn print_report(plan: &Plan, r: &Report) {
         style("•").dim(),
         plan.device.display()
     );
-    if r.onelibrary_written {
-        println!(
-            "  {} {}/PIONEER/rekordbox/{}",
-            style("•").dim(),
-            plan.device.display(),
-            baken_export::onelibrary::FILE
-        );
+    for (written, file) in [
+        (r.my_tags_written, baken_export::EXT_FILE),
+        (r.onelibrary_written, baken_export::onelibrary::FILE),
+    ] {
+        if written {
+            println!(
+                "  {} {}/PIONEER/rekordbox/{file}",
+                style("•").dim(),
+                plan.device.display()
+            );
+        }
     }
     if !plan.settings_files.is_empty() {
         println!(

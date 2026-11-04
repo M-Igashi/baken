@@ -86,10 +86,14 @@ fn passphrase() -> anyhow::Result<String> {
 /// What [`write`] makes of `model`, from above, for the free-space check
 /// without building it: the empty database takes 32 pages, and the reference
 /// library came to about 600 bytes a track (583 tracks, 859 playlist
-/// entries: 348 KiB).
+/// entries: 348 KiB). A My Tag link is two short index entries and a row.
 pub fn estimated_len(model: &Export) -> u64 {
     let entries: usize = model.playlists.iter().map(|p| p.track_ids.len()).sum();
-    128 * 1024 + 2048 * model.tracks.len() as u64 + 16 * entries as u64
+    128 * 1024
+        + 2048 * model.tracks.len() as u64
+        + 16 * entries as u64
+        + 256 * model.my_tags.len() as u64
+        + 64 * model.my_tag_tracks.len() as u64
 }
 
 /// `exportLibrary.db` for `model`, whose track rows are `tracks` in order.
@@ -250,14 +254,15 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
             model.export_date
         ],
     )?;
-    // The four My Tag columns every rekordbox stick has; the tags themselves
-    // live in rekordbox's database, not in the XML.
-    let mut s = db.prepare("INSERT INTO myTag VALUES (?, ?, ?, 1, 0)")?;
-    for (i, name) in ["Genre", "Components", "Situation", "Untitled Column"]
-        .iter()
-        .enumerate()
-    {
-        s.execute(params![i as i64 + 1, i as i64, name])?;
+    // The four My Tag columns every rekordbox stick has, with the tags of a
+    // My Tags file (issue #281); the XML carries none.
+    let mut s = db.prepare("INSERT INTO myTag VALUES (?, ?, ?, ?, ?)")?;
+    for t in model.my_tag_rows() {
+        s.execute(params![t.id, t.position, t.name, t.parent == 0, t.parent])?;
+    }
+    let mut s = db.prepare("INSERT INTO myTag_content VALUES (?, ?)")?;
+    for (track, tag) in &model.my_tag_tracks {
+        s.execute(params![tag, track])?;
     }
     Ok(())
 }
@@ -357,7 +362,7 @@ mod tests {
 
     #[test]
     fn small_library() {
-        let model = Export {
+        let mut model = Export {
             tracks: vec![
                 TrackRow {
                     id: 1,
@@ -410,8 +415,16 @@ mod tests {
             ],
             device_name: "USB".into(),
             export_date: "2026-10-08".into(),
+            ..Default::default()
         };
-        let bytes = write(&model, &[device(119312542), device(7)]).unwrap();
+        let devices = [device(119312542), device(7)];
+        crate::mytags::MyTags::parse(
+            r#"{"columns": [{"name": "Genre", "tags": ["Techno", "House"]}, {"name": "Mood", "tags": ["Dark"]}],
+                "tracks": {"119312542": ["Dark", "Techno"], "3": ["House"]}}"#,
+        )
+        .unwrap()
+        .apply(&mut model, &devices);
+        let bytes = write(&model, &devices).unwrap();
         assert_eq!(bytes.len() % 4096, 0);
         assert!(estimated_len(&model) >= bytes.len() as u64);
         assert_ne!(&bytes[..16], b"SQLite format 3\0", "encrypted");
@@ -447,6 +460,11 @@ mod tests {
             ["1|/PIONEER/Artwork/00001/b1.jpg"]
         );
         assert_eq!(rows(&db, "SELECT count(*) FROM cue"), ["0"]);
+        assert_eq!(
+            rows(&db, "SELECT * FROM myTag").join(" "),
+            "1|0|Genre|1|0 2|1|Mood|1|0 3|2|Situation|1|0 4|3|Untitled Column|1|0 5|0|Techno|0|1 6|1|House|0|1 7|0|Dark|0|2"
+        );
+        assert_eq!(rows(&db, "SELECT * FROM myTag_content"), ["5|1", "7|1"]);
     }
 
     /// The defaults equal those of the empty database rekordbox 7.2.19 wrote.
@@ -496,11 +514,8 @@ mod tests {
         open(&file(""), &file("-wal"))
     }
 
-    /// Every track of the reference export, built from its collection.xml,
-    /// carries rekordbox's values in the columns the XML decides (#139).
-    #[test]
-    fn fixture_tracks_match_rekordbox() {
-        let Some(root) = fixture() else { return };
+    /// The reference export's four playlists, built from its collection.xml.
+    fn fixture_export(root: &Path) -> (Export, Vec<DeviceTrack>) {
         let lib = Library::load(&root.join("collection.xml")).unwrap();
         let selected: Vec<usize> = ["Hard Techno", "Non Hard Techno", "HT-70min", "Openings"]
             .iter()
@@ -533,6 +548,15 @@ mod tests {
             }
         }
         let model = crate::build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2025-04-11");
+        (model, tracks)
+    }
+
+    /// Every track of the reference export, built from its collection.xml,
+    /// carries rekordbox's values in the columns the XML decides (#139).
+    #[test]
+    fn fixture_tracks_match_rekordbox() {
+        let Some(root) = fixture() else { return };
+        let (model, tracks) = fixture_export(&root);
         let bytes = write(&model, &tracks).unwrap();
         assert!(estimated_len(&model) >= bytes.len() as u64);
         let (_ours_tmp, baken) = open(&bytes, &[]);
@@ -614,4 +638,54 @@ mod tests {
         let names = "SELECT name FROM playlist ORDER BY name";
         assert_eq!(rows(&baken, names), rows(&rekordbox, names));
     }
+
+    /// rekordbox's My Tags on the reference stick, written as a My Tags file
+    /// keyed by XML TrackID (issue #281), come back on the same tracks.
+    /// `exportExt.pdb` is written from the same rows (`pdb::writer` tests).
+    #[test]
+    fn fixture_my_tags_match_rekordbox() {
+        let Some(root) = fixture() else { return };
+        let (mut model, tracks) = fixture_export(&root);
+        let (_theirs_tmp, rekordbox) = rekordbox_db(&root);
+        let links = "SELECT DISTINCT c.masterContentId, t.name FROM myTag_content mc JOIN content c USING (content_id) JOIN myTag t USING (myTag_id) ORDER BY 1, 2";
+        let mut columns = Vec::new();
+        for col in rows(
+            &rekordbox,
+            "SELECT myTag_id, name FROM myTag WHERE attribute = 1 ORDER BY sequenceNo",
+        ) {
+            let (id, name) = col.split_once('|').unwrap();
+            let tags = rows(
+                &rekordbox,
+                &format!("SELECT name FROM myTag WHERE myTag_id_parent = {id} ORDER BY sequenceNo"),
+            );
+            columns.push(serde_json::json!({"name": name, "tags": tags}));
+        }
+        let mut by_track: HashMap<String, Vec<String>> = HashMap::new();
+        for l in rows(&rekordbox, links) {
+            let (track, tag) = l.split_once('|').unwrap();
+            by_track.entry(track.into()).or_default().push(tag.into());
+        }
+        let file = serde_json::json!({"columns": columns, "tracks": by_track});
+        let tags = crate::mytags::MyTags::parse(&file.to_string()).unwrap();
+        assert_eq!(tags.tag_count(), 30);
+        assert_eq!(
+            tags.tagged(tracks.iter().map(|t| t.track.id)),
+            132,
+            "one of 133 tagged tracks left the collection"
+        );
+        tags.apply(&mut model, &tracks);
+
+        let (_ours_tmp, baken) = open(&write(&model, &tracks).unwrap(), &[]);
+        let shared: std::collections::HashSet<String> =
+            tracks.iter().map(|t| t.track.id.to_string()).collect();
+        let theirs: Vec<String> = rows(&rekordbox, links)
+            .into_iter()
+            .filter(|l| shared.contains(l.split('|').next().unwrap()))
+            .collect();
+        assert_eq!(theirs.len(), 327);
+        assert_eq!(rows(&baken, links), theirs);
+        let tree = "SELECT sequenceNo, name, attribute, (SELECT name FROM myTag p WHERE p.myTag_id = t.myTag_id_parent) FROM myTag t ORDER BY 4, 1";
+        assert_eq!(rows(&baken, tree), rows(&rekordbox, tree));
+    }
 }
+

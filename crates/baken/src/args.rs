@@ -118,6 +118,12 @@ pub struct ExpressportArgs {
     #[arg(long)]
     pub artwork: bool,
 
+    /// My Tags from a JSON file (rekordbox's XML has none): its columns and tags, and each
+    /// track's tags by XML TrackID. Written to exportExt.pdb, and with --onelibrary to
+    /// OneLibrary too. Format in the README.
+    #[arg(long, value_name = "FILE")]
+    pub my_tags: Option<PathBuf>,
+
     /// Resolve everything and print what would be written, without touching the stick.
     #[arg(long)]
     pub dry_run: bool,
