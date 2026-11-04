@@ -1,18 +1,17 @@
-# Bake'n Deck 4.8.0 - mp3rgain 3.14.0, OneLibrary read on an XDJ-AZ
+# Bake'n Deck 4.9.0 - My Tags on the stick, library drives on Windows
 
-A minor release built on mp3rgain 3.14.0. Neither library crate changes its API.
+A minor release: `baken-export` gains the My Tags option, which changes its API. `baken-core` is unchanged.
 
 ## Highlights
 
-- **Silent MP3 frames stay silent when `baken headroom` raises a file.** Encoders write a `global_gain` of 0 for silent frames, and some leave audio data behind it that a raised gain would make audible. Up to 4.7.0 a raise moved those frames up with the rest; mp3rgain 3.14.0 leaves a 0 where it is, as mp3gain does ([M-Igashi/mp3rgain#417](https://github.com/M-Igashi/mp3rgain/issues/417)). Every other frame moves by the same step count as before, and lowering, the measurement, and AAC are unchanged.
-- **OneLibrary has been read on a player.** An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with `--onelibrary --artwork` like a rekordbox stick: playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues, and artwork. `--help` and the README now say "checked on an XDJ-AZ so far" instead of "untested" ([#139](https://github.com/M-Igashi/baken/issues/139), [#274](https://github.com/M-Igashi/baken/pull/274)). The CDJ-3000X, OPUS-QUAD, and OMNIS-DUO read the same database but have not been tried yet; reports are welcome in #139.
+- **My Tags on the stick (`expressport --my-tags`).** rekordbox's XML carries no My Tags, so up to 4.8.0 a stick from `expressport` had none: no `exportExt.pdb`, and OneLibrary's four My Tag columns stayed empty. `--my-tags <FILE>` reads them from a small JSON file next to the XML (the columns with their tags, and each track's tags keyed by the XML's `TrackID`) and writes `exportExt.pdb` the way rekordbox does, and with `--onelibrary` OneLibrary's My Tag tables as well. The file is checked before anything is written, and the plan shows how many of the exported tracks carry tags. The format is in the README under "My Tags (`--my-tags`)". The tag pages come out byte for byte as rekordbox writes them, and rekordbox's own My Tags from a real stick come back on the same tracks; it has not been tried on a player yet. The CDJ-3000 uses My Tags in its Track Filter; reports are welcome in [#281](https://github.com/M-Igashi/baken/issues/281). Asked for and co-authored by @plep7 ([#282](https://github.com/M-Igashi/baken/pull/282)). Without the option nothing changes.
+- **A rekordbox library on a drive of its own is found on Windows.** `expressport` looks for `PIONEER\Master\share\PIONEER\USBANLZ` at the root of every local drive letter, fixed or removable, instead of only in `%APPDATA%`, so such a library no longer needs `--anlz-dir` on every run. Network and optical drives are not searched, and an empty card reader no longer opens Windows' "no disk" box ([#279](https://github.com/M-Igashi/baken/pull/279), thanks to the report in [#276](https://github.com/M-Igashi/baken/pull/276)). Not tried on a real Windows machine yet. macOS and Linux search the same places as before.
 
 ## Other changes
 
-- The README links the Auto Gain, loudness normalization, and USB export guides on the website ([#273](https://github.com/M-Igashi/baken/pull/273)).
-- The Mac tune-up guide (English and Japanese) has two workarounds for rekordbox windows that float above every other app, such as the dialogs of a USB export: hide rekordbox during the export (it keeps its speed), or give it a desktop of its own ([#258](https://github.com/M-Igashi/baken/issues/258), [#272](https://github.com/M-Igashi/baken/pull/272)).
-- The copyright line in `LICENSE` and the crates' author field now read Jesse Pinkman (JPHFA), the name on the GitHub account. The licence is still MIT.
-- Dependencies: mp3rgain 3.14.0, unicode-normalization 0.1.26, libc 0.2.191 ([#271](https://github.com/M-Igashi/baken/pull/271)).
+- The `--onelibrary` line of the plan no longer says "not yet tested on those players"; an XDJ-AZ read such a stick in [#139](https://github.com/M-Igashi/baken/issues/139).
+- The README describes Bake'n Deck for Mac 1.4.0 ([#280](https://github.com/M-Igashi/baken/pull/280)).
+- Dependencies: rusqlite 0.41.0 with SQLite 3.54.1 for `--onelibrary` ([#278](https://github.com/M-Igashi/baken/pull/278)); the release workflow uses crates-io-auth-action 1.0.6 ([#277](https://github.com/M-Igashi/baken/pull/277)).
 
 ## Upgrading from 4.6.1 or earlier
 
@@ -28,8 +27,13 @@ A minor release built on mp3rgain 3.14.0. Neither library crate changes its API.
 
 ## Library users
 
-- `baken-core`: no API change. It depends on mp3rgain 3.14.0, so `headroom::apply` leaves MP3 frames with a `global_gain` of 0 unchanged on a raise.
-- `baken-export`: no API change.
+- `baken-core`: no API change.
+- `baken-export`:
+  - `Options` gains `my_tags: Option<PathBuf>`, so a struct literal without `..Default::default()` needs it (`None` keeps the old behaviour).
+  - `pdb::Export` gains `my_tags` and `my_tag_tracks`, with the same consequence for struct literals.
+  - New: the `mytags` module (`MyTags::load`, `parse`, `apply`, `tagged`, `tag_count`, `columns`), `Plan::my_tags`, `Report::my_tags_written` and `Report::my_tags_error`, `pdb::write_ext`, `pdb::MyTag`, and `EXT_FILE`.
+  - No new `Error` variant: a bad My Tags file is `Error::Other`, with a one-line message that names the file.
+  - On Windows, `anlz::locate::default_roots` also lists the library path on every fixed or removable drive letter.
 
 ## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
 
