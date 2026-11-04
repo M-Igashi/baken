@@ -8,9 +8,17 @@
 
 use super::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
 use super::page::{header_page, index_page, DataPage, HeaderStyle, PAGE_LEN};
-use super::rows::{self, TrackRow};
+use super::rows::{self, MyTag, TrackRow};
 
 pub const NUM_TABLES: u32 = 20;
+
+/// Tables in `exportExt.pdb`: rekordbox writes nine, of which only the My Tag
+/// ones (0x03, 0x04) and the row naming their database (0x07) carry rows.
+pub const EXT_TABLES: u32 = 9;
+
+/// The `myTagMasterDBID` baken writes: the tags come from a file, not from a
+/// rekordbox database. rekordbox writes its own database's id there.
+pub const MY_TAG_MASTER_DB_ID: u32 = 0;
 
 #[derive(Debug, Clone)]
 pub struct ExportPlaylist {
@@ -39,6 +47,31 @@ pub struct Export {
     pub device_name: String,
     /// `YYYY-MM-DD`.
     pub export_date: String,
+    /// My Tags (issue #281): every column, each followed by its tags. Empty
+    /// means rekordbox's four columns without tags, see [`Export::my_tag_rows`].
+    pub my_tags: Vec<MyTag>,
+    /// `(track id, tag id)`, by track, then column and position, as
+    /// rekordbox lists them.
+    pub my_tag_tracks: Vec<(u32, u32)>,
+}
+
+impl Export {
+    /// [`Export::my_tags`], or rekordbox's four empty columns.
+    pub fn my_tag_rows(&self) -> Vec<MyTag> {
+        if !self.my_tags.is_empty() {
+            return self.my_tags.clone();
+        }
+        crate::mytags::DEFAULT_COLUMNS
+            .iter()
+            .zip(0..)
+            .map(|(name, i)| MyTag {
+                id: i + 1,
+                parent: 0,
+                position: i,
+                name: name.to_string(),
+            })
+            .collect()
+    }
 }
 
 /// Encodes one row given its position in the page.
@@ -56,15 +89,19 @@ struct Table<'a> {
     rows: Vec<Row<'a>>,
 }
 
-fn tables(e: &Export) -> Vec<Table<'_>> {
-    let mut t: Vec<Table> = (0..NUM_TABLES)
+fn empty_tables<'a>(n: u32) -> Vec<Table<'a>> {
+    (0..n)
         .map(|ty| Table {
             ty,
             style: HeaderStyle::Normal,
             seq: None,
             rows: Vec::new(),
         })
-        .collect();
+        .collect()
+}
+
+fn tables(e: &Export) -> Vec<Table<'_>> {
+    let mut t = empty_tables(NUM_TABLES);
 
     t[0].rows = e
         .tracks
@@ -140,9 +177,38 @@ fn tables(e: &Export) -> Vec<Table<'_>> {
     t
 }
 
+/// `exportExt.pdb`'s tables, laid out like rekordbox's: the tag page has the
+/// header of the fixed tables (row count in `unknown5`), the others the usual one.
+fn ext_tables(e: &Export, master_db_id: u32) -> Vec<Table<'static>> {
+    let mut t = empty_tables(EXT_TABLES);
+    t[3].style = HeaderStyle::Fixed;
+    t[3].rows = e
+        .my_tag_rows()
+        .into_iter()
+        .map(|tag| row(move |pos| rows::my_tag(pos, &tag)))
+        .collect();
+    t[4].rows = e
+        .my_tag_tracks
+        .iter()
+        .map(|&(track, tag)| row(move |_| rows::my_tag_track(track, tag)))
+        .collect();
+    t[7].rows = vec![row(move |_| rows::my_tag_master(master_db_id))];
+    t
+}
+
 /// Serialise the export. The result is a whole number of 4096-byte pages.
 pub fn write(e: &Export) -> Vec<u8> {
-    let tables = tables(e);
+    assemble(&tables(e))
+}
+
+/// `exportExt.pdb`, the Device Library's My Tags (issue #281), in the same
+/// page layout as `export.pdb`.
+pub fn write_ext(e: &Export) -> Vec<u8> {
+    assemble(&ext_tables(e, MY_TAG_MASTER_DB_ID))
+}
+
+fn assemble(tables: &[Table]) -> Vec<u8> {
+    let num_tables = tables.len() as u32;
     let mut pages: Vec<Vec<u8>> = vec![Vec::new()]; // page 0 filled last
     let mut pointers = Vec::new();
     let mut next_seq = 10u32;
@@ -150,7 +216,7 @@ pub fn write(e: &Export) -> Vec<u8> {
     // (table index, index page position, data pages) resolved once empties are known
     let mut pending: Vec<(u32, usize, Vec<DataPage>)> = Vec::new();
 
-    for t in &tables {
+    for t in tables {
         let index_pos = pages.len();
         pages.push(Vec::new());
         let mut data: Vec<DataPage> = Vec::new();
@@ -199,10 +265,10 @@ pub fn write(e: &Export) -> Vec<u8> {
             pages[p.index as usize] = p.to_bytes();
         }
     }
-    for _ in 0..NUM_TABLES {
+    for _ in 0..num_tables {
         pages.push(vec![0u8; PAGE_LEN]);
     }
-    pages[0] = header_page(NUM_TABLES, pages.len() as u32, max_seq + 1, &pointers);
+    pages[0] = header_page(num_tables, pages.len() as u32, max_seq + 1, &pointers);
     pages.concat()
 }
 
@@ -419,5 +485,126 @@ mod tests {
         // No track has a key, so like rekordbox's empty export there are no key rows.
         assert_eq!(rows_seen.get(&5).copied().unwrap_or(0), 0);
         assert_eq!(rows_seen[&19], 1);
+    }
+
+    /// The data pages of table `ty`, in chain order.
+    fn data_pages(d: &[u8], ty: u32) -> Vec<&[u8]> {
+        let n = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
+        let o = (0..n)
+            .map(|i| 0x1c + 16 * i)
+            .find(|&o| u32::from_le_bytes(d[o..o + 4].try_into().unwrap()) == ty)
+            .unwrap();
+        let w = |k: usize| u32::from_le_bytes(d[o + 4 * k..o + 4 * k + 4].try_into().unwrap());
+        let (mut p, last) = (w(2) as usize, w(3) as usize);
+        let mut pages = Vec::new();
+        loop {
+            let pg = page(d, p);
+            if pg[0x1b] & 0x40 == 0 {
+                pages.push(pg);
+            }
+            if p == last {
+                break;
+            }
+            p = u32::from_le_bytes(pg[0x0c..0x10].try_into().unwrap()) as usize;
+        }
+        pages
+    }
+
+    /// Every present row of a data page, from its offset to the page's end.
+    fn page_rows(pg: &[u8]) -> Vec<&[u8]> {
+        let n = (u32::from_le_bytes([pg[0x18], pg[0x19], pg[0x1a], 0]) & 0x1fff) as usize;
+        (0..n)
+            .filter_map(|i| {
+                let base = PAGE_LEN - (i / 16) * 36;
+                let present = u16::from_le_bytes([pg[base - 4], pg[base - 3]]);
+                let at = base - 6 - 2 * (i % 16);
+                let off = u16::from_le_bytes([pg[at], pg[at + 1]]) as usize;
+                (present >> (i % 16) & 1 == 1).then(|| &pg[0x28 + off..])
+            })
+            .collect()
+    }
+
+    fn word(r: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(r[at..at + 4].try_into().unwrap())
+    }
+
+    /// The `exportExt.pdb` rekordbox 7.2.19 wrote onto a #116 tester's stick
+    /// in one go: its default My Tags, no tagged tracks.
+    fn ext_fixture() -> Option<Vec<u8>> {
+        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+            "../../.claude/fixtures/alex116-20260928/USB1.4.1.1.After.CDJ2000NXS2/PIONEER/rekordbox/exportExt.pdb",
+        );
+        std::fs::read(p).ok()
+    }
+
+    /// Given rekordbox's own tags (issue #281), the tag page and the page
+    /// naming their database come out as rekordbox wrote them.
+    #[test]
+    fn my_tag_pages_match_rekordbox() {
+        let Some(theirs) = ext_fixture() else {
+            return;
+        };
+        let tag_page = data_pages(&theirs, 3)[0];
+        let my_tags: Vec<MyTag> = page_rows(tag_page)
+            .into_iter()
+            .map(|r| MyTag {
+                id: word(r, 0x14),
+                parent: word(r, 0x0c),
+                position: word(r, 0x10),
+                name: super::super::string::decode(r, r[0x1d] as usize).unwrap().0,
+            })
+            .collect();
+        assert_eq!(my_tags.len(), 28);
+        let master = word(page_rows(data_pages(&theirs, 7)[0])[0], 0x18);
+        let e = Export {
+            my_tags,
+            ..Default::default()
+        };
+        let ours = assemble(&ext_tables(&e, master));
+        assert_eq!(&ours[4..12], &theirs[4..12], "page size and nine tables");
+        for ty in [3, 7] {
+            let (a, b) = (data_pages(&ours, ty), data_pages(&theirs, ty));
+            assert_eq!((a.len(), b.len()), (1, 1));
+            assert_page_eq(a[0], b[0], &format!("exportExt table {ty}"));
+        }
+        assert!(data_pages(&ours, 4).is_empty());
+        // without a file, the four columns alone
+        let plain = write_ext(&Export::default());
+        assert_eq!(page_rows(data_pages(&plain, 3)[0]).len(), 4);
+    }
+
+    /// The reference stick's first tag_tracks page: 140 links of rekordbox's
+    /// first export to it, by track, then column and position.
+    #[test]
+    fn my_tag_track_page_matches_rekordbox() {
+        let Some(theirs) = fixture("exportExt.pdb") else {
+            return;
+        };
+        let first = data_pages(&theirs, 4)[0];
+        let links: Vec<(u32, u32)> = page_rows(first)
+            .into_iter()
+            .map(|r| (word(r, 4), word(r, 8)))
+            .collect();
+        assert_eq!(links.len(), 140);
+        assert!(links.is_sorted_by_key(|l| l.0));
+        let ours = write_ext(&Export {
+            my_tag_tracks: links,
+            ..Default::default()
+        });
+        let ours = data_pages(&ours, 4);
+        assert_eq!(ours.len(), 1);
+        assert_page_eq(ours[0], first, "tag_tracks");
+    }
+
+    /// A page holds 222 links, like the reference stick's fullest page.
+    #[test]
+    fn my_tag_tracks_fill_pages_like_rekordbox() {
+        let ours = write_ext(&Export {
+            my_tag_tracks: (0..445).map(|i| (i / 3 + 1, 5 + i % 3)).collect(),
+            ..Default::default()
+        });
+        let pages = data_pages(&ours, 4);
+        let counts: Vec<usize> = pages.iter().map(|p| page_rows(p).len()).collect();
+        assert_eq!(counts, [222, 222, 1]);
     }
 }

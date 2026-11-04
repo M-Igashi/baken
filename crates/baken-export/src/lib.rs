@@ -11,6 +11,7 @@ pub mod build;
 pub mod collection;
 mod error;
 pub mod layout;
+pub mod mytags;
 pub mod onelibrary;
 pub mod pdb;
 pub mod settings;
@@ -65,6 +66,9 @@ pub struct Options {
     /// Put the picture embedded in each audio file on the stick as artwork
     /// (issue #235): four small JPEG files per track.
     pub artwork: bool,
+    /// A My Tags file (issue #281, format in [`mytags`]): its tags go into
+    /// `exportExt.pdb` and, with `onelibrary`, into OneLibrary.
+    pub my_tags: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,8 +100,11 @@ pub const ONELIBRARY_FILES: [&str; 4] = [
     "exportLibrary.db",
     "exportLibrary.db-wal",
     "exportLibrary.db-shm",
-    "exportExt.pdb",
+    EXT_FILE,
 ];
+
+/// The Device Library's My Tags, which [`Options::my_tags`] writes.
+pub const EXT_FILE: &str = "exportExt.pdb";
 
 #[derive(Debug)]
 pub struct Plan {
@@ -147,6 +154,8 @@ pub struct Plan {
     pub onelibrary: bool,
     /// [`Options::artwork`].
     pub artwork: bool,
+    /// [`Options::my_tags`], read and checked.
+    pub my_tags: Option<mytags::MyTags>,
 }
 
 impl Plan {
@@ -228,6 +237,11 @@ pub struct Report {
     /// Why it was not, though asked for. The run goes on as without the
     /// option, so the stick has no OneLibrary rather than the old one.
     pub onelibrary_error: Option<String>,
+    /// [`Options::my_tags`]: [`EXT_FILE`] was written.
+    pub my_tags_written: bool,
+    /// Why it was not, though asked for. An old one is removed, as without
+    /// the option.
+    pub my_tags_error: Option<String>,
     /// [`Options::artwork`]: tracks that got artwork, which are also the
     /// artwork ids handed out (1 to this).
     pub artwork: usize,
@@ -265,6 +279,11 @@ pub fn plan(opts: &Options) -> Result<Plan> {
 
     let library = Library::load(&opts.xml)?;
     let selected = select_playlists(&library, &opts.playlists)?;
+    let my_tags = opts
+        .my_tags
+        .as_deref()
+        .map(mytags::MyTags::load)
+        .transpose()?;
 
     let anlz_roots = if opts.anlz_roots.is_empty() {
         anlz::locate::default_roots()
@@ -387,8 +406,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
 
     let space = volume::space(&opts.device);
     let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
-    let model = build::build(&library, &devices, &selected, &device_name, &build::today());
-    let pdb_len = pdb::write(&model).len() as u64;
+    let mut model = build::build(&library, &devices, &selected, &device_name, &build::today());
+    if let Some(tags) = &my_tags {
+        tags.apply(&mut model, &devices);
+    }
+    let mut library_lens = vec![pdb::write(&model).len() as u64];
+    if my_tags.is_some() {
+        library_lens.push(pdb::write_ext(&model).len() as u64);
+    }
     let onelibrary_len = opts.onelibrary.then(|| onelibrary::estimated_len(&model));
     let settings_lens: Vec<u64> = match &settings_dir {
         Some(dir) => settings_files
@@ -407,7 +432,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     let space_needed = space_needed(
         opts,
         &tracks,
-        pdb_len,
+        &library_lens,
         onelibrary_len,
         &settings_lens,
         space.map_or(1, |s| s.unit),
@@ -441,6 +466,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         prune: opts.prune,
         onelibrary: opts.onelibrary,
         artwork: opts.artwork,
+        my_tags,
     })
 }
 
@@ -466,9 +492,9 @@ const ARTWORK_MEDIUM: u64 = 64 << 10;
 ///   ([`newer_than_source`]);
 /// - every analysis file, see [`anlz_len`], whether or not the stick already
 ///   holds those bytes, which only writing them out would tell;
-/// - `export.pdb` as built from the plan, `exportLibrary.db` as
-///   [`onelibrary::estimated_len`] puts it, the settings files, and the
-///   directories the run creates;
+/// - `export.pdb` and, with `--my-tags`, `exportExt.pdb` as built from the
+///   plan, `exportLibrary.db` as [`onelibrary::estimated_len`] puts it, the
+///   settings files, and the directories the run creates;
 /// - with `--artwork`, four thumbnails for every track (whether its audio
 ///   carries a picture is only known once it is read), at most
 ///   [`ARTWORK_SMALL`] and [`ARTWORK_MEDIUM`] bytes;
@@ -485,7 +511,7 @@ const ARTWORK_MEDIUM: u64 = 64 << 10;
 fn space_needed(
     opts: &Options,
     tracks: &[PlanTrack],
-    pdb_len: u64,
+    library_lens: &[u64],
     onelibrary_len: Option<u64>,
     settings_lens: &[u64],
     unit: u64,
@@ -528,7 +554,9 @@ fn space_needed(
         }
     }
     tally.dir(&opts.device.join("PIONEER/rekordbox"));
-    tally.file(pdb_len, None);
+    for &len in library_lens {
+        tally.file(len, None);
+    }
     if let Some(len) = onelibrary_len {
         tally.file(len, None);
     }
@@ -913,13 +941,16 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     still_mounted()?;
 
     let date = build::today();
-    let model = build::build(
+    let mut model = build::build(
         &plan.library,
         &exported,
         &plan.selected,
         &plan.device_name,
         &date,
     );
+    if let Some(tags) = &plan.my_tags {
+        tags.apply(&mut model, &exported);
+    }
     report.tracks_in_database = exported.len();
     let onelibrary = plan
         .onelibrary
@@ -931,6 +962,13 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         path: pdb_path,
         err,
     })?;
+    if plan.my_tags.is_some() {
+        let path = rb_dir.join(EXT_FILE);
+        match fsname::write_atomic(&path, &pdb::write_ext(&model)) {
+            Ok(()) => report.my_tags_written = true,
+            Err(e) => report.my_tags_error = Some(e.to_string()),
+        }
+    }
     match onelibrary.map(|db| db.and_then(|db| replace_onelibrary(&rb_dir, &db, &mut report))) {
         Some(Ok(())) => report.onelibrary_written = true,
         Some(Err(e)) => {
@@ -981,12 +1019,13 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
 /// Remove rekordbox's OneLibrary and `exportExt.pdb` once our `export.pdb` is
 /// on the stick, and not before: until then they match the old one (issue
 /// #208). Whichever of [`ONELIBRARY_FILES`] is there goes, also one rekordbox
-/// wrote after the plan. A file the system does not let us remove is counted,
-/// since an error would lose the report of a run that has written
-/// `export.pdb`. Their `._` files go with the `PIONEER/rekordbox` walk at the
-/// end of [`export`], under the rules of #192.
+/// wrote after the plan, except an `exportExt.pdb` this run wrote. A file the
+/// system does not let us remove is counted, since an error would lose the
+/// report of a run that has written `export.pdb`. Their `._` files go with
+/// the `PIONEER/rekordbox` walk at the end of [`export`], under the rules of
+/// #192.
 fn remove_onelibrary(rb_dir: &Path, report: &mut Report) {
-    for name in ONELIBRARY_FILES {
+    for name in stale_files(report) {
         match fsname::remove_file(&rb_dir.join(name)) {
             Ok(()) => report.onelibrary_removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -998,10 +1037,10 @@ fn remove_onelibrary(rb_dir: &Path, report: &mut Report) {
 /// Put `db` on the stick as `exportLibrary.db`, after `export.pdb` like
 /// [`remove_onelibrary`] and for the same reason. rekordbox's `-wal` and
 /// `-shm` go first: SQLite would replay an old write-ahead log into the new
-/// database. `exportExt.pdb` goes too, since it lists rekordbox's My Tags for
-/// rekordbox's track ids.
+/// database. `exportExt.pdb` goes too unless this run wrote it, since it
+/// lists rekordbox's My Tags for rekordbox's track ids.
 fn replace_onelibrary(rb_dir: &Path, db: &[u8], report: &mut Report) -> anyhow::Result<()> {
-    for name in ONELIBRARY_FILES.iter().filter(|&&n| n != onelibrary::FILE) {
+    for name in stale_files(report).filter(|&n| n != onelibrary::FILE) {
         match fsname::remove_file(&rb_dir.join(name)) {
             Ok(()) => report.onelibrary_removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1010,6 +1049,14 @@ fn replace_onelibrary(rb_dir: &Path, db: &[u8], report: &mut Report) -> anyhow::
     }
     let path = rb_dir.join(onelibrary::FILE);
     fsname::write_atomic(&path, db).with_context(|| format!("writing {}", path.display()))
+}
+
+/// [`ONELIBRARY_FILES`] without the `exportExt.pdb` this run wrote.
+fn stale_files(report: &Report) -> impl Iterator<Item = &'static str> {
+    let written = report.my_tags_written;
+    ONELIBRARY_FILES
+        .into_iter()
+        .filter(move |&n| !(written && n == EXT_FILE))
 }
 
 /// Hands out track indices to the workers that prepare tracks ahead of the

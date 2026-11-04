@@ -258,6 +258,8 @@ pub fn build(
         artworks,
         device_name: device_name.to_string(),
         export_date: export_date.to_string(),
+        my_tags: Vec::new(),
+        my_tag_tracks: Vec::new(),
     }
 }
 

@@ -17,6 +17,8 @@ anyhow.workspace = true
 rayon.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 miniz_oxide = "0.9"
 # Artwork: image decodes and scales the embedded picture, jpeg-encoder writes
 # the thumbnails with 4:2:0 chroma as rekordbox does (image's encoder is 4:4:4).

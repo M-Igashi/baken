@@ -501,7 +501,7 @@ How it works, FAT32 and MBR, which players, and what rekordbox 7's library incon
 ### Usage
 
 ```
-baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--prune] [--dry-run]
+baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--my-tags <FILE>] [--prune] [--dry-run]
 ```
 
 | Flag | Description |
@@ -516,17 +516,44 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 | `--cdjsafe` | 320 kbps CBR MP3 for every track (needs ffmpeg) |
 | `--onelibrary` | Also write OneLibrary (`exportLibrary.db`) for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO; checked on an XDJ-AZ so far |
 | `--artwork` | Put the picture embedded in each audio file on the stick as its artwork |
+| `--my-tags <FILE>` | My Tags from a JSON file beside the XML, see [My Tags](#my-tags---my-tags) |
 | `--prune` | Delete audio and analysis on the stick this export no longer references |
 | `--dry-run` | Resolve and report, write nothing |
+
+### My Tags (`--my-tags`)
+
+rekordbox's XML carries no My Tags, so they come from a small file next to it ([#281](https://github.com/M-Igashi/baken/issues/281)):
+
+```
+baken expressport collection.xml --device /Volumes/MYUSB --my-tags mytags.json
+```
+
+```json
+{
+  "columns": [
+    {"name": "Genre", "tags": ["House", "Disco"]},
+    {"name": "Components", "tags": ["Vocal"]},
+    {"name": "Situation", "tags": ["Peak Time"]},
+    {"name": "Untitled Column", "tags": []}
+  ],
+  "tracks": {"12": ["House", "Vocal"], "40": ["Peak Time"]}
+}
+```
+
+- `columns` are rekordbox's four My Tag columns in order, each with its tags in the order the player lists them. A file with fewer than four gets rekordbox's names for the rest (Genre, Components, Situation, Untitled Column).
+- `tracks` maps the XML's `TrackID` to the names of that track's tags. Tracks the export does not take are ignored, so one file can cover a whole library. Since tracks name their tags, a tag name may appear in one column only.
+- The file is checked before anything is written: a track naming a tag that no column lists, a tag listed twice, more than four columns, or a name longer than 100 characters stops the plan with the reason. The plan shows how many of the exported tracks carry tags.
+- The tags go into `exportExt.pdb`, the file next to `export.pdb` where rekordbox keeps My Tags for the Device Library, and with `--onelibrary` into OneLibrary as well. Both follow rekordbox's layout: fed the My Tags rekordbox put on the owner's stick (30 tags on 132 of its 582 tracks), they come back on the same tracks, and the tag pages match rekordbox's byte for byte. Not checked on a player yet.
+- Without `--my-tags` the stick gets no `exportExt.pdb`, and OneLibrary carries rekordbox's four columns without tags.
 
 ### Notes
 
 - **A rekordbox install is normally required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) needs `--generate-analysis` for the waveforms (see [#145](https://github.com/M-Igashi/baken/issues/145) and [#147](https://github.com/M-Igashi/baken/issues/147)) and either `--settings-dir` pointing at the `*SETTING.DAT` files from any stick rekordbox once exported, or `--no-settings`; nothing in the XML can stand in for the settings.
 - Built into the binaries; `cargo install baken --no-default-features` leaves it out.
-- The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older read. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) get it with `--onelibrary`. An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues and artwork all in place ([#139](https://github.com/M-Igashi/baken/issues/139)); the CDJ-3000X, OPUS-QUAD and OMNIS-DUO read the same database but have not been tried yet. It lists the same tracks under the same ids as `export.pdb` and is encrypted the way rekordbox's is. Like rekordbox's own, it leaves cues and waveforms to the analysis files, and with `--artwork` it names each track's picture. My Tags and hot cue banks are not in it, since the XML does not carry them.
+- The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older read. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) get it with `--onelibrary`. An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues and artwork all in place ([#139](https://github.com/M-Igashi/baken/issues/139)); the CDJ-3000X, OPUS-QUAD and OMNIS-DUO read the same database but have not been tried yet. It lists the same tracks under the same ids as `export.pdb` and is encrypted the way rekordbox's is. Like rekordbox's own, it leaves cues and waveforms to the analysis files, and with `--artwork` it names each track's picture. My Tags come with `--my-tags`; hot cue banks are not in it, since the XML does not carry them.
 - Format the stick as **FAT32 with an MBR partition table**. A CDJ-2000NXS2 or older reads neither exFAT nor a GPT disk and does not show such a stick at all; a CDJ-3000 also reads exFAT. The players' manuals also list FAT16 and HFS+. `expressport` reads the stick's filesystem and partition table before writing and warns when they rule out a player (macOS and Linux; on macOS the partition table comes from `diskutil`, on Linux from `lsblk`), and on macOS also when an HFS+ stick is case-sensitive, which AlphaTheta says might not be recognised.
 - **HFS+ on a Mac** (Disk Utility: Mac OS Extended (Journaled), scheme Master Boot Record) writes faster, and the players' manuals list it next to FAT16 and FAT32 ([#221](https://github.com/M-Igashi/baken/issues/221)). macOS writes HFS+ itself, while FAT32 goes through FSKit on macOS 26. On a SanDisk USB 3.2 stick, a 62-track, 3.3 GB playlist took 260 s on HFS+ against 423 to 438 s on FAT32, and a 527-track, 7 GB one 469 to 567 s against 1324 to 1362 s, with a quarter to a half of the writes reaching the stick and the same files on both. The directory and the three analysis files each track needs cost about 450 ms on FAT32 and almost nothing on HFS+. HFS+ also keeps file metadata itself, so no `._` files are written. Its limits: Windows cannot read or write it without extra software; the XDJ-R1, the first XDJ-RX and the CDJ-400 list FAT16 and FAT32 only (every other player manual checked lists HFS+); a case-sensitive one might not be recognised; and HFS+ stores accented and kana names decomposed (NFD) while `export.pdb` holds them composed (NFC), as on a stick rekordbox itself exports to HFS+. FAT32 stays the choice for a stick that also has to work on Windows or on those three players.
-- Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. A stick rekordbox exported to loses its OneLibrary (`exportLibrary.db`, with `-wal` and `-shm`) and `exportExt.pdb` when `expressport` writes it, since they would go on describing rekordbox's library instead of the one just written: rekordbox reports that as a library inconsistency, and OneLibrary players would show the old library ([#208](https://github.com/M-Igashi/baken/issues/208)). The plan (and `--dry-run`) lists them before anything is written. With `--onelibrary` the database is replaced by the one just written instead, and the rest go. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
+- Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. A stick rekordbox exported to loses its OneLibrary (`exportLibrary.db`, with `-wal` and `-shm`) and `exportExt.pdb` when `expressport` writes it, since they would go on describing rekordbox's library instead of the one just written: rekordbox reports that as a library inconsistency, and OneLibrary players would show the old library ([#208](https://github.com/M-Igashi/baken/issues/208)). The plan (and `--dry-run`) lists them before anything is written. With `--onelibrary` the database is replaced by the one just written instead, and with `--my-tags` so is `exportExt.pdb`; the rest go. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched.
 - **How long it takes**: an export runs at the stick's write speed, plus about 0.4 s per track for the directory and the three analysis files the format wants next to each audio file (measured on macOS 26 with a FAT32 stick: a new directory 150 ms, a file create 27 ms, a write and close 25 ms). A USB 3 stick that writes 25 MB/s needs about 40 s per GB, and many sticks slow down once warm: a 62-track, 3.3 GB playlist took 339 s on a cold stick and about 450 s later, and `cp -R` of the same files took 410 to 533 s. `--cdjsafe` adds the encoding, a few seconds per track ([#197](https://github.com/M-Igashi/baken/issues/197)). On Linux, check the mount options: udisks2 mounts FAT sticks with `flush`, which sends every closed file to the device at once, and cheap sticks are slow at that ([#173](https://github.com/M-Igashi/baken/issues/173)).
 - Check a finished stick on a player, not by opening it in rekordbox: rekordbox rewrites a device library it opens, and even changes a stick that is only mounted while it runs. [rbsync](https://github.com/aquarazorda/rbsync) measured it deleting 768 of 5,825 playlist entries from a stick it opened and adding an `exportLibrary.db`. If that happened, run `expressport` again: it rewrites `export.pdb` and removes the `exportLibrary.db`, or replaces it with `--onelibrary`.
 - On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.

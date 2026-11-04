@@ -48,16 +48,27 @@ pub fn album(position_in_page: usize, id: u32, artist_id: u32, name: &str) -> Ve
     with_name(r, name)
 }
 
-/// The `0x03, name_offset, name` tail of artists and albums, allocated
-/// `align4(header) + align4(name) + 4` bytes like rekordbox does.
-fn with_name(mut r: Vec<u8>, name: &str) -> Vec<u8> {
-    let name = encode(name);
-    let header = r.len() + 2;
-    let at = string_at(header, &name);
-    r.extend_from_slice(&[0x03, at as u8]);
-    r.resize(at, 0);
-    r.extend_from_slice(&name);
-    r.resize(align4(header) + align4(name.len()) + 4, 0);
+/// The `0x03, name_offset, name` tail of artists and albums.
+fn with_name(r: Vec<u8>, name: &str) -> Vec<u8> {
+    with_strings(r, &[name])
+}
+
+/// The `0x03`, one offset byte per string, then the strings, allocated
+/// `align4(header) + Σ align4(string) + 4` bytes like rekordbox does.
+fn with_strings(mut r: Vec<u8>, strings: &[&str]) -> Vec<u8> {
+    let header = r.len() + 1 + strings.len();
+    let mut alloc = align4(header) + 4;
+    r.push(0x03);
+    r.resize(header, 0);
+    for (i, s) in strings.iter().enumerate() {
+        let s = encode(s);
+        let at = string_at(r.len(), &s);
+        r[header - strings.len() + i] = at as u8;
+        r.resize(at, 0);
+        r.extend_from_slice(&s);
+        alloc += align4(s.len());
+    }
+    r.resize(alloc, 0);
     r
 }
 
@@ -123,6 +134,50 @@ pub fn history_property(track_count: u32, export_date: &str, device_name: &str) 
         r.resize(40, 0);
     }
     r
+}
+
+/// One My Tag column or tag, in `exportExt.pdb` and OneLibrary (issue #281).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MyTag {
+    pub id: u32,
+    /// The column's id; 0 for a column.
+    pub parent: u32,
+    /// Position among the columns, or within its column.
+    pub position: u32,
+    pub name: String,
+}
+
+/// tags (0x03 of `exportExt.pdb`): `0x0680, index_shift, 0, 0, parent,
+/// position, id, column flag, 0x03, two offsets, name, ""`. A column has
+/// parent 0 and its flag (byte 0x1b) set; rekordbox numbers the four columns
+/// 1 to 4 and gives each tag an id of its own database.
+pub fn my_tag(position_in_page: usize, t: &MyTag) -> Vec<u8> {
+    let mut r = Vec::new();
+    r.extend_from_slice(&0x0680u16.to_le_bytes());
+    r.extend_from_slice(&((position_in_page as u16) * 0x20).to_le_bytes());
+    let column = ((t.parent == 0) as u32) << 24;
+    u32s(&mut r, &[0, 0, t.parent, t.position, t.id, column]);
+    with_strings(r, &[&t.name, ""])
+}
+
+/// tag_tracks (0x04 of `exportExt.pdb`): `0, track_id, tag_id, 3`.
+pub fn my_tag_track(track_id: u32, tag_id: u32) -> Vec<u8> {
+    let mut r = Vec::new();
+    u32s(&mut r, &[0, track_id, tag_id, 3]);
+    r
+}
+
+/// The single row of table 0x07 of `exportExt.pdb`: `0x0700, 0, five zero
+/// words, master_db_id, 0x03, five offsets, five empty strings`. rekordbox
+/// writes the same id into OneLibrary's `property.myTagMasterDBID`; it
+/// differs between rekordbox installations, so it names the database the
+/// tag ids come from.
+pub fn my_tag_master(master_db_id: u32) -> Vec<u8> {
+    let mut r = Vec::new();
+    r.extend_from_slice(&0x0700u16.to_le_bytes());
+    r.extend_from_slice(&0u16.to_le_bytes());
+    u32s(&mut r, &[0, 0, 0, 0, 0, master_db_id]);
+    with_strings(r, &[""; 5])
 }
 
 /// Everything a `tracks` (0x00) row needs.
