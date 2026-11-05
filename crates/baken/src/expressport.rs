@@ -252,10 +252,14 @@ fn print_report(plan: &Plan, r: &Report) {
         println!("{} {}: {}", style("⚠").yellow(), name, err);
     }
     if r.prune_skipped {
+        let why = match (r.failures.len(), r.sources_missing) {
+            (0, m) => format!("{m} tracks have no source file"),
+            (f, 0) => format!("{f} tracks failed"),
+            (f, m) => format!("{f} tracks failed and {m} have no source file"),
+        };
         println!(
-            "{} --prune skipped because {} tracks failed: their files from an earlier export stay on the stick until a run where every track succeeds.",
+            "{} --prune skipped because {why}: their files from an earlier export stay on the stick until a run where every track is reachable and succeeds.",
             style("⚠").yellow(),
-            r.failures.len()
         );
     }
     if let Some(e) = &r.onelibrary_error {

@@ -75,6 +75,10 @@ pub struct Options {
 pub struct Skipped {
     pub name: String,
     pub reason: String,
+    /// The source file is not there (a drive not mounted, a file moved). A
+    /// copy from an earlier export may still be on the stick, so `--prune`
+    /// leaves the stick alone in such a run (issue #291).
+    pub source_missing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -255,10 +259,14 @@ pub struct Report {
     pub seek_tables_dropped: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
-    /// `prune` was asked for and not done because tracks failed: their files
-    /// from an earlier export are not in `export.pdb` this time and would
-    /// otherwise go (a stick that filled up, a NAS that was asleep).
+    /// `prune` was asked for and not done because tracks failed or their
+    /// sources were missing: their files from an earlier export are not in
+    /// `export.pdb` this time and would otherwise go (a stick that filled up,
+    /// a NAS that was asleep or not mounted).
     pub prune_skipped: bool,
+    /// Tracks the plan skipped because their source file was missing
+    /// ([`Skipped::source_missing`]).
+    pub sources_missing: usize,
     pub tracks_in_database: usize,
 }
 
@@ -311,6 +319,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 skipped.push(Skipped {
                     name: format!("TrackID {tid}"),
                     reason: "not in the collection".into(),
+                    source_missing: false,
                 });
                 continue;
             };
@@ -319,6 +328,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 skipped.push(Skipped {
                     name: track.name.clone(),
                     reason: format!("source file missing: {}", source.display()),
+                    source_missing: true,
                 });
                 continue;
             };
@@ -332,6 +342,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 skipped.push(Skipped {
                     name: track.name.clone(),
                     reason: reason.into(),
+                    source_missing: false,
                 });
                 continue;
             }
@@ -982,9 +993,10 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         settings::copy_all(dir, &plan.settings_files, &plan.device)?;
     }
 
-    // `wanted` lacks the tracks that failed, and an earlier export may have
-    // left their files on the stick.
-    if plan.prune && !report.failures.is_empty() {
+    // `wanted` lacks the tracks that failed or whose source is missing, and
+    // an earlier export may have left their files on the stick.
+    report.sources_missing = plan.skipped.iter().filter(|s| s.source_missing).count();
+    if plan.prune && (!report.failures.is_empty() || report.sources_missing > 0) {
         report.prune_skipped = true;
     } else if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
