@@ -57,6 +57,16 @@ const HIGH_HZ: f64 = 2500.0;
 const RELEASE: [f64; 3] = [0.97, 0.93, 0.90];
 /// Gain rule per band: `clamp(round(target / max_envelope), floor, cap)`, and
 /// the byte scale applied on top of the gain.
+/// rekordbox never writes a preview column lower than these: on the
+/// reference stick every `PWAV` height is at least 2 and every `PWV2` byte
+/// at least 1 (587 of 587 `.DAT` files). Nexus-era firmware reads a zero
+/// column as an unfinished preview and draws its own (issue #285).
+const PWAV_MIN_HEIGHT: u8 = 2;
+const PWV2_MIN_HEIGHT: u8 = 1;
+/// What rekordbox writes for its quietest `PWAV` columns: height 2,
+/// whiteness 5 (8449 of the 9809 height-2 columns on the reference stick).
+const PWAV_FLOOR: u8 = (5 << 5) | PWAV_MIN_HEIGHT;
+
 const GAIN_TARGET: [f64; 3] = [78.0, 105.0, 115.0];
 const GAIN_FLOOR: [u16; 3] = [80, 80, 95];
 const GAIN_CAP: [u16; 3] = [267, 300, 500];
@@ -364,7 +374,11 @@ pub fn analyze(audio: &Measured) -> Waveforms {
             } else {
                 0
             };
-            (white200[k / 2].min(7) << 5) | h.min(31)
+            if h < PWAV_MIN_HEIGHT {
+                PWAV_FLOOR
+            } else {
+                (white200[k / 2].min(7) << 5) | h.min(31)
+            }
         })
         .collect();
     let rms100: Vec<f64> = ranges(n, TINY_COLUMNS).map(rms_over).collect();
@@ -372,11 +386,12 @@ pub fn analyze(audio: &Measured) -> Waveforms {
     let pwv2: Vec<u8> = rms100
         .iter()
         .map(|&rms| {
-            if rms100_max > 0.0 {
+            let h = if rms100_max > 0.0 {
                 ((15.0 * (rms / rms100_max).sqrt()).round() as u8).min(15)
             } else {
                 0
-            }
+            };
+            h.max(PWV2_MIN_HEIGHT)
         })
         .collect();
 
@@ -552,6 +567,33 @@ mod tests {
         let bright = analyze(&tone(48000, 1.0, 8000.0, 0.8));
         assert!(bright.pwv3[10..].iter().all(|b| b >> 5 == 7));
         assert!(bright.pwv7[20][2] > bright.pwv7[20][0]);
+    }
+
+    /// Silence at both ends gives rekordbox's floor, never a zero column
+    /// (issue #285), and the loud middle is untouched.
+    #[test]
+    fn silent_preview_columns_take_rekordbox_floor() {
+        let rate = 44100;
+        let silence = vec![0f32; rate as usize * 2];
+        let w = metered(
+            rate,
+            2,
+            &[&silence, &tone_samples(rate, 6.0, 440.0, 0.8), &silence],
+        );
+        let w = analyze(&w);
+        assert!(w.pwav.iter().all(|&b| b & 0x1f >= 2), "{:?}", w.pwav);
+        assert_eq!((w.pwav[0], w.pwav[399]), (0xa2, 0xa2));
+        assert!(w.pwav[200] & 0x1f >= 20);
+        assert!(
+            w.pwv2.iter().all(|&b| (1..=15).contains(&b)),
+            "{:?}",
+            w.pwv2
+        );
+        assert_eq!((w.pwv2[0], w.pwv2[99]), (1, 1));
+
+        let quiet = analyze(&metered(rate, 2, &[&silence]));
+        assert!(quiet.pwav.iter().all(|&b| b == 0xa2));
+        assert!(quiet.pwv2.iter().all(|&b| b == 1));
     }
 
     /// Decoders hand over buffers of any size; the result must not depend on them.

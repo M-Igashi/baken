@@ -688,4 +688,3 @@ mod tests {
         assert_eq!(rows(&baken, tree), rows(&rekordbox, tree));
     }
 }
-
