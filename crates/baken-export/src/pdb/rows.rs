@@ -208,11 +208,18 @@ pub struct TrackRow {
     /// 0..=5 stars.
     pub rating: u8,
     pub file_type: u16,
-    pub date_added: String,
+    /// rekordbox's library id of the track (the XML `TrackID`), at `0x14`.
+    /// OneLibrary's `content.masterContentId` holds the same number.
+    pub master_content_id: u32,
+    /// String 10: the file's creation date in rekordbox. The XML has none, so
+    /// callers pass `DateAdded` (crate-digger calls this string `date_added`).
+    pub date_created: String,
     pub release_date: String,
     pub mix_name: String,
     pub analyze_path: String,
-    pub analyze_date: String,
+    /// String 15: the date the track was added to the collection, which a
+    /// player shows and sorts as DATE ADDED (crate-digger: `analyze_date`).
+    pub date_added: String,
     pub comment: String,
     pub title: String,
     pub filename: String,
@@ -245,7 +252,7 @@ impl TrackRow {
                 self.sample_rate,
                 self.composer_id,
                 self.file_size,
-                self.id + 20,
+                self.master_content_id,
                 MASTER_DB_ID,
                 self.artwork_id,
                 self.key_id,
@@ -290,12 +297,12 @@ impl TrackRow {
             "ON",
             "",
             "",
-            &self.date_added,
+            &self.date_created,
             &self.release_date,
             &self.mix_name,
             "",
             &self.analyze_path,
-            &self.analyze_date,
+            &self.date_added,
             &self.comment,
             &self.title,
             "",
