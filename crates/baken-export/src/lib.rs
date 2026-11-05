@@ -142,6 +142,10 @@ pub struct Plan {
     /// removes them once it has written `export.pdb`, so a cancelled or
     /// failed run leaves both of the stick's libraries as they were.
     pub onelibrary_files: Vec<&'static str>,
+    /// Play history a player recorded in the stick's `export.pdb`. The export
+    /// replaces that file, so the history is lost unless the DJ imports it
+    /// into rekordbox first (issue #286).
+    pub player_history: Option<pdb::PlayerHistory>,
     /// What the export writes to the stick, estimated from above (issue
     /// #233): audio and analysis files not already there, `export.pdb`, the
     /// settings files and new directories, in whole allocation units, less
@@ -414,6 +418,9 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .into_iter()
         .filter(|f| rb_dir.join(f).symlink_metadata().is_ok())
         .collect();
+    let player_history = std::fs::read(rb_dir.join("export.pdb"))
+        .ok()
+        .and_then(|pdb| pdb::PlayerHistory::read(&pdb));
 
     let space = volume::space(&opts.device);
     let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
@@ -470,6 +477,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         filesystem,
         partition_table,
         onelibrary_files,
+        player_history,
         space_needed,
         space_available: space.map(|s| s.available),
         device_name,

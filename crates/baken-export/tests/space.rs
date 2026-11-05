@@ -154,3 +154,25 @@ fn a_missing_source_keeps_prune_from_removing_files() {
     assert!(b_on_stick.is_file());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A stick whose `export.pdb` holds history a player recorded: the plan
+/// reports it (issue #286); our own export has none to report afterwards.
+#[test]
+fn the_plan_reports_player_history_on_the_stick() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../.claude/fixtures/JPHFAREKORD-20260918/PIONEER/rekordbox/export.pdb");
+    if !fixture.exists() {
+        eprintln!("fixture missing, skipping");
+        return;
+    }
+    let (root, opts) = setup("history");
+    let rb = opts.device.join("PIONEER/rekordbox");
+    std::fs::create_dir_all(&rb).unwrap();
+    std::fs::copy(&fixture, rb.join("export.pdb")).unwrap();
+    let history = plan(&opts).unwrap().player_history.expect("history found");
+    assert_eq!((history.lists.len(), history.entries), (1, 24));
+
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(plan(&opts).unwrap().player_history.is_none());
+    std::fs::remove_dir_all(&root).unwrap();
+}
