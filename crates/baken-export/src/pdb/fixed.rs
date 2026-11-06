@@ -93,3 +93,60 @@ pub const SORT_ROWS: [[u8; 8]; 17] = [
     [0x06, 0x00, 0x05, 0x00, 0x00, 0x06, 0x00, 0x00],
     [0x0b, 0x00, 0x0c, 0x00, 0x00, 0x07, 0x00, 0x00],
 ];
+
+/// What rekordbox writes into every export from its own preferences, and the
+/// XML does not carry: the colour names (table 0x06), browse columns (0x10),
+/// categories (0x11), sort list (0x12) and the display bytes of the property
+/// row (0x13). rekordbox's defaults, or what the stick's `export.pdb` holds
+/// from an earlier export, which [`crate::plan`] carries over (issue #289).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preferences {
+    /// `(id, name)`, ids 1 to 8. The RGB values stay [`COLORS`]'.
+    pub colors: Vec<(u8, String)>,
+    /// `(id, code, name)` as in [`COLUMNS`].
+    pub columns: Vec<(u16, u16, String)>,
+    /// Rows as in [`CATEGORY_ROWS`]: menu item, category, a byte, flags (bit
+    /// 0 hidden), position.
+    pub categories: Vec<[u8; 8]>,
+    /// Rows as in [`SORT_ROWS`]: menu item, sort, flags (bit 0 hidden, bit 1
+    /// shown as the sub column), position.
+    pub sorts: Vec<[u8; 8]>,
+    /// Bytes 8 to 11 of the property row; byte 9 is the Device Library
+    /// background colour, which rekordbox writes as 0 by default.
+    pub display: [u8; 4],
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Preferences {
+            colors: COLORS
+                .iter()
+                .map(|&(id, name, _)| (id, name.to_string()))
+                .collect(),
+            columns: COLUMNS
+                .iter()
+                .map(|&(id, code, name)| (id, code, name.to_string()))
+                .collect(),
+            categories: CATEGORY_ROWS.to_vec(),
+            sorts: SORT_ROWS.to_vec(),
+            display: [0; 4],
+        }
+    }
+}
+
+impl Preferences {
+    /// The parts that differ from rekordbox's defaults, in words.
+    pub fn changed(&self) -> Vec<&'static str> {
+        let d = Preferences::default();
+        [
+            (self.colors != d.colors, "colour names"),
+            (self.columns != d.columns, "browse columns"),
+            (self.categories != d.categories, "category list"),
+            (self.sorts != d.sorts, "sort list"),
+            (self.display != d.display, "background colour"),
+        ]
+        .into_iter()
+        .filter_map(|(changed, what)| changed.then_some(what))
+        .collect()
+    }
+}

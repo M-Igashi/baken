@@ -237,7 +237,9 @@ pub fn build(
         });
     }
 
-    let artworks = tracks
+    // by id, as rekordbox lists them; ids kept from an earlier export (issue
+    // #290) do not follow the track order
+    let mut artworks: Vec<(u32, String)> = tracks
         .iter()
         .filter(|dt| dt.artwork_id != 0)
         .map(|dt| {
@@ -247,6 +249,7 @@ pub fn build(
             )
         })
         .collect();
+    artworks.sort_unstable_by_key(|a| a.0);
 
     Export {
         tracks: rows_out,
@@ -259,8 +262,7 @@ pub fn build(
         artworks,
         device_name: device_name.to_string(),
         export_date: export_date.to_string(),
-        my_tags: Vec::new(),
-        my_tag_tracks: Vec::new(),
+        ..Default::default()
     }
 }
 
