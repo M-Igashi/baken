@@ -373,6 +373,35 @@ mod tests {
         assert_eq!(preferences(&empty), Some((Preferences::default(), vec![])));
     }
 
+    /// rekordbox 7.2.18's export to a journaled HFS+ stick (#287): every
+    /// analysis and artwork path in its `export.pdb` is the one baken builds
+    /// under `.PIONEER`, and the audio stays in `/Contents`.
+    #[test]
+    fn rekordbox_on_hfs_plus_writes_what_baken_builds_under_the_hidden_root() {
+        use crate::layout::Root;
+        let Some(pdb) = fixture("hfsplus-rekordbox-20261106/.PIONEER/rekordbox/export.pdb") else {
+            return;
+        };
+        let tracks = live_rows(&pdb, TRACKS).unwrap();
+        assert_eq!(tracks.len(), 35);
+        for r in tracks {
+            let string = |i: usize| decode(r, u16_at(r, 0x5e + 2 * i).unwrap()).unwrap().0;
+            let (analyze, file) = (string(14), string(20));
+            assert!(file.starts_with("/Contents/"), "{file}");
+            let dir = crate::anlz::hash::anlz_dir(Root::Hidden, &file);
+            assert_eq!(analyze, format!("{dir}/ANLZ0000.DAT"));
+        }
+        let artwork = live_rows(&pdb, 13).unwrap();
+        assert_eq!(artwork.len(), 23);
+        for r in artwork {
+            let id = u32_at(r, 0).unwrap();
+            assert_eq!(
+                decode(r, 4).unwrap().0,
+                crate::artwork::path(Root::Hidden, id, 'a', false)
+            );
+        }
+    }
+
     #[test]
     fn reads_the_artwork_ids_by_stick_path() {
         let Some(pdb) = fixture(STICK) else {

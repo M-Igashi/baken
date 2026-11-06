@@ -9,6 +9,7 @@
 //! numbers the files, `ANLZ0000` for the first track and `ANLZ0001` for the
 //! next (issue #176).
 
+use crate::layout::Root;
 use std::collections::HashMap;
 
 /// `(P, hash)` for a USB-relative audio path such as `/Contents/Artist/Album/x.flac`.
@@ -30,21 +31,34 @@ pub fn anlz_hash(usb_path: &str) -> (u32, u32) {
     (p, r)
 }
 
-/// USB-relative directory holding the `ANLZ000N.DAT/.EXT/.2EX` files for `usb_path`.
-pub fn anlz_dir(usb_path: &str) -> String {
+/// USB-relative directory holding the `ANLZ000N.DAT/.EXT/.2EX` files for
+/// `usb_path`, under the library folder `root`. The hash is of the audio
+/// path alone, so it does not change with the root (issue #287).
+pub fn anlz_dir(root: Root, usb_path: &str) -> String {
     let (p, r) = anlz_hash(usb_path);
-    format!("/PIONEER/USBANLZ/P{:03X}/{:08X}", p, r)
+    format!("/{}/USBANLZ/P{:03X}/{:08X}", root.name(), p, r)
 }
 
 /// Hands out `(anlz_dir, N)` in export order: a track whose directory an
 /// earlier track already has gets the next `N`.
 #[derive(Debug, Default)]
-pub struct AnlzSlots(HashMap<String, u16>);
+pub struct AnlzSlots {
+    root: Root,
+    taken: HashMap<String, u16>,
+}
 
 impl AnlzSlots {
+    /// Slots under the library folder `root`; `default()` is `PIONEER`.
+    pub fn under(root: Root) -> Self {
+        AnlzSlots {
+            root,
+            taken: HashMap::new(),
+        }
+    }
+
     pub fn assign(&mut self, usb_path: &str) -> (String, u16) {
-        let dir = anlz_dir(usb_path);
-        let taken = self.0.entry(dir.clone()).or_default();
+        let dir = anlz_dir(self.root, usb_path);
+        let taken = self.taken.entry(dir.clone()).or_default();
         let n = *taken;
         *taken += 1;
         (dir, n)
@@ -58,18 +72,27 @@ mod tests {
     #[test]
     fn matches_rekordbox_export() {
         assert_eq!(
-            anlz_dir("/Contents/XamarA/UnknownAlbum/Unreal.mp3"),
+            anlz_dir(Root::Pioneer, "/Contents/XamarA/UnknownAlbum/Unreal.mp3"),
             "/PIONEER/USBANLZ/P060/00012938"
         );
         assert_eq!(
             anlz_dir(
+                Root::Pioneer,
                 "/Contents/Szeir/Stolperfalle EP/Szeir - Stolperfalle EP - 01 Oort Cloud.flac"
             ),
             "/PIONEER/USBANLZ/P074/0001B742"
         );
         assert_eq!(
-            anlz_dir("/Contents/Lidvall/The Strange Guy EP/Lidvall - The Strange Guy EP - 05 Where hav.flac"),
+            anlz_dir(Root::Pioneer, "/Contents/Lidvall/The Strange Guy EP/Lidvall - The Strange Guy EP - 05 Where hav.flac"),
             "/PIONEER/USBANLZ/P005/0000CD61"
+        );
+        // rekordbox's export to an HFS+ stick (#287): same hash, hidden root
+        assert_eq!(
+            anlz_dir(
+                Root::Hidden,
+                "/Contents/DEAS/Basics EP/DEAS - Basics EP - 03 DEAS - Black.flac"
+            ),
+            "/.PIONEER/USBANLZ/P053/00015E3F"
         );
     }
 

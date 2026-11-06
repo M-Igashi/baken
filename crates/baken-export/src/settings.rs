@@ -178,17 +178,18 @@ fn header_field(b: &[u8], at: usize) -> Option<String> {
     Some(String::from_utf8_lossy(&field[..end]).trim().to_string())
 }
 
-/// Those of `files` already on the stick at `device` whose header names
-/// another program than rekordbox. rekordbox writes `rekordbox` in the
+/// Those of `files` already in the stick's library folder `library`
+/// (`PIONEER` or `.PIONEER`) whose header names another program than
+/// rekordbox. rekordbox writes `rekordbox` in the
 /// software field; the one player-written file seen, the reference stick's
 /// `DEVSETTING.DAT`, names the player and its firmware (`CDJ-2000NXS2`,
 /// `1.85`). `djprofile.nxs` has no such header and is never kept.
-pub fn player_saved(device: &Path, files: &[&'static str]) -> Vec<PlayerSaved> {
+pub fn player_saved(library: &Path, files: &[&'static str]) -> Vec<PlayerSaved> {
     files
         .iter()
         .filter(|&&f| f != "djprofile.nxs")
         .filter_map(|&file| {
-            let b = std::fs::read(device.join("PIONEER").join(file)).ok()?;
+            let b = std::fs::read(library.join(file)).ok()?;
             if b.get(..4) != Some(&[0x60, 0, 0, 0]) {
                 return None;
             }
@@ -206,12 +207,12 @@ pub fn player_saved(device: &Path, files: &[&'static str]) -> Vec<PlayerSaved> {
         .collect()
 }
 
-/// Validate and copy `files` into `<device>/PIONEER/`, the bytes only, each
-/// through a temp file and a rename so that a failed write leaves the
-/// stick's old file whole.
-pub fn copy_all(from: &Path, files: &[&str], device: &Path) -> Result<()> {
-    let dest = device.join("PIONEER");
-    std::fs::create_dir_all(&dest)?;
+/// Validate and copy `files` into the stick's library folder `dest`
+/// (`<device>/PIONEER` or `<device>/.PIONEER`), the bytes only, each through
+/// a temp file and a rename so that a failed write leaves the stick's old
+/// file whole.
+pub fn copy_all(from: &Path, files: &[&str], dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
     for f in files {
         let src = from.join(f);
         validate(&src)?;
@@ -271,16 +272,17 @@ mod tests {
         }
         assert_eq!(locate(Some(&dir)).unwrap(), dir);
         assert_eq!(files(&dir).unwrap(), REQUIRED);
-        copy_all(&dir, &REQUIRED, &device).unwrap();
-        let without_profile = !device.join("PIONEER/djprofile.nxs").exists();
+        let library = device.join("PIONEER");
+        copy_all(&dir, &REQUIRED, &library).unwrap();
+        let without_profile = !library.join("djprofile.nxs").exists();
 
         write_valid(&dir, "DEVSETTING.DAT");
         let mut profile = vec![0u8; DJ_PROFILE_SIZE];
         profile[0x20..0x25].copy_from_slice(b"baken");
         std::fs::write(dir.join("djprofile.nxs"), &profile).unwrap();
         let found = files(&dir).unwrap();
-        copy_all(&dir, &found, &device).unwrap();
-        let copied = std::fs::read(device.join("PIONEER/djprofile.nxs")).unwrap();
+        copy_all(&dir, &found, &library).unwrap();
+        let copied = std::fs::read(library.join("djprofile.nxs")).unwrap();
 
         std::fs::write(dir.join("djprofile.nxs"), &profile[..159]).unwrap();
         let profile_message = files(&dir).unwrap_err().to_string();
@@ -338,7 +340,7 @@ mod tests {
         std::fs::write(pioneer.join("djprofile.nxs"), &profile).unwrap();
         let mut all = REQUIRED.to_vec();
         all.extend(OPTIONAL);
-        let kept = player_saved(&device, &all);
+        let kept = player_saved(&pioneer, &all);
         std::fs::remove_dir_all(&device).unwrap();
         assert_eq!(
             kept,
@@ -359,7 +361,7 @@ mod tests {
         }
         let mut all = REQUIRED.to_vec();
         all.extend(OPTIONAL);
-        let kept = player_saved(pioneer.parent().unwrap(), &all);
+        let kept = player_saved(&pioneer, &all);
         let kept: Vec<_> = kept.iter().map(|k| (k.file, k.model.as_str())).collect();
         assert_eq!(kept, [("DEVSETTING.DAT", "CDJ-2000NXS2")]);
     }
@@ -377,7 +379,7 @@ mod tests {
         assert_eq!(found[REQUIRED.len()..], OPTIONAL);
         let device =
             std::env::temp_dir().join(format!("baken-fixture-settings-{}", std::process::id()));
-        copy_all(&pioneer, &found, &device).unwrap();
+        copy_all(&pioneer, &found, &device.join("PIONEER")).unwrap();
         let differ: Vec<&str> = found
             .iter()
             .copied()

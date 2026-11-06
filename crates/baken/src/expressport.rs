@@ -1,7 +1,8 @@
 //! CLI wrapper for `baken expressport` (direct USB export, beta from 3.5.0 to 4.2.1).
 
 use anyhow::Result;
-use baken_export::{export, plan, Options, Plan, Report};
+use baken_export::volume::FileSystem;
+use baken_export::{export, plan, Options, Plan, Report, Root};
 use console::style;
 
 use crate::args::ExpressportArgs;
@@ -64,12 +65,24 @@ fn print_plan(plan: &Plan) {
             style("⚠").yellow()
         );
     }
-    if !plan.hidden_library.is_empty() {
-        println!(
-            "{} This stick also holds a rekordbox library under the hidden folder .PIONEER ({}). rekordbox reads a library from either .PIONEER or PIONEER and expressport writes PIONEER, so the stick will carry two; which one a player reads is not known. Use another stick, or move .PIONEER off this one once you no longer need it.",
-            style("⚠").yellow(),
-            plan.hidden_library.join(", ")
-        );
+    let hfs = matches!(
+        plan.filesystem,
+        Some(FileSystem::HfsPlus | FileSystem::HfsPlusCaseSensitive)
+    );
+    match (plan.root, hfs) {
+        (Root::Hidden, true) => println!(
+            "{} Library folder: .PIONEER, hidden, as rekordbox writes it on an HFS+ stick (Cmd-Shift-. shows it in Finder)",
+            style("▸").cyan()
+        ),
+        (Root::Hidden, false) => println!(
+            "{} Library folder: .PIONEER, hidden, where this stick's library already is",
+            style("▸").cyan()
+        ),
+        (Root::Pioneer, true) => println!(
+            "{} Library folder: PIONEER, where this stick's library already is. rekordbox itself writes the hidden .PIONEER on an HFS+ stick.",
+            style("▸").cyan()
+        ),
+        (Root::Pioneer, false) => {}
     }
     if let Some(h) = &plan.player_history {
         let lists = if h.lists.is_empty() {
@@ -344,7 +357,7 @@ fn print_report(plan: &Plan, r: &Report) {
             style("⚠").yellow(),
             r.onelibrary_kept,
             baken_export::ONELIBRARY_FILES.join(", "),
-            plan.device.join("PIONEER/rekordbox").display()
+            plan.device.join(plan.root.name()).join("rekordbox").display()
         );
     }
     println!(
@@ -390,10 +403,11 @@ fn print_report(plan: &Plan, r: &Report) {
         ),
         (r.failures.len(), "tracks failed (left out of the database)"),
     ]);
+    let library = plan.device.join(plan.root.name());
     println!(
-        "  {} {}/PIONEER/rekordbox/export.pdb",
+        "  {} {}",
         style("•").dim(),
-        plan.device.display()
+        library.join("rekordbox/export.pdb").display()
     );
     for (written, file) in [
         (r.my_tags_written, baken_export::EXT_FILE),
@@ -401,18 +415,18 @@ fn print_report(plan: &Plan, r: &Report) {
     ] {
         if written {
             println!(
-                "  {} {}/PIONEER/rekordbox/{file}",
+                "  {} {}",
                 style("•").dim(),
-                plan.device.display()
+                library.join("rekordbox").join(file).display()
             );
         }
     }
     if !plan.settings_files.is_empty() {
         println!(
-            "  {} {} settings files in {}/PIONEER/",
+            "  {} {} settings files in {}",
             style("•").dim(),
             plan.settings_files.len(),
-            plan.device.display()
+            library.display()
         );
     }
 }

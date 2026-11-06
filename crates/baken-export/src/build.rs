@@ -115,6 +115,7 @@ pub fn build(
     selected: &[usize],
     device_name: &str,
     export_date: &str,
+    root: crate::layout::Root,
 ) -> Export {
     let mut artists = Ids::default();
     let mut genres = Ids::default();
@@ -245,7 +246,7 @@ pub fn build(
         .map(|dt| {
             (
                 dt.artwork_id,
-                crate::artwork::path(dt.artwork_id, 'a', false),
+                crate::artwork::path(root, dt.artwork_id, 'a', false),
             )
         })
         .collect();
@@ -262,6 +263,7 @@ pub fn build(
         artworks,
         device_name: device_name.to_string(),
         export_date: export_date.to_string(),
+        root,
         ..Default::default()
     }
 }
