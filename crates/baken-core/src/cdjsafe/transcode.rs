@@ -168,11 +168,20 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
             .output()
             .context("Failed to execute ffmpeg. Is ffmpeg installed?")?;
 
+        let stderr = String::from_utf8_lossy(&output.stderr);
         if output.status.success() {
-            return Ok(());
+            let errors = decode_errors(&stderr);
+            if errors <= MAX_DECODE_ERRORS {
+                return Ok(());
+            }
+            let _ = std::fs::remove_file(dst);
+            bail!(
+                "ffmpeg reported {errors} decoding errors for {}: the audio is damaged or encrypted, \
+                 so an MP3 made from it would not be the track",
+                src.display()
+            );
         }
         let _ = std::fs::remove_file(dst);
-        let stderr = String::from_utf8_lossy(&output.stderr);
         let lines: Vec<&str> = stderr.lines().collect();
         last_err = lines[lines.len().saturating_sub(4)..].join("\n");
     }
@@ -182,6 +191,23 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
         src.display(),
         last_err
     ))
+}
+
+/// A few bad frames in an old rip are tolerated (the MP3 still plays and
+/// lines up); hundreds mean ffmpeg decoded noise from a damaged or encrypted
+/// stream while still exiting 0, which is what an AAC with corrupt audio data
+/// did in the rbxport comparison (1,667 errors, 334 s of noise from 373 s).
+const MAX_DECODE_ERRORS: usize = 10;
+
+/// Lines in ffmpeg's log that report a packet it could not decode.
+fn decode_errors(stderr: &str) -> usize {
+    stderr
+        .lines()
+        .filter(|l| {
+            l.contains("Error submitting packet to decoder")
+                || l.contains("Error while decoding stream")
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -197,5 +223,15 @@ mod tests {
         assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
         assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
         assert_eq!(parse_bits(&None), None);
+    }
+
+    #[test]
+    fn counts_decode_errors_in_ffmpeg_log() {
+        let log = "[aac @ 0x1] channel element 2.0 is not allocated\n\
+            [aist#0:0/aac @ 0x2] [dec:aac @ 0x3] Error submitting packet to decoder: Invalid data found when processing input\n\
+            size=  13052KiB time=00:05:34.00\n\
+            [aist#0:0/aac @ 0x2] [dec:aac @ 0x3] Error submitting packet to decoder: Invalid data found when processing input\n";
+        assert_eq!(decode_errors(log), 2);
+        assert_eq!(decode_errors("size=  13052KiB time=00:05:34.00"), 0);
     }
 }
