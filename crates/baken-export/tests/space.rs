@@ -126,3 +126,31 @@ fn a_failed_track_keeps_prune_from_removing_files() {
     assert!(b_on_stick.is_file() && !stale.exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A source that is not there at plan time (a drive not mounted) is skipped;
+/// `--prune` must then leave its copy from an earlier export alone (#291).
+#[test]
+fn a_missing_source_keeps_prune_from_removing_files() {
+    let (root, mut opts) = setup("prune-missing");
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let b_on_stick = opts.device.join("Contents/A/B/b.wav");
+    assert!(b_on_stick.is_file());
+
+    opts.prune = true;
+    let source = root.join("music/b.wav");
+    std::fs::rename(&source, root.join("b.wav")).unwrap();
+    let p = plan(&opts).unwrap();
+    assert!(p.skipped.iter().any(|s| s.source_missing));
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert!(report.failures.is_empty());
+    assert_eq!(report.sources_missing, 1);
+    assert!(report.prune_skipped);
+    assert_eq!(report.pruned, 0);
+    assert!(b_on_stick.is_file());
+
+    std::fs::rename(root.join("b.wav"), &source).unwrap();
+    let report = export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    assert!(!report.prune_skipped && report.sources_missing == 0);
+    assert!(b_on_stick.is_file());
+    std::fs::remove_dir_all(&root).unwrap();
+}
