@@ -58,6 +58,18 @@ fn print_plan(plan: &Plan) {
     for w in plan.format_warnings() {
         println!("{} {w}", style("⚠").yellow());
     }
+    if let Some(h) = &plan.player_history {
+        let lists = if h.lists.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", h.lists.join(", "))
+        };
+        println!(
+            "{} This stick holds play history a player recorded{lists}, {} plays. Writing export.pdb replaces it: connect the stick to rekordbox and import the history there first if you want to keep it.",
+            style("⚠").yellow(),
+            h.entries
+        );
+    }
     // an exportExt.pdb on the stick is replaced by ours, not removed
     let onelibrary: Vec<&str> = plan
         .onelibrary_files
