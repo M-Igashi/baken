@@ -111,6 +111,15 @@ pub const ONELIBRARY_FILES: [&str; 4] = [
     EXT_FILE,
 ];
 
+/// A library under `.PIONEER`, which rekordbox 7 reads like one under
+/// `PIONEER` (its binary names both `/.PIONEER/rekordbox/export.pdb` and
+/// `/PIONEER/rekordbox/export.pdb`) and is reported to write on HFS+ sticks
+/// (issue #287).
+pub const HIDDEN_LIBRARY: [&str; 2] = [
+    ".PIONEER/rekordbox/export.pdb",
+    ".PIONEER/rekordbox/exportLibrary.db",
+];
+
 /// The Device Library's My Tags, which [`Options::my_tags`] writes.
 pub const EXT_FILE: &str = "exportExt.pdb";
 
@@ -142,6 +151,14 @@ pub struct Plan {
     /// caller that cannot run `diskutil` or `lsblk` (a sandboxed app) can set
     /// it itself before showing [`Plan::format_warnings`].
     pub partition_table: Option<volume::PartitionTable>,
+    /// MBR type id of the stick's partition, read on Linux only (issue
+    /// #288): macOS does not mount FAT on another type at all.
+    pub partition_type: Option<u8>,
+    /// Library files rekordbox put under `.PIONEER`, the hidden root it is
+    /// reported to use on HFS+ sticks (issue #287), as paths from the stick's
+    /// root. expressport writes `PIONEER` and leaves them alone, so the
+    /// stick then holds two libraries.
+    pub hidden_library: Vec<&'static str>,
     /// Those of [`ONELIBRARY_FILES`] on the stick, in that order. [`export`]
     /// removes them once it has written `export.pdb`, so a cancelled or
     /// failed run leaves both of the stick's libraries as they were.
@@ -225,9 +242,16 @@ impl Plan {
             .collect()
     }
 
-    /// What the stick's filesystem or partition table rules out (issue #184).
+    /// What the stick's filesystem or partition table rules out (issues #184
+    /// and #288).
     pub fn format_warnings(&self) -> Vec<volume::FormatWarning> {
-        volume::warnings(self.filesystem.as_ref(), self.partition_table)
+        let mut out = volume::warnings(self.filesystem.as_ref(), self.partition_table);
+        out.extend(volume::partition_type_warning(
+            self.filesystem.as_ref(),
+            self.partition_table,
+            self.partition_type,
+        ));
+        out
     }
 
     pub fn playlist_names(&self) -> Vec<&str> {
@@ -450,11 +474,16 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         })
         .unwrap_or_else(|| "USB".into());
     let volume_root = is_volume_root(&opts.device);
-    let (filesystem, partition_table) = if volume_root {
-        volume::probe(&opts.device)
+    let (filesystem, partition_table, partition_type) = if volume_root {
+        let (fs, table) = volume::probe(&opts.device);
+        (fs, table, volume::partition_type(&opts.device))
     } else {
-        (None, None)
+        (None, None, None)
     };
+    let hidden_library = HIDDEN_LIBRARY
+        .into_iter()
+        .filter(|f| opts.device.join(f).symlink_metadata().is_ok())
+        .collect();
     let rb_dir = opts.device.join("PIONEER/rekordbox");
     let onelibrary_files = ONELIBRARY_FILES
         .into_iter()
@@ -561,6 +590,8 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         volume_root,
         filesystem,
         partition_table,
+        partition_type,
+        hidden_library,
         onelibrary_files,
         player_history,
         preferences,
