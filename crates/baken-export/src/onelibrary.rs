@@ -174,7 +174,7 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
             r.rating,
             r.year,
             r.release_date,
-            r.date_added, // dateCreated: the file's date in rekordbox, not in the XML
+            r.date_created,
             r.date_added,
             r.file_path,
             r.filename,
@@ -688,4 +688,3 @@ mod tests {
         assert_eq!(rows(&baken, tree), rows(&rekordbox, tree));
     }
 }
-

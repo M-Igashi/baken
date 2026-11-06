@@ -292,42 +292,7 @@ fn local_anlz_becomes_stick_anlz() {
 #[test]
 fn pdb_from_fixture_collection_round_trips() {
     let Some(root) = fixture_root() else { return };
-    let lib = Library::load(&root.join("collection.xml")).unwrap();
-    let selected: Vec<usize> = PLAYLISTS
-        .iter()
-        .map(|n| {
-            lib.playlists
-                .iter()
-                .position(|p| p.path == *n && !p.is_folder)
-                .unwrap()
-        })
-        .collect();
-    let mut layout = Layout::default();
-    let mut slots = AnlzSlots::default();
-    let mut seen = std::collections::HashSet::new();
-    let mut tracks = Vec::new();
-    for &pi in &selected {
-        for &tid in &lib.playlists[pi].track_ids {
-            if !seen.insert(tid) {
-                continue;
-            }
-            let t = lib.track(tid).unwrap().clone();
-            let usb_path = layout.assign(&t);
-            let (anlz_dir, anlz_index) = slots.assign(&usb_path);
-            tracks.push(DeviceTrack {
-                anlz_dir,
-                anlz_index,
-                usb_path,
-                file_size: t.size,
-                sample_depth: 16,
-                file_type: build::file_type_for(&t.kind, t.file_name()),
-                bitrate: t.bit_rate,
-                sample_rate: t.sample_rate,
-                artwork_id: 0,
-                track: t,
-            });
-        }
-    }
+    let (lib, tracks, selected) = fixture_selection(&root);
     let model = build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2026-09-18");
     assert_eq!(model.playlists.len(), 4);
     let bytes = baken_export::pdb::write(&model);
@@ -390,4 +355,109 @@ fn pdb_from_fixture_collection_round_trips() {
         counts[&4],
         bytes.len() / 4096
     );
+}
+
+/// The collection, the device tracks and the selected playlist indices of
+/// the four fixture playlists, laid out as an export would.
+fn fixture_selection(root: &Path) -> (Library, Vec<DeviceTrack>, Vec<usize>) {
+    let lib = Library::load(&root.join("collection.xml")).unwrap();
+    let selected: Vec<usize> = PLAYLISTS
+        .iter()
+        .map(|n| {
+            lib.playlists
+                .iter()
+                .position(|p| p.path == *n && !p.is_folder)
+                .unwrap()
+        })
+        .collect();
+    let mut layout = Layout::default();
+    let mut slots = AnlzSlots::default();
+    let mut seen = std::collections::HashSet::new();
+    let mut tracks = Vec::new();
+    for &pi in &selected {
+        for &tid in &lib.playlists[pi].track_ids {
+            if !seen.insert(tid) {
+                continue;
+            }
+            let t = lib.track(tid).unwrap().clone();
+            let usb_path = layout.assign(&t);
+            let (anlz_dir, anlz_index) = slots.assign(&usb_path);
+            tracks.push(DeviceTrack {
+                anlz_dir,
+                anlz_index,
+                usb_path,
+                file_size: t.size,
+                sample_depth: 16,
+                file_type: build::file_type_for(&t.kind, t.file_name()),
+                bitrate: t.bit_rate,
+                sample_rate: t.sample_rate,
+                artwork_id: 0,
+                track: t,
+            });
+        }
+    }
+    (lib, tracks, selected)
+}
+
+/// `(u32 at 0x14, string 10, string 15)` of every live track row of an
+/// `export.pdb`, found by walking every data page of table 0.
+fn track_row_fields(pdb: &[u8]) -> Vec<(u32, String, String)> {
+    use baken_export::pdb::string::decode;
+    let mut out = Vec::new();
+    for pg in pdb.chunks_exact(4096).skip(1) {
+        let table = u32::from_le_bytes(pg[8..12].try_into().unwrap());
+        if pg[0x1b] & 0x40 != 0 || table != 0 {
+            continue;
+        }
+        let n = (pg[0x18] as usize | (pg[0x19] as usize) << 8) & 0x1fff;
+        for r in 0..n {
+            let base = 4096 - (r / 16) * 36;
+            let present = u16::from_le_bytes([pg[base - 4], pg[base - 3]]);
+            if present >> (r % 16) & 1 == 0 {
+                continue;
+            }
+            let at = base - 6 - 2 * (r % 16);
+            let row = &pg[0x28 + u16::from_le_bytes([pg[at], pg[at + 1]]) as usize..];
+            let u14 = u32::from_le_bytes(row[0x14..0x18].try_into().unwrap());
+            let string = |k: usize| {
+                let o = u16::from_le_bytes([row[0x5e + 2 * k], row[0x5f + 2 * k]]) as usize;
+                decode(row, o).unwrap().0
+            };
+            out.push((u14, string(10), string(15)));
+        }
+    }
+    out
+}
+
+/// rekordbox writes the XML `TrackID` at `0x14` and `DateAdded` in string 15,
+/// which players show and sort as DATE ADDED; string 10 is the file's date
+/// (issue #284). Checked on rekordbox's own export, then on ours.
+#[test]
+fn track_rows_carry_track_id_and_date_added() {
+    let Some(root) = fixture_root() else { return };
+    let lib = Library::load(&root.join("collection.xml")).unwrap();
+    let theirs = std::fs::read(root.join("PIONEER/rekordbox/export.pdb")).unwrap();
+    let mut matched = 0;
+    for (u14, _, s15) in track_row_fields(&theirs) {
+        if let Some(t) = lib.track(u14 as u64) {
+            assert_eq!(s15, t.date_added, "rekordbox, TrackID {u14}");
+            matched += 1;
+        }
+    }
+    assert!(
+        matched > 500,
+        "only {matched} rekordbox rows matched a TrackID"
+    );
+
+    let (lib, tracks, selected) = fixture_selection(&root);
+    let ours = baken_export::pdb::write(&build::build(&lib, &tracks, &selected, "X", "2026-11-06"));
+    let rows = track_row_fields(&ours);
+    assert_eq!(rows.len(), tracks.len());
+    for (u14, s10, s15) in rows {
+        let t = lib.track(u14 as u64).expect("0x14 is a TrackID");
+        assert_eq!(
+            (s10.as_str(), s15.as_str()),
+            (t.date_added.as_str(), t.date_added.as_str())
+        );
+    }
 }
