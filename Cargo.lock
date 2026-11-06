@@ -118,6 +118,7 @@ dependencies = [
  "chrono",
  "csv",
  "glob",
+ "libc",
  "mp3rgain",
  "quick-xml",
  "rayon",

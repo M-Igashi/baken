@@ -423,14 +423,44 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .and_then(|pdb| pdb::PlayerHistory::read(&pdb));
 
     let space = volume::space(&opts.device);
-    let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
-    let mut model = build::build(&library, &devices, &selected, &device_name, &build::today());
+    let build = |tracks: &[PlanTrack]| {
+        let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
+        let model = build::build(&library, &devices, &selected, &device_name, &build::today());
+        (devices, model)
+    };
+    let (mut devices, mut model) = build(&tracks);
+    // A track whose text alone fills a database page cannot go into
+    // export.pdb at all (issue #293). Rows follow the tracks one to one.
+    let oversized: Vec<(usize, usize)> = model
+        .tracks
+        .iter()
+        .map(|row| row.encode(0).len())
+        .enumerate()
+        .filter(|&(_, len)| len > pdb::page::MAX_ROW)
+        .collect();
+    if !oversized.is_empty() {
+        for &(i, len) in oversized.iter().rev() {
+            let t = tracks.remove(i);
+            skipped.push(Skipped {
+                name: t.device.track.name,
+                reason: format!(
+                    "its title, comment and other text take {len} bytes in export.pdb, and a database page holds at most {}; shorten the comment in rekordbox and export the XML again",
+                    pdb::page::MAX_ROW
+                ),
+                source_missing: false,
+            });
+        }
+        if tracks.is_empty() {
+            return Err(Error::NothingToExport);
+        }
+        (devices, model) = build(&tracks);
+    }
     if let Some(tags) = &my_tags {
         tags.apply(&mut model, &devices);
     }
-    let mut library_lens = vec![pdb::write(&model).len() as u64];
+    let mut library_lens = vec![pdb::write(&model).map_err(too_large)?.len() as u64];
     if my_tags.is_some() {
-        library_lens.push(pdb::write_ext(&model).len() as u64);
+        library_lens.push(pdb::write_ext(&model).map_err(too_large)?.len() as u64);
     }
     let onelibrary_len = opts.onelibrary.then(|| onelibrary::estimated_len(&model));
     let settings_lens: Vec<u64> = match &settings_dir {
@@ -487,6 +517,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         artwork: opts.artwork,
         my_tags,
     })
+}
+
+/// A row of another table than the tracks' too large for a page: a name of
+/// kilobytes in the XML, which [`plan`] does not try to pin on one track.
+fn too_large(e: pdb::RowTooLarge) -> Error {
+    Error::Other(anyhow::anyhow!(
+        "export.pdb cannot hold a name from the XML: {e}"
+    ))
 }
 
 /// Room for what the system puts on the stick beyond the files counted:
@@ -977,15 +1015,19 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     let pdb_path = rb_dir.join("export.pdb");
     // Beside the old one and renamed over it, so a full stick or a crash
     // leaves the stick with its old library rather than none.
-    fsname::write_atomic(&pdb_path, &pdb::write(&model)).map_err(|err| Error::DeviceWrite {
+    let pdb = pdb::write(&model).map_err(too_large)?;
+    fsname::write_atomic(&pdb_path, &pdb).map_err(|err| Error::DeviceWrite {
         path: pdb_path,
         err,
     })?;
     if plan.my_tags.is_some() {
         let path = rb_dir.join(EXT_FILE);
-        match fsname::write_atomic(&path, &pdb::write_ext(&model)) {
+        let written = pdb::write_ext(&model)
+            .map_err(|e| e.to_string())
+            .and_then(|ext| fsname::write_atomic(&path, &ext).map_err(|e| e.to_string()));
+        match written {
             Ok(()) => report.my_tags_written = true,
-            Err(e) => report.my_tags_error = Some(e.to_string()),
+            Err(e) => report.my_tags_error = Some(e),
         }
     }
     match onelibrary.map(|db| db.and_then(|db| replace_onelibrary(&rb_dir, &db, &mut report))) {

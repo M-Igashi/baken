@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn a_fresh_export_has_no_history() {
-        let pdb = super::super::write(&super::super::Export::default());
+        let pdb = super::super::write(&super::super::Export::default()).unwrap();
         assert_eq!(PlayerHistory::read(&pdb), None);
         assert_eq!(PlayerHistory::read(&[]), None);
     }

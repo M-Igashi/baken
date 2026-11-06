@@ -295,7 +295,7 @@ fn pdb_from_fixture_collection_round_trips() {
     let (lib, tracks, selected) = fixture_selection(&root);
     let model = build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2026-09-18");
     assert_eq!(model.playlists.len(), 4);
-    let bytes = baken_export::pdb::write(&model);
+    let bytes = baken_export::pdb::write(&model).unwrap();
     assert_eq!(bytes.len() % 4096, 0);
 
     // walk: table pointers -> chains -> live rows
@@ -450,7 +450,8 @@ fn track_rows_carry_track_id_and_date_added() {
     );
 
     let (lib, tracks, selected) = fixture_selection(&root);
-    let ours = baken_export::pdb::write(&build::build(&lib, &tracks, &selected, "X", "2026-11-06"));
+    let ours = baken_export::pdb::write(&build::build(&lib, &tracks, &selected, "X", "2026-11-06"))
+        .unwrap();
     let rows = track_row_fields(&ours);
     assert_eq!(rows.len(), tracks.len());
     for (u14, s10, s15) in rows {

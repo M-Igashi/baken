@@ -9,4 +9,4 @@ pub mod writer;
 
 pub use read::PlayerHistory;
 pub use rows::MyTag;
-pub use writer::{write, write_ext, Export, ExportPlaylist};
+pub use writer::{write, write_ext, Export, ExportPlaylist, RowTooLarge};
