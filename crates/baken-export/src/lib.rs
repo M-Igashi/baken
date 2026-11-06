@@ -488,7 +488,9 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     if my_tags.is_some() {
         library_lens.push(pdb::write_ext(&model).map_err(too_large)?.len() as u64);
     }
-    let onelibrary_len = opts.onelibrary.then(|| onelibrary::estimated_len(&model));
+    if opts.onelibrary {
+        library_lens.push(onelibrary::estimated_len(&model));
+    }
     let settings_lens: Vec<u64> = match &settings_dir {
         Some(dir) => settings_files
             .iter()
@@ -507,8 +509,8 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         opts,
         &tracks,
         &library_lens,
-        onelibrary_len,
         &settings_lens,
+        &artwork_ids,
         space.map_or(1, |s| s.unit),
         sidecars,
     );
@@ -581,8 +583,9 @@ const ARTWORK_MEDIUM: u64 = 64 << 10;
 /// - `export.pdb` and, with `--my-tags`, `exportExt.pdb` as built from the
 ///   plan, `exportLibrary.db` as [`onelibrary::estimated_len`] puts it, the
 ///   settings files, and the directories the run creates;
-/// - with `--artwork`, four thumbnails for every track (whether its audio
-///   carries a picture is only known once it is read), at most
+/// - with `--artwork`, four thumbnails for every track under the id it
+///   would get (whether its audio carries a picture is only known once it
+///   is read), at most
 ///   [`ARTWORK_SMALL`] and [`ARTWORK_MEDIUM`] bytes;
 /// - with `sidecars`, the 4 KiB `._` file macOS writes beside every file and
 ///   directory the run writes on FAT and exFAT, until the walk at the end of
@@ -598,8 +601,8 @@ fn space_needed(
     opts: &Options,
     tracks: &[PlanTrack],
     library_lens: &[u64],
-    onelibrary_len: Option<u64>,
     settings_lens: &[u64],
+    artwork_ids: &HashMap<String, u32>,
     unit: u64,
     sidecars: bool,
 ) -> u64 {
@@ -627,8 +630,10 @@ fn space_needed(
         }
     }
     if opts.artwork {
-        for id in 1..=tracks.len() as u32 {
-            for (path, medium) in artwork::files(id) {
+        // the ids `export` hands out, as if every track had a picture
+        let mut ids = ArtworkIds::new(artwork_ids);
+        for pt in tracks {
+            for (path, medium) in artwork::files(ids.assign(&pt.device.usb_path)) {
                 let len = if medium {
                     ARTWORK_MEDIUM
                 } else {
@@ -641,9 +646,6 @@ fn space_needed(
     }
     tally.dir(&opts.device.join("PIONEER/rekordbox"));
     for &len in library_lens {
-        tally.file(len, None);
-    }
-    if let Some(len) = onelibrary_len {
         tally.file(len, None);
     }
     for &len in settings_lens {
