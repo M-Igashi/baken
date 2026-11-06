@@ -58,6 +58,19 @@ fn print_plan(plan: &Plan) {
     for w in plan.format_warnings() {
         println!("{} {w}", style("⚠").yellow());
     }
+    if rekordbox_running() == Some(true) {
+        println!(
+            "{} rekordbox is running. It rewrites a device library on any stick it can see, so an export it reads or changes at the same time can end up half one library and half the other. Quit rekordbox, or eject the stick in rekordbox, before exporting.",
+            style("⚠").yellow()
+        );
+    }
+    if !plan.hidden_library.is_empty() {
+        println!(
+            "{} This stick also holds a rekordbox library under the hidden folder .PIONEER ({}). rekordbox reads a library from either .PIONEER or PIONEER and expressport writes PIONEER, so the stick will carry two; which one a player reads is not known. Use another stick, or move .PIONEER off this one once you no longer need it.",
+            style("⚠").yellow(),
+            plan.hidden_library.join(", ")
+        );
+    }
     if let Some(h) = &plan.player_history {
         let lists = if h.lists.is_empty() {
             String::new()
@@ -401,6 +414,44 @@ fn print_report(plan: &Plan, r: &Report) {
             plan.settings_files.len(),
             plan.device.display()
         );
+    }
+}
+
+/// Whether the rekordbox app is running (issue #292): rekordbox 7.2.14 for
+/// Windows rewrote a stick's databases within a minute of seeing it. Its
+/// agent does not count. `pgrep` on macOS (the bundle's executable is
+/// `rekordbox`), `tasklist` on Windows; `None` where that cannot be asked.
+/// A warning only: the DJ may have ejected the stick in rekordbox already.
+fn rekordbox_running() -> Option<bool> {
+    #[cfg(target_os = "macos")]
+    {
+        let status = std::process::Command::new("pgrep")
+            .args(["-x", "rekordbox"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .ok()?;
+        // 0: found, 1: none, anything else: pgrep failed
+        match status.code() {
+            Some(0) => Some(true),
+            Some(1) => Some(false),
+            _ => None,
+        }
+    }
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq rekordbox.exe", "/NH"])
+            .output()
+            .ok()?;
+        out.status.success().then(|| {
+            String::from_utf8_lossy(&out.stdout)
+                .to_ascii_lowercase()
+                .contains("rekordbox.exe")
+        })
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        None
     }
 }
 

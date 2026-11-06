@@ -53,7 +53,14 @@ pub enum PartitionTable {
 pub enum FormatWarning {
     FileSystem(FileSystem),
     Gpt,
+    /// A FAT filesystem in an MBR partition whose type is not a FAT one, by
+    /// its type id (issue #288).
+    PartitionType(u8),
 }
+
+/// MBR partition type ids of the FAT family: FAT12, FAT16 under 32 MB,
+/// FAT16, FAT32, FAT32 with LBA, FAT16 with LBA.
+pub const FAT_PARTITION_TYPES: [u8; 6] = [0x01, 0x04, 0x06, 0x0b, 0x0c, 0x0e];
 
 impl fmt::Display for FormatWarning {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -74,6 +81,11 @@ impl fmt::Display for FormatWarning {
             FormatWarning::Gpt => f.write_str(
                 "This stick has a GUID (GPT) partition table. AlphaTheta says the CDJ-3000 and the CDJ-2000 do not support it, and a CDJ-2000NXS2 is reported not to mount it either. Repartition it with an MBR (Master Boot Record) table.",
             ),
+            FormatWarning::PartitionType(id) => write!(
+                f,
+                "This stick is FAT, but its partition has type 0x{id:02x}{}, not a FAT type. Two XDJ-700s (firmware 1.15) showed FORMAT USB for such a stick and read it once the type was set to 0x0c (W95 FAT32 LBA), with nothing else changed. To set it: sudo fdisk <the stick's disk, such as /dev/sdb>, then t, c, w.",
+                if *id == 0x83 { " (Linux)" } else { "" }
+            ),
         }
     }
 }
@@ -89,6 +101,27 @@ pub fn warnings(fs: Option<&FileSystem>, table: Option<PartitionTable>) -> Vec<F
         out.push(FormatWarning::Gpt);
     }
     out
+}
+
+/// A warning for a FAT stick whose MBR partition type is not a FAT one
+/// (issue #288). `mkfs.vfat` on a partition `fdisk` or `parted` made keeps
+/// its type, 0x83 by default, and Linux mounts it regardless; macOS mounts
+/// FAT on a FAT type only (measured on disk images: 0x07, 0x83 and 0xaf were
+/// not mounted), so only Linux reads `id`. Nothing when it is unknown.
+pub fn partition_type_warning(
+    fs: Option<&FileSystem>,
+    table: Option<PartitionTable>,
+    id: Option<u8>,
+) -> Option<FormatWarning> {
+    let id = id.filter(|id| !FAT_PARTITION_TYPES.contains(id))?;
+    (fs == Some(&FileSystem::Fat) && table == Some(PartitionTable::Mbr))
+        .then_some(FormatWarning::PartitionType(id))
+}
+
+/// The MBR type id of the partition the volume `dir` is on: Linux only,
+/// from `lsblk`; `None` elsewhere, on a GPT disk and where it cannot be read.
+pub fn partition_type(dir: &Path) -> Option<u8> {
+    imp::partition_type(dir)
 }
 
 /// Free space on the volume `dir` is on, and the unit it allocates files in
@@ -212,6 +245,10 @@ mod imp {
         }
     }
 
+    pub fn partition_type(_: &Path) -> Option<u8> {
+        None
+    }
+
     pub(super) fn plist_string<'a>(plist: &'a str, key: &str) -> Option<&'a str> {
         let rest = &plist[plist.find(&format!("<key>{key}</key>"))?..];
         let start = rest.find("<string>")? + "<string>".len();
@@ -227,15 +264,33 @@ mod imp {
     use std::path::Path;
     use std::process::Command;
 
-    pub fn probe(dir: &Path) -> (Option<FileSystem>, Option<PartitionTable>) {
-        let Ok(dev) = std::fs::metadata(dir).map(|m| m.dev()) else {
-            return (None, None);
-        };
+    /// Filesystem type and source device of the mount `dir` is on.
+    fn mount(dir: &Path) -> Option<(String, String)> {
+        let dev = std::fs::metadata(dir).ok()?.dev();
         let id = format!("{}:{}", libc::major(dev), libc::minor(dev));
-        let Some((fstype, source)) = std::fs::read_to_string("/proc/self/mountinfo")
-            .ok()
-            .and_then(|m| mount_of(&m, &id))
-        else {
+        mount_of(&std::fs::read_to_string("/proc/self/mountinfo").ok()?, &id)
+    }
+
+    pub fn partition_type(dir: &Path) -> Option<u8> {
+        let (_, source) = mount(dir)?;
+        if !source.starts_with("/dev/") {
+            return None;
+        }
+        let out = Command::new("lsblk")
+            .args(["-no", "PARTTYPE", &source])
+            .output()
+            .ok()?;
+        parse_partition_type(&String::from_utf8_lossy(&out.stdout))
+    }
+
+    /// `lsblk`'s `PARTTYPE` of an MBR partition, such as `0xc`; a GPT
+    /// partition's is a GUID, which is not one.
+    pub(super) fn parse_partition_type(s: &str) -> Option<u8> {
+        u8::from_str_radix(s.trim().strip_prefix("0x")?, 16).ok()
+    }
+
+    pub fn probe(dir: &Path) -> (Option<FileSystem>, Option<PartitionTable>) {
+        let Some((fstype, source)) = mount(dir) else {
             return (None, None);
         };
         let fs = match fstype.as_str() {
@@ -287,6 +342,10 @@ mod imp {
 
     pub fn probe(_: &Path) -> (Option<FileSystem>, Option<PartitionTable>) {
         (None, None)
+    }
+
+    pub fn partition_type(_: &Path) -> Option<u8> {
+        None
     }
 }
 
@@ -341,6 +400,45 @@ mod tests {
             Some("GUID_partition_scheme")
         );
         assert_eq!(imp::plist_string(plist, "Missing"), None);
+    }
+
+    /// The XDJ-700 report: FAT32 on type 0x83 (#288).
+    #[test]
+    fn a_fat_stick_on_another_partition_type_is_warned_about() {
+        let fat = Some(&FileSystem::Fat);
+        let mbr = Some(PartitionTable::Mbr);
+        assert_eq!(
+            partition_type_warning(fat, mbr, Some(0x83)),
+            Some(FormatWarning::PartitionType(0x83))
+        );
+        assert!(FormatWarning::PartitionType(0x83)
+            .to_string()
+            .contains("0x83 (Linux)"));
+        for id in FAT_PARTITION_TYPES {
+            assert_eq!(partition_type_warning(fat, mbr, Some(id)), None);
+        }
+        assert_eq!(partition_type_warning(fat, mbr, None), None);
+        assert_eq!(
+            partition_type_warning(fat, Some(PartitionTable::Gpt), Some(0x83)),
+            None
+        );
+        // exFAT on 0x07 is how it should be
+        assert_eq!(
+            partition_type_warning(Some(&FileSystem::ExFat), mbr, Some(0x07)),
+            None
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lsblk_partition_types() {
+        assert_eq!(imp::parse_partition_type("0xc\n"), Some(0x0c));
+        assert_eq!(imp::parse_partition_type(" 0x83"), Some(0x83));
+        assert_eq!(
+            imp::parse_partition_type("ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"),
+            None
+        );
+        assert_eq!(imp::parse_partition_type(""), None);
     }
 
     #[cfg(target_os = "linux")]

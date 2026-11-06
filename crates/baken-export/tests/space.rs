@@ -320,3 +320,19 @@ fn a_track_whose_source_is_offline_stays_on_the_stick() {
     assert!(p.skipped.iter().any(|s| s.name == "a" && s.source_missing));
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A library rekordbox put under the hidden `.PIONEER` is listed, since the
+/// export writes `PIONEER` beside it (issue #287).
+#[test]
+fn the_plan_lists_a_library_under_dot_pioneer() {
+    let (root, opts) = setup("dot-pioneer");
+    assert!(plan(&opts).unwrap().hidden_library.is_empty());
+    let hidden = opts.device.join(".PIONEER/rekordbox");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("exportLibrary.db"), b"x").unwrap();
+    assert_eq!(
+        plan(&opts).unwrap().hidden_library,
+        [".PIONEER/rekordbox/exportLibrary.db"]
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
