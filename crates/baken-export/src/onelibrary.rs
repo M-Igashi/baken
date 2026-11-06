@@ -231,7 +231,7 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
     }
     let mut s = db.prepare("INSERT INTO image VALUES (?, ?)")?;
     for (i, _) in &model.artworks {
-        s.execute(params![i, crate::artwork::path(*i, 'b', false)])?;
+        s.execute(params![i, crate::artwork::path(model.root, *i, 'b', false)])?;
     }
     let mut s = db.prepare("INSERT INTO menuItem VALUES (?, ?, ?)")?;
     for (i, kind, name) in &prefs.columns {
@@ -581,7 +581,14 @@ mod tests {
                 });
             }
         }
-        let model = crate::build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2025-04-11");
+        let model = crate::build::build(
+            &lib,
+            &tracks,
+            &selected,
+            "JPHFA-REKORD",
+            "2025-04-11",
+            Default::default(),
+        );
         (model, tracks)
     }
 

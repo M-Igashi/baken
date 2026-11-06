@@ -31,6 +31,7 @@ use anyhow::Context as _;
 use baken_core::{fsname, CancelToken, Progress};
 use build::DeviceTrack;
 use collection::Library;
+pub use layout::Root;
 use rayon::prelude::*;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
@@ -111,15 +112,6 @@ pub const ONELIBRARY_FILES: [&str; 4] = [
     EXT_FILE,
 ];
 
-/// A library under `.PIONEER`, which rekordbox 7 reads like one under
-/// `PIONEER` (its binary names both `/.PIONEER/rekordbox/export.pdb` and
-/// `/PIONEER/rekordbox/export.pdb`) and is reported to write on HFS+ sticks
-/// (issue #287).
-pub const HIDDEN_LIBRARY: [&str; 2] = [
-    ".PIONEER/rekordbox/export.pdb",
-    ".PIONEER/rekordbox/exportLibrary.db",
-];
-
 /// The Device Library's My Tags, which [`Options::my_tags`] writes.
 pub const EXT_FILE: &str = "exportExt.pdb";
 
@@ -154,11 +146,8 @@ pub struct Plan {
     /// MBR type id of the stick's partition, read on Linux only (issue
     /// #288): macOS does not mount FAT on another type at all.
     pub partition_type: Option<u8>,
-    /// Library files rekordbox put under `.PIONEER`, the hidden root it is
-    /// reported to use on HFS+ sticks (issue #287), as paths from the stick's
-    /// root. expressport writes `PIONEER` and leaves them alone, so the
-    /// stick then holds two libraries.
-    pub hidden_library: Vec<&'static str>,
+    /// The folder the library goes into, see [`library_root`] (issue #287).
+    pub root: Root,
     /// Those of [`ONELIBRARY_FILES`] on the stick, in that order. [`export`]
     /// removes them once it has written `export.pdb`, so a cancelled or
     /// failed run leaves both of the stick's libraries as they were.
@@ -327,13 +316,22 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     if !opts.device.is_dir() {
         return Err(Error::DeviceNotFound(opts.device.clone()));
     }
+    let volume_root = is_volume_root(&opts.device);
+    let (filesystem, partition_table, partition_type) = if volume_root {
+        let (fs, table) = volume::probe(&opts.device);
+        (fs, table, volume::partition_type(&opts.device))
+    } else {
+        (None, None, None)
+    };
+    let root = library_root(&opts.device, filesystem.as_ref())?;
+    let library_dir = opts.device.join(root.name());
     let (settings_dir, settings_files, settings_kept) = if opts.no_settings {
         (None, Vec::new(), Vec::new())
     } else {
         let dir = settings::locate(opts.settings_dir.as_deref())
             .map_err(|searched| Error::SettingsNotFound { searched })?;
         let mut files = settings::files(&dir)?;
-        let kept = settings::player_saved(&opts.device, &files);
+        let kept = settings::player_saved(&library_dir, &files);
         files.retain(|f| kept.iter().all(|k| k.file != *f));
         (Some(dir), files, kept)
     };
@@ -362,7 +360,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     let mut skipped = Vec::new();
     let mut tracks = Vec::new();
     let mut layout = layout::Layout::default();
-    let mut anlz_slots = AnlzSlots::default();
+    let mut anlz_slots = AnlzSlots::under(root);
     for &pi in &selected {
         for &tid in &library.playlists[pi].track_ids {
             if !seen.insert(tid) {
@@ -473,18 +471,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 .map(|n| n.to_string_lossy().into_owned())
         })
         .unwrap_or_else(|| "USB".into());
-    let volume_root = is_volume_root(&opts.device);
-    let (filesystem, partition_table, partition_type) = if volume_root {
-        let (fs, table) = volume::probe(&opts.device);
-        (fs, table, volume::partition_type(&opts.device))
-    } else {
-        (None, None, None)
-    };
-    let hidden_library = HIDDEN_LIBRARY
-        .into_iter()
-        .filter(|f| opts.device.join(f).symlink_metadata().is_ok())
-        .collect();
-    let rb_dir = opts.device.join("PIONEER/rekordbox");
+    let rb_dir = library_dir.join("rekordbox");
     let onelibrary_files = ONELIBRARY_FILES
         .into_iter()
         .filter(|f| rb_dir.join(f).symlink_metadata().is_ok())
@@ -503,7 +490,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     let space = volume::space(&opts.device);
     let build = |tracks: &[PlanTrack]| {
         let devices: Vec<DeviceTrack> = tracks.iter().map(|t| t.device.clone()).collect();
-        let model = build::build(&library, &devices, &selected, &device_name, &build::today());
+        let model = build::build(
+            &library,
+            &devices,
+            &selected,
+            &device_name,
+            &build::today(),
+            root,
+        );
         (devices, model)
     };
     let (mut devices, mut model) = build(&tracks);
@@ -562,13 +556,13 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             Some(volume::FileSystem::Fat | volume::FileSystem::ExFat)
         );
     let space_needed = space_needed(
+        Tally::new(&opts.device, space.map_or(1, |s| s.unit), sidecars),
         opts,
+        root,
         &tracks,
         &library_lens,
         &settings_lens,
         &artwork_ids,
-        space.map_or(1, |s| s.unit),
-        sidecars,
     );
     if let Some(space) = space.filter(|s| s.available < space_needed) {
         return Err(Error::NotEnoughSpace {
@@ -591,7 +585,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         filesystem,
         partition_table,
         partition_type,
-        hidden_library,
+        root,
         onelibrary_files,
         player_history,
         preferences,
@@ -606,6 +600,31 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         artwork: opts.artwork,
         my_tags,
     })
+}
+
+/// The library folder for this stick (issue #287): the one that already
+/// holds a library (`rekordbox/export.pdb` or `rekordbox/exportLibrary.db`),
+/// so a re-export never leaves a second one beside it; on a stick with none,
+/// `.PIONEER` on HFS+ as rekordbox writes it there and `PIONEER` elsewhere.
+/// Libraries under both are [`Error::TwoLibraries`]: the export would update
+/// one of them, and which one a player reads is not known.
+fn library_root(device: &Path, fs: Option<&volume::FileSystem>) -> Result<Root> {
+    let has_library = |root: Root| {
+        ["rekordbox/export.pdb", "rekordbox/exportLibrary.db"]
+            .iter()
+            .any(|f| device.join(root.name()).join(f).symlink_metadata().is_ok())
+    };
+    let hfs = matches!(
+        fs,
+        Some(volume::FileSystem::HfsPlus | volume::FileSystem::HfsPlusCaseSensitive)
+    );
+    match Root::ALL.map(has_library) {
+        [true, true] => Err(Error::TwoLibraries(device.to_path_buf())),
+        [true, false] => Ok(Root::Pioneer),
+        [false, true] => Ok(Root::Hidden),
+        [false, false] if hfs => Ok(Root::Hidden),
+        [false, false] => Ok(Root::Pioneer),
+    }
 }
 
 /// The copy an earlier export left at `path` of a track whose source is not
@@ -675,15 +694,14 @@ const ARTWORK_MEDIUM: u64 = 64 << 10;
 /// until the new ones are in place. Pruning frees space only after the
 /// writes, so it counts for nothing.
 fn space_needed(
+    mut tally: Tally,
     opts: &Options,
+    root: Root,
     tracks: &[PlanTrack],
     library_lens: &[u64],
     settings_lens: &[u64],
     artwork_ids: &HashMap<String, u32>,
-    unit: u64,
-    sidecars: bool,
 ) -> u64 {
-    let mut tally = Tally::new(&opts.device, unit, sidecars);
     for pt in tracks {
         let dt = &pt.device;
         let audio = device_path(&opts.device, &dt.usb_path);
@@ -711,7 +729,7 @@ fn space_needed(
         // the ids `export` hands out, as if every track had a picture
         let mut ids = ArtworkIds::new(artwork_ids);
         for pt in tracks {
-            for (path, medium) in artwork::files(ids.assign(&pt.device.usb_path)) {
+            for (path, medium) in artwork::files(root, ids.assign(&pt.device.usb_path)) {
                 let len = if medium {
                     ARTWORK_MEDIUM
                 } else {
@@ -722,7 +740,7 @@ fn space_needed(
             }
         }
     }
-    tally.dir(&opts.device.join("PIONEER/rekordbox"));
+    tally.dir(&opts.device.join(root.name()).join("rekordbox"));
     for &len in library_lens {
         tally.file(len, None);
     }
@@ -988,7 +1006,8 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
 
     // Before the first track, so a stick that is not mounted, read-only or gone
     // stops the run with a reason instead of failing every track (issue #165).
-    let rb_dir = plan.device.join("PIONEER/rekordbox");
+    let library_dir = plan.device.join(plan.root.name());
+    let rb_dir = library_dir.join("rekordbox");
     let probe = rb_dir.join(".baken-write-test");
     std::fs::create_dir_all(&rb_dir)
         .and_then(|()| std::fs::write(&probe, b""))
@@ -1072,7 +1091,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                         wanted.insert(device_path(&plan.device, &dt.anlz_path(kind.extension())));
                     }
                     if dt.artwork_id != 0 {
-                        for (path, _) in artwork::files(dt.artwork_id) {
+                        for (path, _) in artwork::files(plan.root, dt.artwork_id) {
                             wanted.insert(device_path(&plan.device, &path));
                         }
                     }
@@ -1114,6 +1133,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         &plan.selected,
         &plan.device_name,
         &date,
+        plan.root,
     );
     if let Some(tags) = &plan.my_tags {
         tags.apply(&mut model, &exported);
@@ -1155,7 +1175,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     }
 
     if let Some(dir) = &plan.settings_dir {
-        settings::copy_all(dir, &plan.settings_files, &plan.device)?;
+        settings::copy_all(dir, &plan.settings_files, &library_dir)?;
     }
 
     // `wanted` lacks the tracks that failed or whose source is missing, and
@@ -1165,8 +1185,8 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         report.prune_skipped = true;
     } else if plan.prune {
         report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
-        report.pruned += prune_tree(&plan.device.join("PIONEER/USBANLZ"), &wanted)?;
-        report.pruned += prune_tree(&plan.device.join("PIONEER/Artwork"), &wanted)?;
+        report.pruned += prune_tree(&library_dir.join("USBANLZ"), &wanted)?;
+        report.pruned += prune_tree(&library_dir.join("Artwork"), &wanted)?;
     }
     // Only files written in this run can have gained an AppleDouble file, so
     // the two big trees are walked only when something was written into them.
@@ -1178,14 +1198,14 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
         remove_apple_double(&plan.device.join("Contents"), true, &mut report)?;
     }
     if report.anlz_files > 0 || plan.prune {
-        remove_apple_double(&plan.device.join("PIONEER/USBANLZ"), true, &mut report)?;
+        remove_apple_double(&library_dir.join("USBANLZ"), true, &mut report)?;
     }
     if report.artwork > 0 || plan.prune {
-        remove_apple_double(&plan.device.join("PIONEER/Artwork"), true, &mut report)?;
+        remove_apple_double(&library_dir.join("Artwork"), true, &mut report)?;
     }
-    remove_apple_double(&plan.device.join("PIONEER"), false, &mut report)?;
+    remove_apple_double(&library_dir, false, &mut report)?;
     remove_apple_double(&rb_dir, false, &mut report)?;
-    for dir in ["Contents", "PIONEER"] {
+    for dir in ["Contents", plan.root.name()] {
         if remove_sidecar(&plan.device.join(format!("._{dir}")))? {
             report.apple_double_kept += 1;
         }
@@ -1575,7 +1595,7 @@ fn write_track(
     // as rekordbox writes them, even for the tracks of one album.
     if let Some(art) = &prepared.artwork {
         let id = artwork_ids.assign(&pt.device.usb_path);
-        for (path, medium) in artwork::files(id) {
+        for (path, medium) in artwork::files(plan.root, id) {
             let path = device_path(&plan.device, &path);
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(StickError::at(dir))?;

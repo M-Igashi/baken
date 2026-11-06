@@ -321,18 +321,42 @@ fn a_track_whose_source_is_offline_stays_on_the_stick() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
-/// A library rekordbox put under the hidden `.PIONEER` is listed, since the
-/// export writes `PIONEER` beside it (issue #287).
+/// The library goes where the stick already has one: under the hidden
+/// `.PIONEER` that rekordbox writes on HFS+, with every path in it pointing
+/// there and the audio still in `/Contents` (issue #287). A stick with a
+/// library under both roots stops the plan.
 #[test]
-fn the_plan_lists_a_library_under_dot_pioneer() {
-    let (root, opts) = setup("dot-pioneer");
-    assert!(plan(&opts).unwrap().hidden_library.is_empty());
+fn the_library_goes_into_the_root_the_stick_uses() {
+    use baken_export::{Error, Root};
+    let (root, opts) = setup("root");
+    assert_eq!(plan(&opts).unwrap().root, Root::Pioneer);
+
     let hidden = opts.device.join(".PIONEER/rekordbox");
     std::fs::create_dir_all(&hidden).unwrap();
     std::fs::write(hidden.join("exportLibrary.db"), b"x").unwrap();
-    assert_eq!(
-        plan(&opts).unwrap().hidden_library,
-        [".PIONEER/rekordbox/exportLibrary.db"]
-    );
+    let p = plan(&opts).unwrap();
+    assert_eq!(p.root, Root::Hidden);
+    assert!(p.tracks[0]
+        .device
+        .anlz_dir
+        .starts_with("/.PIONEER/USBANLZ/"));
+    export(&p, &(), &CancelToken::new()).unwrap();
+    assert!(!opts.device.join("PIONEER").exists());
+    assert!(opts.device.join(".PIONEER/rekordbox/export.pdb").exists());
+    let anlz = opts
+        .device
+        .join(p.tracks[0].device.anlz_path("DAT").trim_start_matches('/'));
+    assert!(anlz.exists(), "{}", anlz.display());
+    let pdb = std::fs::read(hidden.join("export.pdb")).unwrap();
+    let needle = format!("{}/ANLZ0000.DAT", p.tracks[0].device.anlz_dir);
+    assert!(pdb.windows(needle.len()).any(|w| w == needle.as_bytes()));
+    assert!(opts
+        .device
+        .join(p.tracks[0].device.usb_path.trim_start_matches('/'))
+        .exists());
+
+    std::fs::create_dir_all(opts.device.join("PIONEER/rekordbox")).unwrap();
+    std::fs::write(opts.device.join("PIONEER/rekordbox/export.pdb"), b"x").unwrap();
+    assert!(matches!(plan(&opts), Err(Error::TwoLibraries(_))));
     std::fs::remove_dir_all(&root).unwrap();
 }

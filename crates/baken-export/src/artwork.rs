@@ -5,6 +5,7 @@
 //! library): 80 and 240 pixels square, the picture scaled to fit and centred
 //! on black, baseline JPEG at quality 85 with 4:2:0 chroma.
 
+use crate::layout::Root;
 use image::imageops::{self, FilterType};
 use image::{Rgb, RgbImage};
 use jpeg_encoder::{ColorType, Encoder, SamplingFactor};
@@ -18,23 +19,28 @@ pub const SMALL: u32 = 80;
 pub const MEDIUM: u32 = 240;
 const QUALITY: u8 = 85;
 
-/// `/PIONEER/Artwork/00001/a1.jpg`. Folders are numbered `id / 20 + 1`, so
-/// ids 1 to 19 share `00001` and every later folder holds twenty, as on the
-/// reference stick. `b` files hold the same bytes as `a` files: `export.pdb`
-/// names the `a` file, OneLibrary the `b` one.
-pub fn path(id: u32, copy: char, medium: bool) -> String {
+/// `/PIONEER/Artwork/00001/a1.jpg`, under the library folder `root`.
+/// Folders are numbered `id / 20 + 1`, so ids 1 to 19 share `00001` and every
+/// later folder holds twenty, as on the reference stick. `b` files hold the
+/// same bytes as `a` files: `export.pdb` names the `a` file, OneLibrary the
+/// `b` one.
+pub fn path(root: Root, id: u32, copy: char, medium: bool) -> String {
     let size = if medium { "_m" } else { "" };
-    format!("/PIONEER/Artwork/{:05}/{copy}{id}{size}.jpg", id / 20 + 1)
+    format!(
+        "/{}/Artwork/{:05}/{copy}{id}{size}.jpg",
+        root.name(),
+        id / 20 + 1
+    )
 }
 
 /// The four files rekordbox writes for image `id`, each with whether it
 /// holds the medium thumbnail.
-pub fn files(id: u32) -> [(String, bool); 4] {
+pub fn files(root: Root, id: u32) -> [(String, bool); 4] {
     [
-        (path(id, 'a', false), false),
-        (path(id, 'a', true), true),
-        (path(id, 'b', false), false),
-        (path(id, 'b', true), true),
+        (path(root, id, 'a', false), false),
+        (path(root, id, 'a', true), true),
+        (path(root, id, 'b', false), false),
+        (path(root, id, 'b', true), true),
     ]
 }
 
@@ -119,11 +125,31 @@ mod tests {
     #[test]
     fn paths_follow_the_reference_stick() {
         // OneLibrary of the reference stick: b18/b19 in 00001, b20 and b39 in 00002, b40 in 00003
-        assert_eq!(path(1, 'a', false), "/PIONEER/Artwork/00001/a1.jpg");
-        assert_eq!(path(19, 'b', false), "/PIONEER/Artwork/00001/b19.jpg");
-        assert_eq!(path(20, 'b', false), "/PIONEER/Artwork/00002/b20.jpg");
-        assert_eq!(path(39, 'a', true), "/PIONEER/Artwork/00002/a39_m.jpg");
-        assert_eq!(path(40, 'b', false), "/PIONEER/Artwork/00003/b40.jpg");
+        assert_eq!(
+            path(Root::Pioneer, 1, 'a', false),
+            "/PIONEER/Artwork/00001/a1.jpg"
+        );
+        assert_eq!(
+            path(Root::Pioneer, 19, 'b', false),
+            "/PIONEER/Artwork/00001/b19.jpg"
+        );
+        assert_eq!(
+            path(Root::Pioneer, 20, 'b', false),
+            "/PIONEER/Artwork/00002/b20.jpg"
+        );
+        assert_eq!(
+            path(Root::Pioneer, 39, 'a', true),
+            "/PIONEER/Artwork/00002/a39_m.jpg"
+        );
+        assert_eq!(
+            path(Root::Pioneer, 40, 'b', false),
+            "/PIONEER/Artwork/00003/b40.jpg"
+        );
+        // as rekordbox wrote them on an HFS+ stick (#287)
+        assert_eq!(
+            path(Root::Hidden, 1, 'b', false),
+            "/.PIONEER/Artwork/00001/b1.jpg"
+        );
     }
 
     fn png(w: u32, h: u32) -> Vec<u8> {

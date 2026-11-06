@@ -45,6 +45,8 @@ pub struct Export {
     /// `(id, path of the small "a" file)`, see [`crate::artwork::path`].
     pub artworks: Vec<(u32, String)>,
     pub device_name: String,
+    /// The library folder the paths in the rows point into (issue #287).
+    pub root: crate::layout::Root,
     /// `YYYY-MM-DD`.
     pub export_date: String,
     /// My Tags (issue #281): every column, each followed by its tags. Empty
@@ -426,7 +428,7 @@ mod tests {
         };
         let out = write(&Export {
             artworks: (1..=455)
-                .map(|id| (id, crate::artwork::path(id, 'a', false)))
+                .map(|id| (id, crate::artwork::path(Default::default(), id, 'a', false)))
                 .collect(),
             ..Default::default()
         })

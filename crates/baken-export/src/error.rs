@@ -74,6 +74,11 @@ pub enum Error {
     #[error("Not enough space on the stick: this export writes up to {} and {} is free. Free some space or export fewer playlists. --prune removes stale files only after the new ones are written, so it does not help here.", size(needed), size(available))]
     NotEnoughSpace { needed: u64, available: u64 },
 
+    /// The stick holds a rekordbox library under both `PIONEER` and the
+    /// hidden `.PIONEER` (issue #287).
+    #[error("This stick holds a rekordbox library in both PIONEER and the hidden .PIONEER at {}. rekordbox reads either, and which one a player reads is not known, so expressport does not add to that. Move the one you no longer need off the stick (in Finder, Cmd-Shift-. shows .PIONEER) and run it again.", .0.display())]
+    TwoLibraries(PathBuf),
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 

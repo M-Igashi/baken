@@ -8,7 +8,7 @@ use baken_export::anlz::rewrite::{prepare, FileKind};
 use baken_export::anlz::section::AnlzFile;
 use baken_export::build::{self, DeviceTrack};
 use baken_export::collection::{Library, Track};
-use baken_export::layout::Layout;
+use baken_export::layout::{Layout, Root};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -98,7 +98,8 @@ fn hash_matches_every_fixture_track() {
     let mismatches: Vec<_> = tracks
         .iter()
         .filter(|t| {
-            t.analyze_path.rsplit_once('/').map(|(dir, _)| dir) != Some(&anlz_dir(&t.file_path))
+            t.analyze_path.rsplit_once('/').map(|(dir, _)| dir)
+                != Some(&anlz_dir(Root::Pioneer, &t.file_path))
         })
         .map(|t| &t.file_path)
         .collect();
@@ -293,7 +294,14 @@ fn local_anlz_becomes_stick_anlz() {
 fn pdb_from_fixture_collection_round_trips() {
     let Some(root) = fixture_root() else { return };
     let (lib, tracks, selected) = fixture_selection(&root);
-    let model = build::build(&lib, &tracks, &selected, "JPHFA-REKORD", "2026-09-18");
+    let model = build::build(
+        &lib,
+        &tracks,
+        &selected,
+        "JPHFA-REKORD",
+        "2026-09-18",
+        Root::Pioneer,
+    );
     assert_eq!(model.playlists.len(), 4);
     let bytes = baken_export::pdb::write(&model).unwrap();
     assert_eq!(bytes.len() % 4096, 0);
@@ -450,8 +458,15 @@ fn track_rows_carry_track_id_and_date_added() {
     );
 
     let (lib, tracks, selected) = fixture_selection(&root);
-    let ours = baken_export::pdb::write(&build::build(&lib, &tracks, &selected, "X", "2026-11-06"))
-        .unwrap();
+    let ours = baken_export::pdb::write(&build::build(
+        &lib,
+        &tracks,
+        &selected,
+        "X",
+        "2026-11-06",
+        Root::Pioneer,
+    ))
+    .unwrap();
     let rows = track_row_fields(&ours);
     assert_eq!(rows.len(), tracks.len());
     for (u14, s10, s15) in rows {
