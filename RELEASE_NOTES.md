@@ -1,17 +1,17 @@
-# Bake'n Deck 4.9.0 - My Tags on the stick, library drives on Windows
+# Bake'n Deck 4.10.0 - DATE ADDED on the player, no noise from damaged audio
 
-A minor release: `baken-export` gains the My Tags option, which changes its API. `baken-core` is unchanged.
+A minor release: `baken-export` structs gain fields, which changes its API (see Library users). `baken-core` has a fix and no API change.
 
 ## Highlights
 
-- **My Tags on the stick (`expressport --my-tags`).** rekordbox's XML carries no My Tags, so up to 4.8.0 a stick from `expressport` had none: no `exportExt.pdb`, and OneLibrary's four My Tag columns stayed empty. `--my-tags <FILE>` reads them from a small JSON file next to the XML (the columns with their tags, and each track's tags keyed by the XML's `TrackID`) and writes `exportExt.pdb` the way rekordbox does, and with `--onelibrary` OneLibrary's My Tag tables as well. The file is checked before anything is written, and the plan shows how many of the exported tracks carry tags. The format is in the README under "My Tags (`--my-tags`)". The tag pages come out byte for byte as rekordbox writes them, and rekordbox's own My Tags from a real stick come back on the same tracks; it has not been tried on a player yet. The CDJ-3000 uses My Tags in its Track Filter; reports are welcome in [#281](https://github.com/M-Igashi/baken/issues/281). Asked for and co-authored by @plep7 ([#282](https://github.com/M-Igashi/baken/pull/282)). Without the option nothing changes.
-- **A rekordbox library on a drive of its own is found on Windows.** `expressport` looks for `PIONEER\Master\share\PIONEER\USBANLZ` at the root of every local drive letter, fixed or removable, instead of only in `%APPDATA%`, so such a library no longer needs `--anlz-dir` on every run. Network and optical drives are not searched, and an empty card reader no longer opens Windows' "no disk" box ([#279](https://github.com/M-Igashi/baken/pull/279), thanks to the report in [#276](https://github.com/M-Igashi/baken/pull/276)). Not tried on a real Windows machine yet. macOS and Linux search the same places as before.
+- **CDJ Safe no longer turns damaged audio into noise.** ffmpeg exits normally after decoding a damaged or encrypted AAC stream, so `cdjsafe` and `expressport --cdjsafe` wrote a full-length MP3 of whatever the decoder produced and counted the track as converted. On a real library one such AAC came out as 334 seconds of noise from a 373-second source. A conversion now fails when ffmpeg reports more than ten decoding errors, and the track is named with the reason: `expressport --cdjsafe` leaves it out, standalone `cdjsafe` stops before writing the XML as it does for any failed conversion. A few bad frames in an old rip still pass ([#299](https://github.com/M-Igashi/baken/pull/299)).
+- **DATE ADDED on the player is the date you added the track.** Players show and sort the DATE ADDED column from a string in the track row that rekordbox fills with the XML's `DateAdded`; `expressport` wrote the date of the export there, so every track showed the same day. It now writes `DateAdded`, and the track row's `masterContentId` is the XML's `TrackID`, as rekordbox writes it and as OneLibrary already had it. Checked on all 585 tracks of the reference export ([#294](https://github.com/M-Igashi/baken/pull/294), fixes [#284](https://github.com/M-Igashi/baken/issues/284)).
+- **Play history a player recorded is no longer lost without a word.** Players record what was played in the stick's `export.pdb`, and rekordbox imports it from there. `expressport` replaces `export.pdb` whole, so the plan now reads the history on the stick and says what would be lost before anything is written. Carrying the history over is still open in [#286](https://github.com/M-Igashi/baken/issues/286) ([#297](https://github.com/M-Igashi/baken/pull/297)).
 
 ## Other changes
 
-- The `--onelibrary` line of the plan no longer says "not yet tested on those players"; an XDJ-AZ read such a stick in [#139](https://github.com/M-Igashi/baken/issues/139).
-- The README describes Bake'n Deck for Mac 1.4.0 ([#280](https://github.com/M-Igashi/baken/pull/280)).
-- Dependencies: rusqlite 0.41.0 with SQLite 3.54.1 for `--onelibrary` ([#278](https://github.com/M-Igashi/baken/pull/278)); the release workflow uses crates-io-auth-action 1.0.6 ([#277](https://github.com/M-Igashi/baken/pull/277)).
+- `--prune` no longer deletes the stick's copy of a track that was skipped because its source was missing (a drive not mounted, a file moved). Such a skip now holds prune back, as a failure does, and the report counts it ([#296](https://github.com/M-Igashi/baken/pull/296), refs [#291](https://github.com/M-Igashi/baken/issues/291)).
+- `--generate-analysis` never writes a zero column into the two small preview waveforms; it uses rekordbox's own minimum, which Nexus-era players need to treat the preview as finished ([#295](https://github.com/M-Igashi/baken/pull/295), fixes [#285](https://github.com/M-Igashi/baken/issues/285)).
 
 ## Upgrading from 4.6.1 or earlier
 
@@ -28,13 +28,4 @@ A minor release: `baken-export` gains the My Tags option, which changes its API.
 ## Library users
 
 - `baken-core`: no API change.
-- `baken-export`:
-  - `Options` gains `my_tags: Option<PathBuf>`, so a struct literal without `..Default::default()` needs it (`None` keeps the old behaviour).
-  - `pdb::Export` gains `my_tags` and `my_tag_tracks`, with the same consequence for struct literals.
-  - New: the `mytags` module (`MyTags::load`, `parse`, `apply`, `tagged`, `tag_count`, `columns`), `Plan::my_tags`, `Report::my_tags_written` and `Report::my_tags_error`, `pdb::write_ext`, `pdb::MyTag`, and `EXT_FILE`.
-  - No new `Error` variant: a bad My Tags file is `Error::Other`, with a one-line message that names the file.
-  - On Windows, `anlz::locate::default_roots` also lists the library path on every fixed or removable drive letter.
-
-## Notice for users upgrading from 3.2.x or earlier: the default behaviour of `baken headroom` changed in 3.3.0
-
-Up to 3.2.x, `baken headroom` only ever turned files **up**. Since 3.3.0 tracks above the -0.5 dBTP ceiling are turned **down** to it, so every track on the stick ends up at the same True Peak. Pass `--boost-only` for the old raise-only behaviour, and run with `--analyze-only` first if you want to see what would happen.
+- `baken-export`: new public fields, so a struct literal of these types needs them: `Skipped::source_missing`, `Plan::player_history` (`Option<pdb::PlayerHistory>`), `Report::sources_missing`, and in `pdb::rows::TrackRow` `master_content_id`, `date_created`, and `date_added`. New module `pdb::read` with `PlayerHistory { lists, entries }` and `PlayerHistory::read(&[u8])`.
