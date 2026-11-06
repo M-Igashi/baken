@@ -1,0 +1,10 @@
+date: 2026-11-06 07:47 UTC
+machine: Mac15,12, Apple M3, 24 GB
+macOS: 27.0.1 (26A434)
+power: AC Power
+baken: baken 4.8.0
+ffmpeg (for baken --cdjsafe): ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers
+rbxport: 1.9.0 (/Applications/rbxport.app)
+rekordbox: 7.2.18.0311
+stick: SanDisk 3.2Gen1, 61.5 GB, FAT32, USB
+corpus: 200 files, 9.0G
