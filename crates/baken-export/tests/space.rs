@@ -169,11 +169,22 @@ fn the_plan_reports_player_history_on_the_stick() {
     let rb = opts.device.join("PIONEER/rekordbox");
     std::fs::create_dir_all(&rb).unwrap();
     std::fs::copy(&fixture, rb.join("export.pdb")).unwrap();
-    let history = plan(&opts).unwrap().player_history.expect("history found");
+    let p = plan(&opts).unwrap();
+    let history = p.player_history.as_ref().expect("history found");
     assert_eq!((history.lists.len(), history.entries), (1, 24));
+    // none of the stick's tracks is in this export, so no play can stay
+    assert_eq!(history.dropped, 24);
 
-    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
-    assert!(plan(&opts).unwrap().player_history.is_none());
+    // the owner's colour names and lists are carried over (issue #289)
+    assert_eq!(
+        p.preferences.changed(),
+        ["colour names", "category list", "sort list"]
+    );
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert_eq!((report.history_plays, report.history_dropped), (0, 24));
+    let again = plan(&opts).unwrap();
+    assert!(again.player_history.is_none());
+    assert_eq!(again.preferences, p.preferences);
     std::fs::remove_dir_all(&root).unwrap();
 }
 
@@ -199,5 +210,63 @@ fn a_track_too_large_for_a_page_is_skipped() {
     assert_eq!(p.skipped[0].name, "a");
     assert!(p.skipped[0].reason.contains("shorten the comment"));
     export(&p, &(), &CancelToken::new()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Plays of tracks that stay on the stick go into the new `export.pdb` under
+/// the ids those tracks have now (issue #286).
+#[test]
+fn player_history_is_carried_over() {
+    use baken_export::pdb::{self, rows::TrackRow, Export, PlayerHistory};
+    let (root, opts) = setup("history-carried");
+    let p = plan(&opts).unwrap();
+    // a stick where a player played b, a, b under other track ids
+    let tracks: Vec<TrackRow> = p
+        .tracks
+        .iter()
+        .zip([70, 80])
+        .map(|(t, id)| TrackRow {
+            id,
+            file_path: t.device.usb_path.clone(),
+            ..Default::default()
+        })
+        .collect();
+    let old = Export {
+        tracks,
+        history_lists: vec![(3, "HISTORY 003".into())],
+        history_entries: vec![(80, 3, 1), (70, 3, 2), (80, 3, 3), (99, 3, 4)],
+        ..Default::default()
+    };
+    let rb = opts.device.join("PIONEER/rekordbox");
+    std::fs::create_dir_all(&rb).unwrap();
+    std::fs::write(rb.join("export.pdb"), pdb::write(&old).unwrap()).unwrap();
+
+    let p = plan(&opts).unwrap();
+    let history = p.player_history.as_ref().unwrap();
+    assert_eq!((history.entries, history.dropped), (4, 1));
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert_eq!((report.history_plays, report.history_dropped), (3, 1));
+    let new = std::fs::read(rb.join("export.pdb")).unwrap();
+    let carried = PlayerHistory::read(&new).unwrap();
+    assert_eq!(
+        (carried.lists.as_slice(), carried.entries),
+        (&["HISTORY 003".to_string()][..], 3)
+    );
+    // the plays still name b, a, b: carried into a model where a is 5, b 6
+    let mut model = Export {
+        tracks: p
+            .tracks
+            .iter()
+            .zip([5, 6])
+            .map(|(t, id)| TrackRow {
+                id,
+                file_path: t.device.usb_path.clone(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    assert_eq!(carried.carry_into(&mut model), 0);
+    assert_eq!(model.history_entries, [(6, 3, 1), (5, 3, 2), (6, 3, 3)]);
     std::fs::remove_dir_all(&root).unwrap();
 }

@@ -6,7 +6,7 @@
 //! sequence above every data page); colors and columns keep rekordbox's fixed
 //! 2 and 3.
 
-use super::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
+use super::fixed::Preferences;
 use super::page::{header_page, index_page, DataPage, HeaderStyle, MAX_ROW, PAGE_LEN};
 use super::rows::{self, MyTag, TrackRow};
 
@@ -53,6 +53,13 @@ pub struct Export {
     /// `(track id, tag id)`, by track, then column and position, as
     /// rekordbox lists them.
     pub my_tag_tracks: Vec<(u32, u32)>,
+    /// rekordbox's defaults, or the stick's own (issue #289).
+    pub preferences: Preferences,
+    /// Play history a player recorded on the stick, carried over (issue
+    /// #286): `(id, name)` of each list.
+    pub history_lists: Vec<(u32, String)>,
+    /// `(track id, list id, entry index)`, every play of [`Export::history_lists`].
+    pub history_entries: Vec<(u32, u32, u32)>,
 }
 
 impl Export {
@@ -146,11 +153,13 @@ fn tables(e: &Export) -> Vec<Table<'_>> {
         .iter()
         .map(|(id, n)| row(move |_| rows::key(*id, n)))
         .collect();
+    let prefs = &e.preferences;
     t[6].style = HeaderStyle::Fixed;
     t[6].seq = Some(2);
-    t[6].rows = COLORS
+    t[6].rows = prefs
+        .colors
         .iter()
-        .map(|(id, n, _)| row(move |_| rows::color(*id, n)))
+        .map(|(id, n)| row(move |_| rows::color(*id, n)))
         .collect();
     t[7].rows = e
         .playlists
@@ -168,6 +177,16 @@ fn tables(e: &Export) -> Vec<Table<'_>> {
                 })
             })
             .collect();
+    t[11].rows = e
+        .history_lists
+        .iter()
+        .map(|(id, n)| row(move |_| rows::named(*id, n)))
+        .collect();
+    t[12].rows = e
+        .history_entries
+        .iter()
+        .map(|&(track, list, index)| row(move |_| rows::history_entry(track, list, index)))
+        .collect();
     t[13].rows = e
         .artworks
         .iter()
@@ -175,17 +194,28 @@ fn tables(e: &Export) -> Vec<Table<'_>> {
         .collect();
     t[16].style = HeaderStyle::Fixed;
     t[16].seq = Some(3);
-    t[16].rows = COLUMNS
+    t[16].rows = prefs
+        .columns
         .iter()
         .map(|(id, code, c)| row(move |_| rows::column(*id, *code, c)))
         .collect();
-    t[17].rows = CATEGORY_ROWS
+    t[17].rows = prefs
+        .categories
         .iter()
         .map(|r| row(move |_| r.to_vec()))
         .collect();
-    t[18].rows = SORT_ROWS.iter().map(|r| row(move |_| r.to_vec())).collect();
+    t[18].rows = prefs
+        .sorts
+        .iter()
+        .map(|r| row(move |_| r.to_vec()))
+        .collect();
     t[19].rows = vec![row(move |_| {
-        rows::history_property(e.tracks.len() as u32, &e.export_date, &e.device_name)
+        rows::history_property(
+            e.tracks.len() as u32,
+            prefs.display,
+            &e.export_date,
+            &e.device_name,
+        )
     })];
     t
 }

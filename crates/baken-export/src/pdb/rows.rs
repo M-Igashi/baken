@@ -117,13 +117,28 @@ pub fn column(id: u16, code: u16, name: &str) -> Vec<u8> {
     r
 }
 
-/// history (0x13): the single "property" row rekordbox writes into an
-/// export: `0x0280, track_count, 0, export_date, 0x19, 0x1e, "1000",
-/// device_name`, zero-padded to 40 bytes. The count is what a CDJ-3000 shows
-/// as Songs (587 on the reference export, 0 on an empty one).
-pub fn history_property(track_count: u32, export_date: &str, device_name: &str) -> Vec<u8> {
+/// history_entries (0x0c): one play a player recorded, `track_id,
+/// history_list_id, entry_index` (from 1 within the list). The lists
+/// themselves (0x0b) are [`named`] rows (issue #286).
+pub fn history_entry(track_id: u32, list_id: u32, entry_index: u32) -> Vec<u8> {
     let mut r = Vec::new();
-    u32s(&mut r, &[0x0280, track_count, 0]);
+    u32s(&mut r, &[track_id, list_id, entry_index]);
+    r
+}
+
+/// history (0x13): the single "property" row rekordbox writes into an
+/// export: `0x0280, track_count, display, export_date, 0x19, 0x1e, "1000",
+/// device_name`, zero-padded to 40 bytes. The count is what a CDJ-3000 shows
+/// as Songs (587 on the reference export, 0 on an empty one); `display` is
+/// [`super::fixed::Preferences::display`].
+pub fn history_property(
+    track_count: u32,
+    display: [u8; 4],
+    export_date: &str,
+    device_name: &str,
+) -> Vec<u8> {
+    let mut r = Vec::new();
+    u32s(&mut r, &[0x0280, track_count, u32::from_le_bytes(display)]);
     r.extend(encode(export_date));
     r.extend_from_slice(&[0x19, 0x1e]);
     r.extend(encode("1000"));
@@ -367,7 +382,7 @@ mod tests {
             &column(1, 0x80, "\u{fffa}GENRE\u{fffb}")[..8],
             &hex("0100800090120000")[..]
         );
-        let h = history_property(0, "2024-11-16", "");
+        let h = history_property(0, [0; 4], "2024-11-16", "");
         assert_eq!(h.len(), 40);
         assert_eq!(
             &h[..31],
@@ -375,8 +390,14 @@ mod tests {
         );
         // the reference export's row, 587 tracks
         assert_eq!(
-            &history_property(587, "2025-04-11", "")[..8],
+            &history_property(587, [0; 4], "2025-04-11", "")[..8],
             &hex("800200004b020000")[..]
+        );
+        // a history entry of the reference stick: track 139, list 1, play 1
+        assert_eq!(history_entry(139, 1, 1), hex("8b0000000100000001000000"));
+        assert_eq!(
+            named(1, "HISTORY 001"),
+            hex("0100000019484953544f525920303031")
         );
     }
 

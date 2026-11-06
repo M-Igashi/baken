@@ -142,3 +142,39 @@ fn prune_removes_artwork_no_track_uses() {
     assert!(!opts.device.join("PIONEER/Artwork").join("00001").exists());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A track keeps its artwork id when a new track with a picture comes before
+/// it: its files stay as they are, and the new picture gets the next free id
+/// (issue #290). Up to 4.9.0 ids followed the track order, so the new track
+/// took id 1 and every file was written again.
+#[test]
+fn a_track_keeps_its_artwork_id_when_another_comes_first() {
+    let (root, mut opts) = library("stable-ids");
+    let music = root.join("music");
+    aiff_with_cover(&music.join("new.aif"), &png(120, 120));
+    let xml = std::fs::read_to_string(&opts.xml).unwrap();
+    let new_track = format!(
+        r#"<TRACK TrackID="3" Name="new.aif" Artist="C" Album="D" Kind="AIFF File" TotalTime="0" AverageBpm="120.00" SampleRate="44100" BitRate="1411" Location="file://localhost{}/new.aif"><TEMPO Inizio="0.000" Bpm="120.00" Metro="4/4" Battito="1"/></TRACK></COLLECTION>"#,
+        music.display()
+    );
+    let xml = xml
+        .replace("</COLLECTION>", &new_track)
+        .replace(
+            r#"<NODE Name="Q" Type="1" KeyType="0" Entries="1"><TRACK Key="2"/></NODE>"#,
+            r#"<NODE Name="Q" Type="1" KeyType="0" Entries="2"><TRACK Key="3"/><TRACK Key="1"/></NODE>"#,
+        );
+    std::fs::write(&opts.xml, xml).unwrap();
+
+    opts.playlists = vec!["P".into()];
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let first = std::fs::read(art(&opts, "a1.jpg")).unwrap();
+
+    opts.playlists = vec!["Q".into()];
+    let p = plan(&opts).unwrap();
+    assert_eq!(p.artwork_ids.len(), 1);
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert_eq!((report.artwork, report.artwork_unchanged), (2, 4));
+    assert_eq!(std::fs::read(art(&opts, "a1.jpg")).unwrap(), first);
+    assert_ne!(std::fs::read(art(&opts, "a2.jpg")).unwrap(), first);
+    std::fs::remove_dir_all(&root).unwrap();
+}

@@ -64,10 +64,42 @@ fn print_plan(plan: &Plan) {
         } else {
             format!(" ({})", h.lists.join(", "))
         };
+        let import =
+            "To keep them, connect the stick to rekordbox and import the history there first.";
+        if h.dropped >= h.entries {
+            println!(
+                "{} The stick holds play history a player recorded{lists}, {} plays, all of tracks this export does not put on the stick, so the new export.pdb cannot carry it. {import}",
+                style("⚠").yellow(),
+                h.entries
+            );
+        } else {
+            println!(
+                "{} Play history a player recorded on the stick{lists}, {} plays: carried over into the new export.pdb, so rekordbox can still import it.",
+                style("▸").cyan(),
+                h.entries
+            );
+            if h.dropped > 0 {
+                println!(
+                    "{} {} of those plays are of tracks this export does not put on the stick, and they are left out. {import}",
+                    style("⚠").yellow(),
+                    h.dropped
+                );
+            }
+        }
+    }
+    let kept = plan.preferences.changed();
+    if !kept.is_empty() {
         println!(
-            "{} This stick holds play history a player recorded{lists}, {} plays. Writing export.pdb replaces it: connect the stick to rekordbox and import the history there first if you want to keep it.",
+            "{} Kept from the stick's export.pdb: {} (set in rekordbox, not in the XML)",
+            style("▸").cyan(),
+            kept.join(", ")
+        );
+    }
+    if !plan.preferences_unreadable.is_empty() {
+        println!(
+            "{} The stick's export.pdb holds its {} in a form baken does not read, so the export writes rekordbox's defaults there.",
             style("⚠").yellow(),
-            h.entries
+            plan.preferences_unreadable.join(", ")
         );
     }
     // an exportExt.pdb on the stick is replaced by ours, not removed
@@ -319,6 +351,14 @@ fn print_report(plan: &Plan, r: &Report) {
             "FLAC seek tables left out: the file's frames could not all be read",
         ),
         (r.artwork, "tracks with artwork"),
+        (
+            r.history_plays,
+            "plays of the player's history carried over",
+        ),
+        (
+            r.history_dropped,
+            "plays of the player's history left out (their tracks are not on the stick)",
+        ),
         (r.pruned, "stale files removed"),
         (
             r.onelibrary_removed,

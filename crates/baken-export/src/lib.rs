@@ -143,9 +143,21 @@ pub struct Plan {
     /// failed run leaves both of the stick's libraries as they were.
     pub onelibrary_files: Vec<&'static str>,
     /// Play history a player recorded in the stick's `export.pdb`. The export
-    /// replaces that file, so the history is lost unless the DJ imports it
-    /// into rekordbox first (issue #286).
+    /// carries it into the new one, less the plays of tracks it does not put
+    /// on the stick ([`pdb::PlayerHistory::dropped`], issue #286).
     pub player_history: Option<pdb::PlayerHistory>,
+    /// Colour names, browse columns, categories, sort list and background
+    /// colour from the stick's `export.pdb`, which rekordbox writes from its
+    /// preferences and the XML lacks; rekordbox's defaults on a stick without
+    /// one (issue #289).
+    pub preferences: pdb::Preferences,
+    /// Parts of [`Plan::preferences`] the stick's `export.pdb` holds in a form
+    /// baken does not read, left at rekordbox's defaults.
+    pub preferences_unreadable: Vec<&'static str>,
+    /// With [`Options::artwork`]: the artwork id each track on the stick has,
+    /// by stick path. A track keeps its id, so its files stay as they are
+    /// (issue #290).
+    pub artwork_ids: HashMap<String, u32>,
     /// What the export writes to the stick, estimated from above (issue
     /// #233): audio and analysis files not already there, `export.pdb`, the
     /// settings files and new directories, in whole allocation units, less
@@ -250,8 +262,7 @@ pub struct Report {
     /// Why it was not, though asked for. An old one is removed, as without
     /// the option.
     pub my_tags_error: Option<String>,
-    /// [`Options::artwork`]: tracks that got artwork, which are also the
-    /// artwork ids handed out (1 to this).
+    /// [`Options::artwork`]: tracks that got artwork.
     pub artwork: usize,
     /// Artwork files already on the stick byte for byte, so not written again.
     pub artwork_unchanged: usize,
@@ -271,6 +282,10 @@ pub struct Report {
     /// Tracks the plan skipped because their source file was missing
     /// ([`Skipped::source_missing`]).
     pub sources_missing: usize,
+    /// Plays of [`Plan::player_history`] carried into the new `export.pdb`.
+    pub history_plays: usize,
+    /// Plays left out because their track is not on the stick this time.
+    pub history_dropped: usize,
     pub tracks_in_database: usize,
 }
 
@@ -418,9 +433,16 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .into_iter()
         .filter(|f| rb_dir.join(f).symlink_metadata().is_ok())
         .collect();
-    let player_history = std::fs::read(rb_dir.join("export.pdb"))
-        .ok()
-        .and_then(|pdb| pdb::PlayerHistory::read(&pdb));
+    let on_stick = std::fs::read(rb_dir.join("export.pdb")).ok();
+    let mut player_history = on_stick.as_deref().and_then(pdb::PlayerHistory::read);
+    let (preferences, preferences_unreadable) = on_stick
+        .as_deref()
+        .and_then(pdb::read::preferences)
+        .unwrap_or_default();
+    let artwork_ids = match &on_stick {
+        Some(pdb) if opts.artwork => pdb::read::artwork_ids(pdb),
+        _ => HashMap::new(),
+    };
 
     let space = volume::space(&opts.device);
     let build = |tracks: &[PlanTrack]| {
@@ -457,6 +479,10 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     }
     if let Some(tags) = &my_tags {
         tags.apply(&mut model, &devices);
+    }
+    model.preferences = preferences.clone();
+    if let Some(history) = &mut player_history {
+        history.dropped = history.carry_into(&mut model);
     }
     let mut library_lens = vec![pdb::write(&model).map_err(too_large)?.len() as u64];
     if my_tags.is_some() {
@@ -508,6 +534,9 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         partition_table,
         onelibrary_files,
         player_history,
+        preferences,
+        preferences_unreadable,
+        artwork_ids,
         space_needed,
         space_available: space.map(|s| s.available),
         device_name,
@@ -916,6 +945,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     // Set when the stick fails as a whole: the run stops at that track,
     // the workers stop preparing, and `export.pdb` stays as it was.
     let mut stopped = None;
+    let mut artwork_ids = ArtworkIds::new(&plan.artwork_ids);
     let ahead = Ahead::new(total);
     let (tx, rx) = mpsc::channel::<(usize, anyhow::Result<Prepared>)>();
     std::thread::scope(|s| {
@@ -955,7 +985,7 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                 stopped = Some(e);
                 break;
             }
-            match prepared.and_then(|p| write_track(plan, pt, p, &mut report)) {
+            match prepared.and_then(|p| write_track(plan, pt, p, &mut artwork_ids, &mut report)) {
                 Ok(dt) => {
                     wanted.insert(device_path(&plan.device, &dt.usb_path));
                     for kind in FileKind::ALL {
@@ -1007,6 +1037,11 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     );
     if let Some(tags) = &plan.my_tags {
         tags.apply(&mut model, &exported);
+    }
+    model.preferences = plan.preferences.clone();
+    if let Some(history) = &plan.player_history {
+        report.history_dropped = history.carry_into(&mut model);
+        report.history_plays = model.history_entries.len();
     }
     report.tracks_in_database = exported.len();
     let onelibrary = plan
@@ -1409,6 +1444,7 @@ fn write_track(
     plan: &Plan,
     pt: &PlanTrack,
     mut prepared: Prepared,
+    artwork_ids: &mut ArtworkIds,
     report: &mut Report,
 ) -> anyhow::Result<DeviceTrack> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
@@ -1455,11 +1491,10 @@ fn write_track(
         Some(SeekTable::Dropped) => report.seek_tables_dropped += 1,
         None => {}
     }
-    // Last, so that a track failing above takes no id: ids run 1, 2, 3 in
-    // the order tracks reach the database, one image per track as rekordbox
-    // writes them, even for the tracks of one album.
+    // Last, so that a track failing above takes no id. One image per track
+    // as rekordbox writes them, even for the tracks of one album.
     if let Some(art) = &prepared.artwork {
-        let id = report.artwork as u32 + 1;
+        let id = artwork_ids.assign(&pt.device.usb_path);
         for (path, medium) in artwork::files(id) {
             let path = device_path(&plan.device, &path);
             if let Some(dir) = path.parent() {
@@ -1474,6 +1509,37 @@ fn write_track(
         prepared.device.artwork_id = id;
     }
     Ok(prepared.device)
+}
+
+/// Artwork ids for one run. A track keeps the id it has on the stick, so
+/// that its four files there are already the right ones; a new picture gets
+/// an id above every one the stick uses. Handing them out 1, 2, 3 in track
+/// order instead shifted every later id when one track came or went, and the
+/// next run rewrote all their files (issue #290).
+struct ArtworkIds<'a> {
+    on_stick: &'a HashMap<String, u32>,
+    taken: HashSet<u32>,
+    next: u32,
+}
+
+impl<'a> ArtworkIds<'a> {
+    fn new(on_stick: &'a HashMap<String, u32>) -> Self {
+        ArtworkIds {
+            on_stick,
+            taken: HashSet::new(),
+            next: on_stick.values().max().map_or(1, |&max| max + 1),
+        }
+    }
+
+    fn assign(&mut self, usb_path: &str) -> u32 {
+        match self.on_stick.get(usb_path) {
+            Some(&id) if self.taken.insert(id) => id,
+            _ => {
+                self.next += 1;
+                self.next - 1
+            }
+        }
+    }
 }
 
 /// Whether `a` and `b`, both `len` bytes long, hold the same 64 KiB at the
@@ -1517,8 +1583,10 @@ fn write_anlz(path: &Path, bytes: &[u8], report: &mut Report) -> std::io::Result
 }
 
 /// Write `bytes` to `path` unless it holds them already; `true` if written.
+/// A file of another size is not read back first (issue #290).
 fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
-    if std::fs::read(path).is_ok_and(|old| old == bytes) {
+    let same_size = std::fs::metadata(path).is_ok_and(|m| m.len() == bytes.len() as u64);
+    if same_size && std::fs::read(path).is_ok_and(|old| old == bytes) {
         return Ok(false);
     }
     std::fs::write(path, bytes)?;

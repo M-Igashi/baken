@@ -13,7 +13,6 @@
 //! through the ANLZ files either way.
 
 use crate::build::DeviceTrack;
-use crate::pdb::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
 use crate::pdb::rows::{ANALYSED_BITS, MASTER_DB_ID, TRACK_BITMASK};
 use crate::pdb::Export;
 use crate::sqlcipher;
@@ -217,8 +216,9 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
     for (i, artist, name) in &model.albums {
         s.execute(params![i, name, id(*artist)])?;
     }
+    let prefs = &model.preferences;
     let mut s = db.prepare("INSERT INTO color VALUES (?, ?)")?;
-    for (i, name, _) in COLORS {
+    for (i, name) in &prefs.colors {
         s.execute(params![i, name])?;
     }
     let mut s = db.prepare("INSERT INTO playlist VALUES (?, ?, ?, NULL, ?, ?)")?;
@@ -234,17 +234,19 @@ fn insert(db: &Connection, model: &Export, tracks: &[DeviceTrack]) -> rusqlite::
         s.execute(params![i, crate::artwork::path(*i, 'b', false)])?;
     }
     let mut s = db.prepare("INSERT INTO menuItem VALUES (?, ?, ?)")?;
-    for (i, kind, name) in COLUMNS {
+    for (i, kind, name) in &prefs.columns {
         s.execute(params![i, kind, name])?;
     }
-    // export.pdb's rows: menu item, category, flags (1 = hidden), position.
+    // export.pdb's rows, as the reference stick's two files pair them:
+    // category `menu item, category, _, flags (bit 0 hidden), position`, sort
+    // `menu item, sort, flags (bit 0 hidden, bit 1 sub column), position`.
     let mut s = db.prepare("INSERT INTO category VALUES (?, ?, ?, ?)")?;
-    for r in CATEGORY_ROWS {
-        s.execute(params![r[2], r[0], r[6], r[5] != 1])?;
+    for r in &prefs.categories {
+        s.execute(params![r[2], r[0], r[6], r[5] & 1 == 0])?;
     }
     let mut s = db.prepare("INSERT INTO sort VALUES (?, ?, ?, ?, ?)")?;
-    for r in SORT_ROWS {
-        s.execute(params![r[2], r[0], r[5], r[4] == 0, r[6]])?;
+    for r in &prefs.sorts {
+        s.execute(params![r[2], r[0], r[5], r[4] & 1 == 0, r[4] >> 1 & 1])?;
     }
     db.execute(
         "INSERT INTO property VALUES (?, '1000', ?, ?, 0, 0)",
@@ -496,6 +498,38 @@ mod tests {
             rows(&db, "SELECT count(*) FROM myTag WHERE attribute = 1"),
             ["4"]
         );
+    }
+
+    /// The reference stick's customised lists and colour names, read from
+    /// its `export.pdb` (issue #289), give the rows rekordbox wrote into its
+    /// OneLibrary next to it: the hidden flag is bit 0 of the flags byte
+    /// (rekordbox writes 3 for a hidden MATCHING), and bit 1 of a sort row's
+    /// flags is the sub column.
+    #[test]
+    fn carried_preferences_match_rekordbox() {
+        let Some(root) = fixture() else {
+            return;
+        };
+        let pdb = std::fs::read(root.join("PIONEER/rekordbox/export.pdb")).unwrap();
+        let (preferences, _) = crate::pdb::read::preferences(&pdb).unwrap();
+        let ours = write(
+            &Export {
+                preferences,
+                ..Default::default()
+            },
+            &[],
+        )
+        .unwrap();
+        let (_ours_tmp, ours) = open(&ours, &[]);
+        let (_tmp, theirs) = rekordbox_db(&root);
+        for sql in [
+            "SELECT * FROM category ORDER BY category_id",
+            "SELECT * FROM sort ORDER BY sort_id",
+            "SELECT * FROM color ORDER BY color_id",
+            "SELECT * FROM menuItem ORDER BY menuItem_id",
+        ] {
+            assert_eq!(rows(&ours, sql), rows(&theirs, sql), "{sql}");
+        }
     }
 
     fn fixture() -> Option<std::path::PathBuf> {
