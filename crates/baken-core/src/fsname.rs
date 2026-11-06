@@ -76,17 +76,44 @@ pub fn replace(temp: &Path, target: &Path) -> io::Result<()> {
 }
 
 /// Write `bytes` to a sibling `<name>.tmp` and move it over `path`, so a
-/// crash or a full disk mid-write leaves the old file whole. A failed write
-/// or rename removes the temp file again.
+/// crash or a full disk mid-write leaves the old file whole. The temp file
+/// reaches the disk before the rename, or a stick pulled out right after the
+/// run could hold the new name over data never written (issue #293). A
+/// failed write or rename removes the temp file again.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut name = path.file_name().map(OsString::from).unwrap_or_default();
     name.push(".tmp");
     let temp = native(&path.with_file_name(name));
-    let result = std::fs::write(&temp, bytes).and_then(|()| replace(&temp, path));
+    let result = write_synced(&temp, bytes).and_then(|()| replace(&temp, path));
     if result.is_err() {
         let _ = remove_file(&temp);
     }
     result
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    sync(&file)
+}
+
+/// `sync_all`, which is `F_FULLFSYNC` on macOS. A filesystem that does not
+/// support that (ENOTSUP, seen on a FAT32 stick by another exporter) gets a
+/// plain `fsync`, which still hands the data to the device.
+fn sync(file: &std::fs::File) -> io::Result<()> {
+    match file.sync_all() {
+        #[cfg(target_vendor = "apple")]
+        Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => {
+            use std::os::fd::AsRawFd;
+            // SAFETY: the descriptor belongs to `file`, which outlives the call.
+            match unsafe { libc::fsync(file.as_raw_fd()) } {
+                0 => Ok(()),
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+        result => result,
+    }
 }
 
 #[cfg(test)]

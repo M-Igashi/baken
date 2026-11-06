@@ -7,7 +7,7 @@
 //! 2 and 3.
 
 use super::fixed::{CATEGORY_ROWS, COLORS, COLUMNS, SORT_ROWS};
-use super::page::{header_page, index_page, DataPage, HeaderStyle, PAGE_LEN};
+use super::page::{header_page, index_page, DataPage, HeaderStyle, MAX_ROW, PAGE_LEN};
 use super::rows::{self, MyTag, TrackRow};
 
 pub const NUM_TABLES: u32 = 20;
@@ -72,6 +72,19 @@ impl Export {
             })
             .collect()
     }
+}
+
+/// A row that no page can hold (issue #293): a track whose text in the XML
+/// (most likely its comment) comes to kilobytes. [`crate::plan`] leaves such
+/// tracks out by name, so this only reaches a caller for another table.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "row {index} of table {table} takes {len} bytes, and a database page holds at most {MAX_ROW}"
+)]
+pub struct RowTooLarge {
+    pub table: u32,
+    pub index: usize,
+    pub len: usize,
 }
 
 /// Encodes one row given its position in the page.
@@ -197,17 +210,17 @@ fn ext_tables(e: &Export, master_db_id: u32) -> Vec<Table<'static>> {
 }
 
 /// Serialise the export. The result is a whole number of 4096-byte pages.
-pub fn write(e: &Export) -> Vec<u8> {
+pub fn write(e: &Export) -> Result<Vec<u8>, RowTooLarge> {
     assemble(&tables(e))
 }
 
 /// `exportExt.pdb`, the Device Library's My Tags (issue #281), in the same
 /// page layout as `export.pdb`.
-pub fn write_ext(e: &Export) -> Vec<u8> {
+pub fn write_ext(e: &Export) -> Result<Vec<u8>, RowTooLarge> {
     assemble(&ext_tables(e, MY_TAG_MASTER_DB_ID))
 }
 
-fn assemble(tables: &[Table]) -> Vec<u8> {
+fn assemble(tables: &[Table]) -> Result<Vec<u8>, RowTooLarge> {
     let num_tables = tables.len() as u32;
     let mut pages: Vec<Vec<u8>> = vec![Vec::new()]; // page 0 filled last
     let mut pointers = Vec::new();
@@ -221,13 +234,23 @@ fn assemble(tables: &[Table]) -> Vec<u8> {
         pages.push(Vec::new());
         let mut data: Vec<DataPage> = Vec::new();
         let mut page = DataPage::new(pages.len() as u32, t.ty, 0, t.style);
-        for make in &t.rows {
+        for (index, make) in t.rows.iter().enumerate() {
             let row = make(page.rows());
+            if row.len() > MAX_ROW {
+                return Err(RowTooLarge {
+                    table: t.ty,
+                    index,
+                    len: row.len(),
+                });
+            }
             if !page.try_push(&row) {
                 data.push(page);
                 page = DataPage::new((pages.len() + data.len()) as u32, t.ty, 0, t.style);
                 let row = make(0);
-                assert!(page.try_push(&row), "row larger than a page");
+                assert!(
+                    page.try_push(&row),
+                    "a row of at most MAX_ROW fits an empty page"
+                );
             }
         }
         if !page.is_empty() {
@@ -269,7 +292,7 @@ fn assemble(tables: &[Table]) -> Vec<u8> {
         pages.push(vec![0u8; PAGE_LEN]);
     }
     pages[0] = header_page(num_tables, pages.len() as u32, max_seq + 1, &pointers);
-    pages.concat()
+    Ok(pages.concat())
 }
 
 #[cfg(test)]
@@ -288,20 +311,13 @@ mod tests {
         &d[i * PAGE_LEN..(i + 1) * PAGE_LEN]
     }
 
-    /// Compare two pages ignoring page index, next pointer and sequence.
+    /// Compare two pages ignoring page index, next pointer and sequence,
+    /// which differ by construction. The second word of every row group,
+    /// rekordbox's record of its last write, must match too (issue #293).
     fn assert_page_eq(ours: &[u8], theirs: &[u8], what: &str) {
-        // Page index, next pointer and sequence differ by construction; the
-        // "written" word of every row group is rekordbox's transaction
-        // bookkeeping (0x0000, 0x0080, 0x00ff, 0xffff all occur) and is
-        // masked too. Everything else must match.
         let mask = |p: &[u8]| {
             let mut v = p.to_vec();
             v[0x04..0x14].fill(0);
-            let n = p[0x18] as usize + 0x100 * (p[0x19] & 1) as usize;
-            for g in 0..n.div_ceil(16) {
-                let base = PAGE_LEN - g * 36;
-                v[base - 2..base].fill(0);
-            }
             v
         };
         let (a, b) = (mask(ours), mask(theirs));
@@ -332,7 +348,8 @@ mod tests {
         let out = write(&Export {
             keys,
             ..Default::default()
-        });
+        })
+        .unwrap();
         // table pointers of ours: find keys(5), colors(6), columns(16)
         let ptr = |d: &[u8], ty: u32| -> (u32, u32, u32) {
             let n = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
@@ -382,7 +399,8 @@ mod tests {
                 .map(|id| (id, crate::artwork::path(id, 'a', false)))
                 .collect(),
             ..Default::default()
-        });
+        })
+        .unwrap();
         let chain = |d: &[u8]| -> Vec<Vec<u8>> {
             let n = u32::from_le_bytes(d[8..12].try_into().unwrap()) as usize;
             let o = (0..n)
@@ -434,7 +452,7 @@ mod tests {
             name: "All".into(),
             track_ids: (1..=700).collect(),
         });
-        let out = write(&e);
+        let out = write(&e).unwrap();
         assert_eq!(out.len() % PAGE_LEN, 0);
         let n_pages = out.len() / PAGE_LEN;
         assert_eq!(
@@ -560,7 +578,7 @@ mod tests {
             my_tags,
             ..Default::default()
         };
-        let ours = assemble(&ext_tables(&e, master));
+        let ours = assemble(&ext_tables(&e, master)).unwrap();
         assert_eq!(&ours[4..12], &theirs[4..12], "page size and nine tables");
         for ty in [3, 7] {
             let (a, b) = (data_pages(&ours, ty), data_pages(&theirs, ty));
@@ -569,7 +587,7 @@ mod tests {
         }
         assert!(data_pages(&ours, 4).is_empty());
         // without a file, the four columns alone
-        let plain = write_ext(&Export::default());
+        let plain = write_ext(&Export::default()).unwrap();
         assert_eq!(page_rows(data_pages(&plain, 3)[0]).len(), 4);
     }
 
@@ -590,7 +608,8 @@ mod tests {
         let ours = write_ext(&Export {
             my_tag_tracks: links,
             ..Default::default()
-        });
+        })
+        .unwrap();
         let ours = data_pages(&ours, 4);
         assert_eq!(ours.len(), 1);
         assert_page_eq(ours[0], first, "tag_tracks");
@@ -602,7 +621,8 @@ mod tests {
         let ours = write_ext(&Export {
             my_tag_tracks: (0..445).map(|i| (i / 3 + 1, 5 + i % 3)).collect(),
             ..Default::default()
-        });
+        })
+        .unwrap();
         let pages = data_pages(&ours, 4);
         let counts: Vec<usize> = pages.iter().map(|p| page_rows(p).len()).collect();
         assert_eq!(counts, [222, 222, 1]);

@@ -8,6 +8,9 @@
 pub const PAGE_LEN: usize = 4096;
 pub const HEAP_START: usize = 0x28;
 const GROUP_BYTES: usize = 36;
+/// The largest row a page holds: the heap of an empty page less the first
+/// row's offset and the two words of its group, in whole 4-byte units.
+pub const MAX_ROW: usize = (PAGE_LEN - HEAP_START - 6) / 4 * 4;
 const NONE: u32 = 0x03FF_FFFF;
 
 /// How the two "fixed" tables differ from everything else in the header.
@@ -93,6 +96,13 @@ impl DataPage {
         p[0x20..0x22].copy_from_slice(&u5.to_le_bytes());
         p[0x22..0x24].copy_from_slice(&nrl.to_le_bytes());
 
+        // Each row group ends with the presence mask and DeviceSQL's record
+        // of the last write: the bits of the `u5` rows from `nrl` on, which
+        // rekordbox clears before it next adds or frees a row (issue #293).
+        let last_write = match self.style {
+            HeaderStyle::Normal => n.saturating_sub(1)..n,
+            HeaderStyle::Fixed => 0..n,
+        };
         let mut off = 0usize;
         for (i, row) in self.rows.iter().enumerate() {
             let start = HEAP_START + off;
@@ -102,11 +112,13 @@ impl DataPage {
             let base = PAGE_LEN - group * GROUP_BYTES;
             let at = base - 6 - 2 * slot;
             p[at..at + 2].copy_from_slice(&(off as u16).to_le_bytes());
-            let flags = base - 4;
             let bit = 1u16 << slot;
-            let present = u16::from_le_bytes([p[flags], p[flags + 1]]) | bit;
-            p[flags..flags + 2].copy_from_slice(&present.to_le_bytes());
-            p[flags + 2..flags + 4].copy_from_slice(&present.to_le_bytes());
+            for (word, set) in [(base - 4, true), (base - 2, last_write.contains(&i))] {
+                if set {
+                    let v = u16::from_le_bytes([p[word], p[word + 1]]) | bit;
+                    p[word..word + 2].copy_from_slice(&v.to_le_bytes());
+                }
+            }
             off += align4(row.len());
         }
         p
@@ -178,6 +190,12 @@ mod tests {
         assert_eq!(u16::from_le_bytes([b[0x1c], b[0x1d]]), 8);
         assert_eq!(u16::from_le_bytes([b[0x1e], b[0x1f]]), 3408);
         assert_eq!(u16::from_le_bytes([b[0x22], b[0x23]]), 283);
+    }
+
+    #[test]
+    fn the_largest_row_fills_an_empty_page() {
+        assert!(DataPage::new(1, 0, 1, HeaderStyle::Normal).try_push(&[0; MAX_ROW]));
+        assert!(!DataPage::new(1, 0, 1, HeaderStyle::Normal).try_push(&[0; MAX_ROW + 1]));
     }
 
     #[test]

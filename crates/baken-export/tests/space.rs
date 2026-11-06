@@ -176,3 +176,28 @@ fn the_plan_reports_player_history_on_the_stick() {
     assert!(plan(&opts).unwrap().player_history.is_none());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A track whose text alone fills a database page is skipped by name rather
+/// than stopping the plan (issue #293); the other track goes on the stick.
+#[test]
+fn a_track_too_large_for_a_page_is_skipped() {
+    let (root, opts) = setup("oversized");
+    let xml = std::fs::read_to_string(&opts.xml).unwrap();
+    let comment = "\u{97f3}".repeat(2100);
+    std::fs::write(
+        &opts.xml,
+        xml.replacen(
+            r#"Name="a""#,
+            &format!(r#"Name="a" Comments="{comment}""#),
+            1,
+        ),
+    )
+    .unwrap();
+    let p = plan(&opts).unwrap();
+    assert_eq!(p.tracks.len(), 1);
+    assert_eq!(p.skipped.len(), 1);
+    assert_eq!(p.skipped[0].name, "a");
+    assert!(p.skipped[0].reason.contains("shorten the comment"));
+    export(&p, &(), &CancelToken::new()).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+}

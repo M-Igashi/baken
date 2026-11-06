@@ -25,3 +25,6 @@ mp3rgain = { version = "3.14.0", default-features = false, features = ["aac", "r
 symphonia.workspace = true
 quick-xml.workspace = true
 unicode-normalization = "0.1.25"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = "0.2"
