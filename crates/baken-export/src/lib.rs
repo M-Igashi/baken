@@ -91,6 +91,10 @@ pub struct PlanTrack {
     /// that analysis points into the old file (issue #219). [`export`] checks
     /// again when it reads the analysis and rebuilds the table from the file.
     pub stale_seek_table: bool,
+    /// The XML's file is not there (a drive not mounted, a NAS asleep), but
+    /// the stick still holds the track from an earlier export, so `source`
+    /// is that copy and the track stays as it is (issue #291).
+    pub source_offline: bool,
 }
 
 /// What rekordbox 7 writes into `PIONEER/rekordbox/` beside `export.pdb`: the
@@ -205,6 +209,12 @@ impl Plan {
     /// re-encodes FLAC), so that its seek table is rebuilt from the file.
     pub fn stale_seek_tables(&self) -> impl Iterator<Item = &PlanTrack> {
         self.tracks.iter().filter(|t| t.stale_seek_table)
+    }
+
+    /// Tracks whose source is not there and that stay on the stick as an
+    /// earlier export left them ([`PlanTrack::source_offline`]).
+    pub fn offline(&self) -> impl Iterator<Item = &PlanTrack> {
+        self.tracks.iter().filter(|t| t.source_offline)
     }
 
     /// Tracks whose `[active]` marks do not name exactly one memory loop.
@@ -342,14 +352,38 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 });
                 continue;
             };
-            let source = PathBuf::from(&track.location);
-            let Ok(meta) = std::fs::metadata(&source) else {
-                skipped.push(Skipped {
-                    name: track.name.clone(),
-                    reason: format!("source file missing: {}", source.display()),
-                    source_missing: true,
-                });
-                continue;
+            // `--cdjsafe` puts an MP3 on the stick, named after the source
+            let on_stick = if opts.cdjsafe {
+                let mp3 = Path::new(&track.location).with_extension("mp3");
+                collection::Track {
+                    location: mp3.to_string_lossy().into_owned(),
+                    ..track.clone()
+                }
+            } else {
+                track.clone()
+            };
+            let mut source = PathBuf::from(&track.location);
+            let mut source_offline = false;
+            let meta = match std::fs::metadata(&source) {
+                Ok(meta) => meta,
+                Err(_) => {
+                    let copy = device_path(&opts.device, &layout.peek(&on_stick));
+                    match offline_copy(&copy, track, opts.cdjsafe) {
+                        Some(meta) => {
+                            source_offline = true;
+                            source = copy;
+                            meta
+                        }
+                        None => {
+                            skipped.push(Skipped {
+                                name: track.name.clone(),
+                                reason: format!("source file missing: {}", source.display()),
+                                source_missing: true,
+                            });
+                            continue;
+                        }
+                    }
+                }
             };
             let entry = index.find(track);
             if entry.is_none() && !opts.generate_analysis {
@@ -365,15 +399,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 });
                 continue;
             }
-            let usb_path = if opts.cdjsafe {
-                let mp3 = Path::new(&track.location).with_extension("mp3");
-                layout.assign(&collection::Track {
-                    location: mp3.to_string_lossy().into_owned(),
-                    ..track.clone()
-                })
-            } else {
-                layout.assign(track)
-            };
+            let usb_path = layout.assign(&on_stick);
             let (file_type, bitrate, sample_rate, sample_depth) = if opts.cdjsafe {
                 (pdb::rows::FILE_TYPE_MP3, 320, 44100, 16)
             } else {
@@ -401,6 +427,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                 source,
                 anlz: entry.cloned(),
                 stale_seek_table: false,
+                source_offline,
             });
         }
     }
@@ -550,6 +577,25 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     })
 }
 
+/// The copy an earlier export left at `path` of a track whose source is not
+/// there, if it can stand in for the source: the XML's `Size` exactly, or
+/// with `--cdjsafe` a whole 320 kbps CBR MP3 at 44.1 kHz. Nothing here can
+/// tell whether the source changed since that copy was made.
+fn offline_copy(
+    path: &Path,
+    track: &collection::Track,
+    cdjsafe: bool,
+) -> Option<std::fs::Metadata> {
+    let meta = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+    let fits = if cdjsafe {
+        rewrite::mp3_audio(path)
+            .is_ok_and(|mp3| mp3.complete && mp3.sample_rate == 44100 && mp3.kbps() == Some(320))
+    } else {
+        track.size > 0 && meta.len() == track.size
+    };
+    fits.then_some(meta)
+}
+
 /// A row of another table than the tracks' too large for a page: a name of
 /// kilobytes in the XML, which [`plan`] does not try to pin on one track.
 fn too_large(e: pdb::RowTooLarge) -> Error {
@@ -612,7 +658,8 @@ fn space_needed(
         let audio = device_path(&opts.device, &dt.usb_path);
         let on_stick = tally.existing(&audio);
         let len = if opts.cdjsafe {
-            let kept = on_stick.is_some() && newer_than_source(&audio, &pt.source);
+            let kept =
+                on_stick.is_some() && (pt.source_offline || newer_than_source(&audio, &pt.source));
             (!kept).then(|| 40_000 * length_secs(dt) + CDJSAFE_TAGS)
         } else {
             (on_stick != Some(dt.file_size)).then_some(dt.file_size)
@@ -2006,6 +2053,7 @@ mod tests {
             source: PathBuf::new(),
             anlz,
             stale_seek_table: false,
+            source_offline: false,
         }
     }
 

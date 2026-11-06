@@ -18,11 +18,18 @@ pub struct Layout {
 impl Layout {
     /// USB-relative path for `track`, unique within this layout.
     pub fn assign(&mut self, track: &Track) -> String {
+        let path = self.peek(track);
+        self.used.insert(path.to_lowercase());
+        path
+    }
+
+    /// The path [`Layout::assign`] would give `track` now, without taking it.
+    pub fn peek(&self, track: &Track) -> String {
         let path =
             |suffix: &str| stick_path(&track.artist, &track.album, track.file_name(), suffix);
         let mut candidate = path("");
         let mut n = 1;
-        while !self.used.insert(candidate.to_lowercase()) {
+        while self.used.contains(&candidate.to_lowercase()) {
             candidate = path(&format!("-{n}"));
             n += 1;
         }
