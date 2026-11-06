@@ -270,3 +270,53 @@ fn player_history_is_carried_over() {
     assert_eq!(model.history_entries, [(6, 3, 1), (5, 3, 2), (6, 3, 3)]);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// A track whose source is offline stays on the stick when the copy there
+/// has the XML's size: it keeps its place in the playlist, and `--prune`
+/// runs since nothing on the stick is left out (issue #291). A copy of
+/// another size is not taken for it.
+#[test]
+fn a_track_whose_source_is_offline_stays_on_the_stick() {
+    let (root, mut opts) = setup("offline");
+    // the XML's Size, as rekordbox writes it
+    let mut xml = std::fs::read_to_string(&opts.xml).unwrap();
+    for name in ["a", "b"] {
+        let size = std::fs::metadata(root.join(format!("music/{name}.wav")))
+            .unwrap()
+            .len();
+        xml = xml.replacen(
+            &format!(r#"Name="{name}""#),
+            &format!(r#"Name="{name}" Size="{size}""#),
+            1,
+        );
+    }
+    std::fs::write(&opts.xml, xml).unwrap();
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let source = root.join("music/a.wav");
+    let offline = root.join("a-offline.wav");
+    std::fs::rename(&source, &offline).unwrap();
+
+    opts.prune = true;
+    let p = plan(&opts).unwrap();
+    assert!(p.skipped.is_empty());
+    let kept: Vec<&str> = p.offline().map(|t| t.device.track.name.as_str()).collect();
+    assert_eq!(kept, ["a"]);
+    let stick_copy = opts
+        .device
+        .join(p.tracks[0].device.usb_path.trim_start_matches('/'));
+    assert_eq!(p.tracks[0].source, stick_copy);
+    let report = export(&p, &(), &CancelToken::new()).unwrap();
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert_eq!((report.kept, report.copied), (2, 0));
+    assert_eq!(report.tracks_in_database, 2);
+    assert!(!report.prune_skipped);
+    assert_eq!(report.pruned, 0);
+    assert!(stick_copy.exists());
+
+    // a stick copy that no longer has the XML's size stands in for nothing
+    std::fs::write(&stick_copy, b"not the track").unwrap();
+    let p = plan(&opts).unwrap();
+    assert_eq!(p.offline().count(), 0);
+    assert!(p.skipped.iter().any(|s| s.name == "a" && s.source_missing));
+    std::fs::remove_dir_all(&root).unwrap();
+}

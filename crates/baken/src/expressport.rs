@@ -261,12 +261,19 @@ fn print_plan(plan: &Plan) {
             style("⚠").yellow(),
             stale.len()
         );
-        for name in stale.iter().take(10) {
-            println!("  {} {name}", style("•").dim());
-        }
-        if stale.len() > 10 {
-            println!("  {} and {} more", style("•").dim(), stale.len() - 10);
-        }
+        print_names(&stale);
+    }
+    let offline: Vec<&str> = plan
+        .offline()
+        .map(|t| t.device.track.name.as_str())
+        .collect();
+    if !offline.is_empty() {
+        println!(
+            "{} {} tracks whose source file is not there (a drive not connected?) stay on the stick as an earlier export left them:",
+            style("▸").cyan(),
+            offline.len()
+        );
+        print_names(&offline);
     }
     if plan.active_loops() > 0 {
         println!(
@@ -394,6 +401,16 @@ fn print_report(plan: &Plan, r: &Report) {
             plan.settings_files.len(),
             plan.device.display()
         );
+    }
+}
+
+/// Up to ten names, one per line, and how many more there are.
+fn print_names(names: &[&str]) {
+    for name in names.iter().take(10) {
+        println!("  {} {name}", style("•").dim());
+    }
+    if names.len() > 10 {
+        println!("  {} and {} more", style("•").dim(), names.len() - 10);
     }
 }
 
