@@ -76,8 +76,14 @@ pub enum Error {
 
     /// The stick holds a rekordbox library under both `PIONEER` and the
     /// hidden `.PIONEER` (issue #287).
-    #[error("This stick holds a rekordbox library in both PIONEER and the hidden .PIONEER at {}. rekordbox reads either, and which one a player reads is not known, so expressport does not add to that. Move the one you no longer need off the stick (in Finder, Cmd-Shift-. shows .PIONEER) and run it again.", .0.display())]
+    #[error("This stick holds a rekordbox library in both PIONEER and the hidden .PIONEER at {}, and expressport would update only one of them. On an HFS+ stick a CDJ-3000 reads only .PIONEER; on FAT32 it reads PIONEER. Move the one you no longer need off the stick (in Finder, Cmd-Shift-. shows .PIONEER) and run it again.", .0.display())]
     TwoLibraries(PathBuf),
+
+    /// An HFS+ stick whose library is under `PIONEER`, which [`export`](crate::export)
+    /// would move to `.PIONEER`, already has a `.PIONEER` folder without a
+    /// library in it (issue #287).
+    #[error("This HFS+ stick keeps its library in PIONEER at {}, which a CDJ-3000 does not read on HFS+, so expressport moves it to the hidden .PIONEER, as rekordbox writes it. A .PIONEER folder without a library is already there. Move .PIONEER off the stick (in Finder, Cmd-Shift-. shows it) and run it again.", .0.display())]
+    HiddenFolderInTheWay(PathBuf),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),

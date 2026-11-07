@@ -148,6 +148,12 @@ pub struct Plan {
     pub partition_type: Option<u8>,
     /// The folder the library goes into, see [`library_root`] (issue #287).
     pub root: Root,
+    /// The stick is HFS+ and its library is under `PIONEER`, which a
+    /// CDJ-3000 does not read there: [`export`] renames `PIONEER` to
+    /// `.PIONEER` before it writes anything, and `root` is already
+    /// [`Root::Hidden`]. Everything the plan read from the stick's library
+    /// came from `PIONEER`.
+    pub moves_library: bool,
     /// Those of [`ONELIBRARY_FILES`] on the stick, in that order. [`export`]
     /// removes them once it has written `export.pdb`, so a cancelled or
     /// failed run leaves both of the stick's libraries as they were.
@@ -323,8 +329,13 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     } else {
         (None, None, None)
     };
-    let root = library_root(&opts.device, filesystem.as_ref())?;
-    let library_dir = opts.device.join(root.name());
+    let (root, moves_library) = library_root(&opts.device, filesystem.as_ref())?;
+    // where the stick's library is now, which `export` may still move
+    let library_dir = opts.device.join(if moves_library {
+        Root::Pioneer.name()
+    } else {
+        root.name()
+    });
     let (settings_dir, settings_files, settings_kept) = if opts.no_settings {
         (None, Vec::new(), Vec::new())
     } else {
@@ -555,8 +566,12 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             filesystem,
             Some(volume::FileSystem::Fat | volume::FileSystem::ExFat)
         );
+    let mut tally = Tally::new(&opts.device, space.map_or(1, |s| s.unit), sidecars);
+    if moves_library {
+        tally.moved = Some((opts.device.join(root.name()), library_dir.clone()));
+    }
     let space_needed = space_needed(
-        Tally::new(&opts.device, space.map_or(1, |s| s.unit), sidecars),
+        tally,
         opts,
         root,
         &tracks,
@@ -586,6 +601,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         partition_table,
         partition_type,
         root,
+        moves_library,
         onelibrary_files,
         player_history,
         preferences,
@@ -602,13 +618,17 @@ pub fn plan(opts: &Options) -> Result<Plan> {
     })
 }
 
-/// The library folder for this stick (issue #287): the one that already
-/// holds a library (`rekordbox/export.pdb` or `rekordbox/exportLibrary.db`),
-/// so a re-export never leaves a second one beside it; on a stick with none,
-/// `.PIONEER` on HFS+ as rekordbox writes it there and `PIONEER` elsewhere.
-/// Libraries under both are [`Error::TwoLibraries`]: the export would update
-/// one of them, and which one a player reads is not known.
-fn library_root(device: &Path, fs: Option<&volume::FileSystem>) -> Result<Root> {
+/// The library folder for this stick (issue #287), and whether `export`
+/// moves the stick's library there first. On HFS+ that is always `.PIONEER`,
+/// as rekordbox writes it there: a CDJ-3000 (fw 3.22) does not find a
+/// library under `PIONEER` on HFS+, so one an earlier baken wrote there is
+/// moved, unless a `.PIONEER` folder is already in the way
+/// ([`Error::HiddenFolderInTheWay`]). Elsewhere it is the folder that
+/// already holds a library (`rekordbox/export.pdb` or
+/// `rekordbox/exportLibrary.db`), and `PIONEER` on a stick with none.
+/// Libraries under both are [`Error::TwoLibraries`]: the export would
+/// update only one of them.
+fn library_root(device: &Path, fs: Option<&volume::FileSystem>) -> Result<(Root, bool)> {
     let has_library = |root: Root| {
         ["rekordbox/export.pdb", "rekordbox/exportLibrary.db"]
             .iter()
@@ -620,10 +640,21 @@ fn library_root(device: &Path, fs: Option<&volume::FileSystem>) -> Result<Root> 
     );
     match Root::ALL.map(has_library) {
         [true, true] => Err(Error::TwoLibraries(device.to_path_buf())),
-        [true, false] => Ok(Root::Pioneer),
-        [false, true] => Ok(Root::Hidden),
-        [false, false] if hfs => Ok(Root::Hidden),
-        [false, false] => Ok(Root::Pioneer),
+        [true, false] if hfs => {
+            // rename(2) replaces an empty directory, nothing else
+            let hidden = device.join(Root::Hidden.name());
+            let in_the_way = hidden.symlink_metadata().is_ok()
+                && std::fs::read_dir(&hidden).map_or(true, |mut d| d.next().is_some());
+            if in_the_way {
+                Err(Error::HiddenFolderInTheWay(device.to_path_buf()))
+            } else {
+                Ok((Root::Hidden, true))
+            }
+        }
+        [true, false] => Ok((Root::Pioneer, false)),
+        [false, true] => Ok((Root::Hidden, false)),
+        [false, false] if hfs => Ok((Root::Hidden, false)),
+        [false, false] => Ok((Root::Pioneer, false)),
     }
 }
 
@@ -760,6 +791,10 @@ struct Tally<'a> {
     freed: u64,
     /// Directories looked at, and whether each was on the stick.
     dirs: HashMap<PathBuf, bool>,
+    /// The library folder the export writes and the one it renames to it
+    /// first ([`Plan::moves_library`]): paths under the first are looked
+    /// up under the second.
+    moved: Option<(PathBuf, PathBuf)>,
 }
 
 impl<'a> Tally<'a> {
@@ -771,6 +806,7 @@ impl<'a> Tally<'a> {
             needed: SPACE_MARGIN,
             freed: 0,
             dirs: HashMap::new(),
+            moved: None,
         };
         if sidecars {
             tally.sidecar = tally.units(4096);
@@ -794,7 +830,7 @@ impl<'a> Tally<'a> {
         if let Some(&there) = self.dirs.get(dir) {
             return there;
         }
-        let there = dir == self.device || dir.is_dir();
+        let there = dir == self.device || self.now(dir).is_dir();
         if !there {
             self.needed += self.unit + self.sidecar;
             if let Some(parent) = dir.parent() {
@@ -811,10 +847,21 @@ impl<'a> Tally<'a> {
         if !self.dir(dir) {
             return None;
         }
-        std::fs::metadata(path)
+        std::fs::metadata(self.now(path))
             .ok()
             .filter(|m| m.is_file())
             .map(|m| m.len())
+    }
+
+    /// Where `path` is on the stick before the export starts.
+    fn now(&self, path: &Path) -> PathBuf {
+        match &self.moved {
+            Some((to, from)) => match path.strip_prefix(to) {
+                Ok(rest) => from.join(rest),
+                Err(_) => path.to_path_buf(),
+            },
+            None => path.to_path_buf(),
+        }
     }
 
     fn total(&self) -> u64 {
@@ -1004,9 +1051,16 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     let mut exported: Vec<DeviceTrack> = Vec::with_capacity(total);
     let mut wanted: HashSet<PathBuf> = HashSet::new();
 
+    let library_dir = plan.device.join(plan.root.name());
+    // An HFS+ stick an earlier baken wrote under `PIONEER`: the files stay
+    // and only the folder's name changes, so a re-export finds them all.
+    if plan.moves_library {
+        let from = plan.device.join(Root::Pioneer.name());
+        std::fs::rename(&from, &library_dir)
+            .map_err(|err| Error::DeviceWrite { path: from, err })?;
+    }
     // Before the first track, so a stick that is not mounted, read-only or gone
     // stops the run with a reason instead of failing every track (issue #165).
-    let library_dir = plan.device.join(plan.root.name());
     let rb_dir = library_dir.join("rekordbox");
     let probe = rb_dir.join(".baken-write-test");
     std::fs::create_dir_all(&rb_dir)
@@ -2062,6 +2116,34 @@ mod tests {
         ] {
             assert_eq!(stick(IoError::from_raw_os_error(errno)), ends, "{errno}");
         }
+    }
+
+    /// On HFS+ a library under `PIONEER` moves to `.PIONEER`, where a
+    /// CDJ-3000 looks for it (issue #287); an empty `.PIONEER` is no
+    /// obstacle, anything in it is.
+    #[test]
+    fn a_library_under_pioneer_moves_on_hfs_plus() {
+        use volume::FileSystem::{Fat, HfsPlus, HfsPlusCaseSensitive};
+        let device = std::env::temp_dir().join(format!("baken-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&device);
+        std::fs::create_dir_all(device.join("PIONEER/rekordbox")).unwrap();
+        std::fs::write(device.join("PIONEER/rekordbox/export.pdb"), b"x").unwrap();
+        let root = |fs| library_root(&device, fs).map_err(|e| e.to_string());
+
+        assert_eq!(root(Some(&Fat)), Ok((Root::Pioneer, false)));
+        assert_eq!(root(None), Ok((Root::Pioneer, false)));
+        assert_eq!(root(Some(&HfsPlus)), Ok((Root::Hidden, true)));
+        assert_eq!(root(Some(&HfsPlusCaseSensitive)), Ok((Root::Hidden, true)));
+
+        let hidden = device.join(".PIONEER");
+        std::fs::create_dir(&hidden).unwrap();
+        assert_eq!(root(Some(&HfsPlus)), Ok((Root::Hidden, true)));
+        std::fs::write(hidden.join("gcred.dat"), b"x").unwrap();
+        assert!(matches!(
+            library_root(&device, Some(&HfsPlus)),
+            Err(Error::HiddenFolderInTheWay(_))
+        ));
+        std::fs::remove_dir_all(&device).unwrap();
     }
 
     #[test]
