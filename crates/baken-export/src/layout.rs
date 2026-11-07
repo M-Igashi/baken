@@ -14,7 +14,9 @@ use std::path::Path;
 /// `USBANLZ/`, `Artwork/` and the settings files. The audio stays in
 /// `/Contents` either way. rekordbox 7 reads a library from either and writes
 /// the hidden `.PIONEER` on an HFS+ stick (measured with 7.2.18 on a
-/// journaled HFS+ stick with an MBR, issue #287), `PIONEER` elsewhere.
+/// journaled HFS+ stick with an MBR, issue #287), `PIONEER` elsewhere. A
+/// CDJ-3000 on firmware 3.22 reads an HFS+ stick only from `.PIONEER`, and a
+/// FAT32 one from `PIONEER` (issue #287).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Root {
     #[default]

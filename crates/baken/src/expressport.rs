@@ -69,20 +69,20 @@ fn print_plan(plan: &Plan) {
         plan.filesystem,
         Some(FileSystem::HfsPlus | FileSystem::HfsPlusCaseSensitive)
     );
-    match (plan.root, hfs) {
-        (Root::Hidden, true) => println!(
-            "{} Library folder: .PIONEER, hidden, as rekordbox writes it on an HFS+ stick (Cmd-Shift-. shows it in Finder)",
-            style("▸").cyan()
+    let library_note = match (plan.root, plan.moves_library, hfs) {
+        (Root::Hidden, true, _) => Some(
+            "Library folder: PIONEER becomes .PIONEER, hidden, before anything is written. On an HFS+ stick rekordbox writes .PIONEER, and a CDJ-3000 does not find a library under PIONEER (Cmd-Shift-. shows .PIONEER in Finder)",
         ),
-        (Root::Hidden, false) => println!(
-            "{} Library folder: .PIONEER, hidden, where this stick's library already is",
-            style("▸").cyan()
+        (Root::Hidden, false, true) => Some(
+            "Library folder: .PIONEER, hidden, as rekordbox writes it on an HFS+ stick (Cmd-Shift-. shows it in Finder)",
         ),
-        (Root::Pioneer, true) => println!(
-            "{} Library folder: PIONEER, where this stick's library already is. rekordbox itself writes the hidden .PIONEER on an HFS+ stick.",
-            style("▸").cyan()
-        ),
-        (Root::Pioneer, false) => {}
+        (Root::Hidden, false, false) => {
+            Some("Library folder: .PIONEER, hidden, where this stick's library already is")
+        }
+        (Root::Pioneer, ..) => None,
+    };
+    if let Some(note) = library_note {
+        println!("{} {note}", style("▸").cyan());
     }
     if let Some(h) = &plan.player_history {
         let lists = if h.lists.is_empty() {
