@@ -40,11 +40,11 @@ pub(crate) fn playlist_node_attrs(e: &BytesStart) -> Result<(String, String, Str
     Ok((name, ty, key_type))
 }
 
-/// Rewrite a start tag with one numeric attribute increased by `add`.
+/// Rewrite a start tag with one numeric attribute changed by `add`.
 pub(crate) fn bump_count_attr(
     e: &BytesStart,
     attr_name: &str,
-    add: usize,
+    add: isize,
 ) -> Result<BytesStart<'static>> {
     let name = e.name().as_ref().to_string();
     let mut new_start = BytesStart::new(name);
@@ -53,15 +53,15 @@ pub(crate) fn bump_count_attr(
         let attr = attr?;
         if attr.key.as_ref() == attr_name {
             seen = true;
-            let val: usize = attr.value.trim().parse().unwrap_or(0);
-            let new_val = (val + add).to_string();
+            let val: isize = attr.value.trim().parse().unwrap_or(0);
+            let new_val = (val + add).max(0).to_string();
             new_start.push_attribute((attr_name, new_val.as_str()));
         } else {
             new_start.push_attribute(attr.to_owned());
         }
     }
     if !seen {
-        new_start.push_attribute((attr_name, add.to_string().as_str()));
+        new_start.push_attribute((attr_name, add.max(0).to_string().as_str()));
     }
     Ok(new_start)
 }
