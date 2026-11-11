@@ -44,13 +44,15 @@ The command line needs ffmpeg (`baken rbsort` does not). Homebrew, winget, and t
 Export your collection once from rekordbox (*File > Export Collection in xml format*), then:
 
 ```bash
-baken headroom ~/Music/DJ-Tracks                 # measure, then bake loudness gain (asks before writing)
+baken headroom ~/Music/DJ-Tracks --backup        # measure, then bake loudness gain, originals kept in backup/
 baken rbsort collection.xml                      # sort every playlist by key, then BPM
 baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe
 baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday"
 ```
 
 `baken <subcommand> --help` lists every flag.
+
+Given a path, `baken headroom` rewrites the files at once, without asking. Add `--analyze-only` to measure and change nothing, or run `baken headroom` with no arguments inside the folder for the guided mode, which asks before it writes.
 
 ## The four tools
 
