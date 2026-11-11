@@ -25,8 +25,18 @@ pub struct SortedPlaylist {
     pub track_ids: Vec<String>,
 }
 
+/// A playlist with its tracks in sorted order, on its way into the rewrite.
+struct Sorted {
+    ordinal: usize,
+    path: Vec<String>,
+    track_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CollectedPlaylist {
+    /// Position among the playlist NODEs under ROOT, in document order. Two
+    /// playlists can share a path, so the rewrite finds its NODE by this.
+    ordinal: usize,
     pub(crate) path: Vec<String>, // path under ROOT (excluding ROOT)
     key_type: String,
     pub(crate) track_ids: Vec<String>,
@@ -45,16 +55,8 @@ pub fn sort_and_write(
     let xml_data =
         std::fs::read(input).with_context(|| format!("Failed to read {}", input.display()))?;
 
-    let (collection, all_playlists) = scan_xml(&xml_data)?;
-
     let targets = target.map(<[String]>::to_vec);
-    let sorted: Vec<SortedPlaylist> = select_targets(all_playlists, targets.as_slice())?
-        .into_iter()
-        .map(|p| SortedPlaylist {
-            track_ids: sort_tracks(&p.track_ids, &collection),
-            path: p.path,
-        })
-        .collect();
+    let sorted = sort_selected(&xml_data, targets.as_slice())?;
 
     if sorted.is_empty() {
         return Err(Error::NoSortablePlaylists);
@@ -64,7 +66,25 @@ pub fn sort_and_write(
     write_atomic(output, &output_bytes)
         .with_context(|| format!("Failed to write {}", output.display()))?;
 
-    Ok(sorted)
+    Ok(sorted
+        .into_iter()
+        .map(|p| SortedPlaylist {
+            path: p.path,
+            track_ids: p.track_ids,
+        })
+        .collect())
+}
+
+fn sort_selected(xml_data: &[u8], targets: &[Vec<String>]) -> crate::Result<Vec<Sorted>> {
+    let (collection, all) = scan_xml(xml_data)?;
+    Ok(select_targets(all, targets)?
+        .into_iter()
+        .map(|p| Sorted {
+            ordinal: p.ordinal,
+            track_ids: sort_tracks(&p.track_ids, &collection),
+            path: p.path,
+        })
+        .collect())
 }
 
 /// The playlists at `targets` (paths under ROOT; empty means every
@@ -117,6 +137,8 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
     let mut current: Option<CollectedPlaylist> = None;
     let mut collection: HashMap<String, TrackMeta> = HashMap::new();
     let mut playlists: Vec<CollectedPlaylist> = Vec::new();
+    // Counted exactly as `rewrite_xml` counts.
+    let mut ordinal = 0;
 
     loop {
         match reader.read_event() {
@@ -132,8 +154,11 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
                 "NODE" if in_playlists => {
                     let (name, ty, key_type) = playlist_node_attrs(&e)?;
                     path_stack.push(name);
-                    if ty == "1" && path_stack.len() > 1 && current.is_none() {
+                    let is_playlist = ty == "1" && path_stack.len() > 1;
+                    ordinal += usize::from(is_playlist);
+                    if is_playlist && current.is_none() {
                         current = Some(CollectedPlaylist {
+                            ordinal: ordinal - 1,
                             path: path_stack[1..].to_vec(),
                             key_type,
                             track_ids: Vec::new(),
@@ -161,7 +186,9 @@ fn scan_xml(xml_data: &[u8]) -> Result<(HashMap<String, TrackMeta>, Vec<Collecte
                     let (name, ty, key_type) = playlist_node_attrs(&e)?;
                     path_stack.push(name);
                     if ty == "1" && path_stack.len() > 1 {
+                        ordinal += 1;
                         playlists.push(CollectedPlaylist {
+                            ordinal: ordinal - 1,
                             path: path_stack[1..].to_vec(),
                             key_type,
                             track_ids: Vec::new(),
@@ -255,11 +282,13 @@ fn sort_tracks(track_ids: &[String], collection: &HashMap<String, TrackMeta>) ->
 /// Stream-copy the XML, substituting the `<TRACK Key=…/>` refs of each sorted
 /// playlist in place. Everything else (whitespace, attributes, other nodes)
 /// passes through untouched.
-fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>> {
-    let mut pending: HashMap<&[String], std::slice::Iter<String>> = playlists
+fn rewrite_xml(xml_data: &[u8], playlists: &[Sorted]) -> Result<Vec<u8>> {
+    let mut pending: HashMap<usize, std::slice::Iter<String>> = playlists
         .iter()
-        .map(|p| (p.path.as_slice(), p.track_ids.iter()))
+        .map(|p| (p.ordinal, p.track_ids.iter()))
         .collect();
+    // Position of the next playlist NODE, counted exactly as `scan_xml` counts.
+    let mut ordinal = 0;
 
     let mut reader = Reader::from_reader(xml_data);
     reader.config_mut().trim_text(false);
@@ -281,10 +310,13 @@ fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>>
                         "NODE" if in_playlists => {
                             let (name, ty, _) = playlist_node_attrs(&e)?;
                             path_stack.push(name);
-                            if ty == "1" && active.is_none() && path_stack.len() > 1 {
-                                if let Some(ids) = pending.remove(&path_stack[1..]) {
-                                    active = Some((path_stack.len(), ids));
+                            if ty == "1" && path_stack.len() > 1 {
+                                if active.is_none() {
+                                    if let Some(ids) = pending.remove(&ordinal) {
+                                        active = Some((path_stack.len(), ids));
+                                    }
                                 }
+                                ordinal += 1;
                             }
                         }
                         _ => {}
@@ -302,6 +334,12 @@ fn rewrite_xml(xml_data: &[u8], playlists: &[SortedPlaylist]) -> Result<Vec<u8>>
                             }
                             None => writer.write_event(Event::Empty(e))?,
                         }
+                    }
+                    "NODE" if in_playlists => {
+                        let (_, ty, _) = playlist_node_attrs(&e)?;
+                        // Its name is not pushed, so the depth is one more.
+                        ordinal += usize::from(ty == "1" && !path_stack.is_empty());
+                        writer.write_event(Event::Empty(e))?;
                     }
                     _ => writer.write_event(Event::Empty(e))?,
                 },
@@ -394,16 +432,47 @@ mod tests {
         assert_eq!(playlists[0].track_ids, vec!["2", "1", "3"]);
     }
 
-    fn sort_all(xml: &str, targets: &[Vec<String>]) -> Vec<SortedPlaylist> {
-        let (col, all) = scan_xml(xml.as_bytes()).unwrap();
-        select_targets(all, targets)
-            .unwrap()
-            .into_iter()
-            .map(|p| SortedPlaylist {
-                track_ids: sort_tracks(&p.track_ids, &col),
-                path: p.path,
-            })
-            .collect()
+    fn sort_all(xml: &str, targets: &[Vec<String>]) -> Vec<Sorted> {
+        sort_selected(xml.as_bytes(), targets).unwrap()
+    }
+
+    /// Two playlists called `Warmup` in one folder, the way rekordbox allows,
+    /// after a location-keyed one of the same name.
+    const SAME_PATH_XML: &str = r#"<DJ_PLAYLISTS><COLLECTION Entries="5">
+<TRACK TrackID="1" Tonality="1A" AverageBpm="120"/>
+<TRACK TrackID="2" Tonality="2A" AverageBpm="120"/>
+<TRACK TrackID="3" Tonality="3A" AverageBpm="120"/>
+<TRACK TrackID="4" Tonality="5A" AverageBpm="120"/>
+<TRACK TrackID="5" Tonality="4A" AverageBpm="120"/>
+</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="4">
+<NODE Name="Warmup" Type="1" KeyType="1" Entries="1"><TRACK Key="file://localhost/a.mp3"/></NODE>
+<NODE Name="Warmup" Type="1" KeyType="0" Entries="3"><TRACK Key="3"/><TRACK Key="2"/><TRACK Key="1"/></NODE>
+<NODE Name="Empty" Type="1" KeyType="0" Entries="0"/>
+<NODE Name="Warmup" Type="1" KeyType="0" Entries="2"><TRACK Key="4"/><TRACK Key="5"/></NODE>
+</NODE></PLAYLISTS></DJ_PLAYLISTS>"#;
+
+    #[test]
+    fn playlists_sharing_a_path_are_each_sorted_in_their_own_node() {
+        let sorted = sort_all(SAME_PATH_XML, &[]);
+        let out = rewrite_xml(SAME_PATH_XML.as_bytes(), &sorted).unwrap();
+        let expected = SAME_PATH_XML
+            .replace(
+                r#"<TRACK Key="3"/><TRACK Key="2"/><TRACK Key="1"/>"#,
+                r#"<TRACK Key="1"/><TRACK Key="2"/><TRACK Key="3"/>"#,
+            )
+            .replace(
+                r#"<TRACK Key="4"/><TRACK Key="5"/>"#,
+                r#"<TRACK Key="5"/><TRACK Key="4"/>"#,
+            );
+        assert_eq!(String::from_utf8(out).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_named_playlist_sharing_its_path_sorts_only_the_first() {
+        let xml = SAME_PATH_XML.replace(r#"KeyType="1""#, r#"KeyType="0""#);
+        let sorted = sort_all(&xml, &[vec!["Warmup".to_string()]]);
+        let out = rewrite_xml(xml.as_bytes(), &sorted).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), xml);
     }
 
     #[test]

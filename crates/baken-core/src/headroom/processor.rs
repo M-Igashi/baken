@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use std::fs::{self, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::analyzer::{AudioAnalysis, GainMethod};
 use super::tags::{self, Tags};
@@ -48,26 +48,71 @@ pub fn ensure_backup_dir(backup_dir: &Path) -> Result<PathBuf> {
 }
 
 fn backup_file(file_path: &Path, base_dir: &Path, backup_dir: &Path) -> Result<PathBuf> {
-    // Preserve directory structure relative to base_dir so sibling files with
-    // the same name in different folders don't collide in the backup.
-    // base_dir can be empty (mixed-root inputs), making strip_prefix return the
-    // path unchanged; an absolute result would hijack join() below and copy the
-    // file onto itself, so fall back to the bare filename in that case.
-    let relative_path = file_path
-        .strip_prefix(base_dir)
-        .ok()
-        .filter(|p| !p.is_absolute() && !p.as_os_str().is_empty())
-        .unwrap_or(file_path.file_name().map(Path::new).unwrap_or(file_path));
-
-    let backup_path = crate::fsname::native(&backup_dir.join(relative_path));
+    let backup_path = crate::fsname::native(&backup_dir.join(backup_relative(file_path, base_dir)));
 
     if let Some(parent) = backup_path.parent() {
         fs::create_dir_all(parent).context("Failed to create backup subdirectory")?;
     }
 
-    fs::copy(file_path, &backup_path).context("Failed to backup file")?;
+    let backup_path = reserve(&backup_path).context("Failed to backup file")?;
+    if let Err(e) = fs::copy(file_path, &backup_path) {
+        let _ = fs::remove_file(&backup_path);
+        return Err(e).context("Failed to backup file");
+    }
 
     Ok(backup_path)
+}
+
+/// Where a file goes inside the backup directory: its path under `base_dir`,
+/// so files of one name in different folders don't collide. `base_dir` can be
+/// empty (inputs without a common parent), making `strip_prefix` return the
+/// path unchanged. An absolute path would hijack `join` and copy the file
+/// onto itself, and one with `..` would land outside the backup directory
+/// (issue #318), so those fall back to the bare filename.
+fn backup_relative(file_path: &Path, base_dir: &Path) -> PathBuf {
+    let inside = |p: &&Path| {
+        p.components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+    };
+    file_path
+        .strip_prefix(base_dir)
+        .ok()
+        .filter(inside)
+        .map(|p| {
+            p.components()
+                .filter(|c| matches!(c, Component::Normal(_)))
+                .collect::<PathBuf>()
+        })
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| file_path.file_name().unwrap_or_default().into())
+}
+
+/// Create an empty file at `path`, or at `<stem> (2).<ext>`, `(3)`, … when
+/// that name is taken, and return the name. A backup never replaces a file
+/// already in the backup directory: after a second run that file is the
+/// original, and the one being backed up is already processed (issue #318).
+fn reserve(path: &Path) -> std::io::Result<PathBuf> {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = path
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    let mut candidate = path.to_path_buf();
+    let mut n = 1;
+    loop {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(_) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                n += 1;
+                candidate = path.with_file_name(format!("{stem} ({n}){ext}"));
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// PCM codecs each container's muxer accepts. A source codec outside its
@@ -430,5 +475,43 @@ mod tests {
         let path = std::env::temp_dir().join(format!("baken-absent-{}.wav", std::process::id()));
         let _ = fs::remove_file(&path);
         assert!(!is_writable(&path));
+    }
+
+    fn backup_scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("baken-backup-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("backup")).unwrap();
+        dir
+    }
+
+    /// Issue #318: the second run's backup is the already processed file.
+    #[test]
+    fn a_backup_never_replaces_one_already_there() {
+        let dir = backup_scratch("twice");
+        let track = dir.join("track.wav");
+        let backup = dir.join("backup");
+
+        fs::write(&track, b"original").unwrap();
+        let first = backup_file(&track, &dir, &backup).unwrap();
+        fs::write(&track, b"processed").unwrap();
+        let second = backup_file(&track, &dir, &backup).unwrap();
+
+        assert_eq!(first, backup.join("track.wav"));
+        assert_eq!(second, backup.join("track (2).wav"));
+        assert_eq!(fs::read(&first).unwrap(), b"original");
+        assert_eq!(fs::read(&second).unwrap(), b"processed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Issue #318: `.` and `../SetB` have no common parent.
+    #[test]
+    fn a_backup_path_stays_inside_the_backup_directory() {
+        let relative = |file: &str, base: &str| backup_relative(Path::new(file), Path::new(base));
+        assert_eq!(relative("/m/a/x.wav", "/m"), Path::new("a/x.wav"));
+        assert_eq!(relative("../SetB/x.wav", ""), Path::new("x.wav"));
+        assert_eq!(relative("a/../../x.wav", ""), Path::new("x.wav"));
+        assert_eq!(relative("/abs/x.wav", ""), Path::new("x.wav"));
+        assert_eq!(relative("./a/x.wav", ""), Path::new("a/x.wav"));
+        assert_eq!(relative("x.wav", ""), Path::new("x.wav"));
     }
 }

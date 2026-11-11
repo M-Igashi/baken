@@ -36,7 +36,7 @@ The tool will guide you through:
 
 ### Scriptable
 
-Pass paths, globs, or flags to run non-interactively (useful for pipelines and scripts):
+Pass paths, globs, or flags to run non-interactively (useful for pipelines and scripts). Nothing is asked: unless `--analyze-only` is given, the gain is written at once, and a backup is made only with `--backup`.
 
 ```bash
 # Analyze a directory without modifying anything
@@ -238,6 +238,7 @@ A file with audio frames the decoder rejects is reported as damaged, with the nu
 ## Notes
 
 - **Files are overwritten in place** after the backup, so rekordbox keeps its cues and beatgrids linked to them
+- **A backup is never replaced.** When the backup folder already holds a file of that name from an earlier run, the new copy is written beside it as `track (2).flac`, so the first copy stays the original
 - **Analyse processed FLAC files again in rekordbox before a USB export from rekordbox.** headroom re-encodes FLAC, which moves every frame, and rekordbox copies the seek table of its earlier analysis onto the stick unchanged, so the player's table no longer points at the frames ([#219](https://github.com/M-Igashi/baken/issues/219)). `baken expressport` rebuilds the table from the file itself. Only FLAC analyses carry such a table, and MP3 and AAC are adjusted in place
 - **Export processed tracks to a stick again, even if they are already on it.** rekordbox copies a track's file only the first time it exports that track; later exports update the track information on the stick but leave the old file there ([AlphaTheta community](https://forums.pioneerdj.com/hc/en-us/community/posts/24823970381465-Metadata-update-export-sync-to-USB), [#257](https://github.com/M-Igashi/baken/issues/257)). Delete the processed tracks from the device in rekordbox (or format the stick) and export again. `baken expressport` copies a changed file again on its own ([#231](https://github.com/M-Igashi/baken/issues/231))
 - **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (the lossless formats) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117)). A WAV's Broadcast Wave `bext` chunk (description, originator, dates, time reference) goes back the same way, which ffmpeg would write with the description, originator and dates blank; only BWF v2 loudness values are left out, since the gain changes them ([#218](https://github.com/M-Igashi/baken/issues/218))
