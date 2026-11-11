@@ -118,6 +118,8 @@ Before writing anything, `expressport` adds up what the run will write (audio no
 
 A run in which a track failed ends with exit code 1, after the summary. When every track fails (the drive with the music went away after the plan, say), nothing is written and the stick keeps its previous library ([#321](https://github.com/M-Igashi/baken/issues/321)).
 
+Once `export.pdb` is written, the stick has its new library. If something after that cannot be done (a stale file `--prune` may not remove, My Settings that cannot be copied), the run lists it above the summary and ends with exit code 1, and everything else is still done ([#322](https://github.com/M-Igashi/baken/issues/322)).
+
 ## The stick
 
 ### Format: FAT32 with an MBR partition table

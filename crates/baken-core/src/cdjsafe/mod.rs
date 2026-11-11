@@ -312,7 +312,15 @@ pub fn convert(
     }
     ensure_xml_unchanged(plan)?;
 
-    let new_tracks = build_new_tracks(&dest_paths, plan.max_track_id)?;
+    // An XML an earlier run wrote: its tracks at these files and its folder
+    // are brought up to date instead of written a second time (issue #332).
+    let earlier = xml::earlier(&plan.xml_data)?;
+    let new_tracks = build_new_tracks(&dest_paths, plan.max_track_id, &earlier.track_ids)?;
+    let replaced: HashSet<u64> = new_tracks
+        .iter()
+        .map(|t| t.track_id)
+        .filter(|id| *id <= plan.max_track_id)
+        .collect();
     let new_playlists: Vec<NewPlaylist> = plan
         .playlists
         .iter()
@@ -337,8 +345,20 @@ pub fn convert(
         Some(p) => p.to_path_buf(),
         None => default_output_path(&plan.xml_path)?,
     };
-    let output_bytes =
-        xml::rewrite_xml(&plan.xml_data, &plan.sources, &new_tracks, &new_playlists)?;
+    let mut written: Vec<NewPlaylist> = earlier
+        .playlists
+        .into_iter()
+        .filter(|old| new_playlists.iter().all(|new| new.path != old.path))
+        .collect();
+    written.extend(new_playlists.iter().cloned());
+    let output_bytes = xml::rewrite_xml(
+        &plan.xml_data,
+        &plan.sources,
+        &new_tracks,
+        &written,
+        &replaced,
+        earlier.folders,
+    )?;
     write_atomic(&output, &output_bytes)
         .with_context(|| format!("Failed to write {}", output.display()))?;
 
@@ -435,17 +455,30 @@ fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
     }
 }
 
-fn build_new_tracks(dest_paths: &[PathBuf], max_track_id: u64) -> anyhow::Result<Vec<NewTrack>> {
+/// A file the collection already lists keeps that track's TrackID, so the
+/// playlists that hold it go on pointing at it; the others are numbered on
+/// from the largest TrackID.
+fn build_new_tracks(
+    dest_paths: &[PathBuf],
+    max_track_id: u64,
+    listed: &HashMap<String, u64>,
+) -> anyhow::Result<Vec<NewTrack>> {
+    let mut next = max_track_id;
     dest_paths
         .iter()
-        .enumerate()
-        .map(|(i, dst)| {
+        .map(|dst| {
             let size = fs::metadata(dst)
                 .with_context(|| format!("Missing output file {}", dst.display()))?
                 .len();
-            let track_id = max_track_id
-                .checked_add(1 + i as u64)
-                .context("The collection's TrackIDs leave no room for new ones")?;
+            let track_id = match listed.get(&crate::fsname::nfc_str(&dst.to_string_lossy())) {
+                Some(id) => *id,
+                None => {
+                    next = next
+                        .checked_add(1)
+                        .context("The collection's TrackIDs leave no room for new ones")?;
+                    next
+                }
+            };
             Ok(NewTrack {
                 track_id,
                 location_url: encode_location(dst),

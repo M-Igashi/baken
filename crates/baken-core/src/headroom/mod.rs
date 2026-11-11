@@ -2,6 +2,7 @@
 
 mod analyzer;
 mod processor;
+mod replaygain;
 mod report;
 mod scanner;
 mod tags;
