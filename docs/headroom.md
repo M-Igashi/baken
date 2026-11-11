@@ -71,6 +71,8 @@ baken headroom --lossless --boost-only ./album/
 
 Run `baken headroom --help` for the full flag reference.
 
+**Update check.** `baken headroom` asks GitHub for the latest release of baken, in the background and at most once in 24 hours, and prints a note when a newer version exists. It only fetches the latest release, waits 3 seconds at most, and never fails the run. `--no-update-check` or the environment variable `BAKEN_NO_UPDATE_CHECK` switches it off. The other subcommands do not check.
+
 ## Example session
 
 <details>
