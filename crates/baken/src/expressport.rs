@@ -40,10 +40,11 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
     })?;
     print_report(&plan, &report);
     // After the summary, so a script sees the failure in the exit code too.
-    match report.failures.len() {
-        0 => Ok(()),
-        1 => anyhow::bail!("1 track failed and is not on the stick"),
-        n => anyhow::bail!("{n} tracks failed and are not on the stick"),
+    match (report.failures.len(), report.unfinished.len()) {
+        (0, 0) => Ok(()),
+        (0, _) => anyhow::bail!("the library is written, but not everything after it was done"),
+        (1, _) => anyhow::bail!("1 track failed and is not on the stick"),
+        (n, _) => anyhow::bail!("{n} tracks failed and are not on the stick"),
     }
 }
 
@@ -364,6 +365,15 @@ fn print_report(plan: &Plan, r: &Report) {
             baken_export::ONELIBRARY_FILES.join(", "),
             plan.device.join(plan.root.name()).join("rekordbox").display()
         );
+    }
+    if !r.unfinished.is_empty() {
+        println!(
+            "{} The library is on the stick, but this could not be done after it was written:",
+            style("⚠").yellow()
+        );
+        for what in &r.unfinished {
+            println!("  {} {what}", style("•").dim());
+        }
     }
     println!(
         "\n{} Done! {} tracks in the device library.",

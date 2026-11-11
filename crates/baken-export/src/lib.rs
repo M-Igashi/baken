@@ -303,6 +303,11 @@ pub struct Report {
     pub seek_tables_dropped: usize,
     pub cancelled: bool,
     pub failures: Vec<(String, String)>,
+    /// What could not be done after `export.pdb` was written: copying My
+    /// Settings, removing a stale file, removing a `._` file. The stick has
+    /// its new library by then, so these are listed here and not returned as
+    /// an error, which would lose this report (issue #322).
+    pub unfinished: Vec<String>,
     /// `prune` was asked for and not done because tracks failed or their
     /// sources were missing: their files from an earlier export are not in
     /// `export.pdb` this time and would otherwise go (a stick that filled up,
@@ -1236,7 +1241,9 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     }
 
     if let Some(dir) = &plan.settings_dir {
-        settings::copy_all(dir, &plan.settings_files, &library_dir)?;
+        if let Err(e) = settings::copy_all(dir, &plan.settings_files, &library_dir) {
+            report.unfinished.push(format!("My Settings: {e:#}"));
+        }
     }
 
     // `wanted` lacks the tracks that failed or whose source is missing, and
@@ -1245,9 +1252,13 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     if plan.prune && (!report.failures.is_empty() || report.sources_missing > 0) {
         report.prune_skipped = true;
     } else if plan.prune {
-        report.pruned += prune_tree(&plan.device.join("Contents"), &wanted)?;
-        report.pruned += prune_tree(&library_dir.join("USBANLZ"), &wanted)?;
-        report.pruned += prune_tree(&library_dir.join("Artwork"), &wanted)?;
+        for root in [
+            plan.device.join("Contents"),
+            library_dir.join("USBANLZ"),
+            library_dir.join("Artwork"),
+        ] {
+            report.pruned += prune_tree(&root, &wanted, &mut report.unfinished);
+        }
     }
     // Only files written in this run can have gained an AppleDouble file, so
     // the two big trees are walked only when something was written into them.
@@ -1256,19 +1267,21 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     // under a third-party app (a terminal, Zed) creates, and FAT keeps that
     // in a `._` file too (issue #196).
     if report.copied + report.transcoded > 0 || plan.prune {
-        remove_apple_double(&plan.device.join("Contents"), true, &mut report)?;
+        remove_apple_double(&plan.device.join("Contents"), true, &mut report);
     }
     if report.anlz_files > 0 || plan.prune {
-        remove_apple_double(&library_dir.join("USBANLZ"), true, &mut report)?;
+        remove_apple_double(&library_dir.join("USBANLZ"), true, &mut report);
     }
     if report.artwork > 0 || plan.prune {
-        remove_apple_double(&library_dir.join("Artwork"), true, &mut report)?;
+        remove_apple_double(&library_dir.join("Artwork"), true, &mut report);
     }
-    remove_apple_double(&library_dir, false, &mut report)?;
-    remove_apple_double(&rb_dir, false, &mut report)?;
+    remove_apple_double(&library_dir, false, &mut report);
+    remove_apple_double(&rb_dir, false, &mut report);
     for dir in ["Contents", plan.root.name()] {
-        if remove_sidecar(&plan.device.join(format!("._{dir}")))? {
-            report.apple_double_kept += 1;
+        let sidecar = plan.device.join(format!("._{dir}"));
+        match remove_sidecar(&sidecar) {
+            Ok(kept) => report.apple_double_kept += usize::from(kept),
+            Err(e) => report.unfinished.push(not_removed(&sidecar, &e)),
         }
     }
     Ok(report)
@@ -1853,69 +1866,103 @@ fn with_measured(dt: &DeviceTrack, audio: &Measured, mp3: Option<Mp3Audio>) -> D
 /// A `._X` AppleDouble file is decided by its `X`: left alone while `X` stays,
 /// since a sandboxed caller may not remove it then (issue #192), and removed
 /// once `X` is gone, unless the volume already dropped it together with `X`.
-fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
+fn prune_tree(root: &Path, keep: &HashSet<PathBuf>, errors: &mut Vec<String>) -> usize {
     fn key(path: &Path) -> String {
         fsname::nfc(path).to_string_lossy().to_lowercase()
     }
-    fn walk(dir: &Path, keep: &HashSet<String>, removed: &mut usize) -> std::io::Result<bool> {
-        let mut empty = true;
-        let mut sidecars = Vec::new();
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if entry.file_type()?.is_dir() {
-                if walk(&path, keep, removed)? {
-                    fsname::remove_dir(&path)?;
+    struct Walk<'a> {
+        keep: HashSet<String>,
+        removed: usize,
+        errors: &'a mut Vec<String>,
+    }
+    impl Walk<'_> {
+        /// Whether `dir` is empty afterwards. What cannot be read or removed
+        /// is noted and stays, and the walk goes on (issue #322).
+        fn dir(&mut self, dir: &Path) -> bool {
+            let entries = match std::fs::read_dir(dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    self.errors
+                        .push(format!("could not read {}: {e}", dir.display()));
+                    return false;
+                }
+            };
+            let mut empty = true;
+            let mut sidecars = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    empty &= self.dir(&path) && self.gone(&path, fsname::remove_dir(&path));
+                } else if let Some(name) = entry.file_name().to_string_lossy().strip_prefix("._") {
+                    sidecars.push((path.clone(), dir.join(name)));
+                } else if self.keep.contains(&key(&path)) {
+                    empty = false;
+                } else if self.gone(&path, fsname::remove_file(&path)) {
+                    self.removed += 1;
                 } else {
                     empty = false;
                 }
-            } else if let Some(name) = entry.file_name().to_string_lossy().strip_prefix("._") {
-                sidecars.push((path.clone(), dir.join(name)));
-            } else if keep.contains(&key(&path)) {
-                empty = false;
-            } else {
-                fsname::remove_file(&path)?;
-                *removed += 1;
             }
-        }
-        for (sidecar, of) in sidecars {
-            if of.symlink_metadata().is_ok() || remove_sidecar(&sidecar)? {
-                empty = false;
+            for (sidecar, of) in sidecars {
+                let kept = of.symlink_metadata().is_ok()
+                    || match remove_sidecar(&sidecar) {
+                        Ok(kept) => kept,
+                        Err(e) => !self.gone(&sidecar, Err(e)),
+                    };
+                empty &= !kept;
             }
+            empty
         }
-        Ok(empty)
+
+        fn gone(&mut self, path: &Path, result: std::io::Result<()>) -> bool {
+            if let Err(e) = &result {
+                self.errors.push(not_removed(path, e));
+            }
+            result.is_ok()
+        }
     }
-    let keep: HashSet<String> = keep.iter().map(|p| key(p)).collect();
-    let mut removed = 0;
+    let mut walk = Walk {
+        keep: keep.iter().map(|p| key(p)).collect(),
+        removed: 0,
+        errors,
+    };
     if root.is_dir() {
-        walk(root, &keep, &mut removed)?;
+        walk.dir(root);
     }
-    Ok(removed)
+    walk.removed
+}
+
+fn not_removed(path: &Path, e: &std::io::Error) -> String {
+    format!("could not remove {}: {e}", path.display())
 }
 
 /// macOS leaves `._*` AppleDouble files on FAT volumes; Linux-based players trip on them.
 /// Those the system refuses to remove are counted in `report.apple_double_kept`.
-fn remove_apple_double(root: &Path, recursive: bool, report: &mut Report) -> Result<()> {
-    fn walk(dir: &Path, recursive: bool, kept: &mut usize) -> std::io::Result<()> {
+fn remove_apple_double(root: &Path, recursive: bool, report: &mut Report) {
+    fn walk(dir: &Path, recursive: bool, report: &mut Report) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if entry.file_type()?.is_dir() {
                 if recursive {
-                    walk(&path, recursive, kept)?;
+                    walk(&path, recursive, report)?;
                 }
-            } else if entry.file_name().to_string_lossy().starts_with("._")
-                && remove_sidecar(&path)?
-            {
-                *kept += 1;
+            } else if entry.file_name().to_string_lossy().starts_with("._") {
+                match remove_sidecar(&path) {
+                    Ok(kept) => report.apple_double_kept += usize::from(kept),
+                    Err(e) => report.unfinished.push(not_removed(&path, &e)),
+                }
             }
         }
         Ok(())
     }
     if root.is_dir() {
-        walk(root, recursive, &mut report.apple_double_kept)?;
+        if let Err(e) = walk(root, recursive, report) {
+            report
+                .unfinished
+                .push(format!("could not read {}: {e}", root.display()));
+        }
     }
-    Ok(())
 }
 
 /// Remove an AppleDouble file; `Ok(true)` when the system refused. Inside the
@@ -1972,9 +2019,35 @@ mod tests {
             std::fs::write(&p, b"x").unwrap();
         }
         let keep = HashSet::from([root.join("DJ Foo/Album/one.wav")]);
-        assert_eq!(prune_tree(&root, &keep).unwrap(), 1);
+        assert_eq!(prune_tree(&root, &keep, &mut Vec::new()), 1);
         assert!(root.join("Dj Foo/Album/One.wav").exists());
         assert!(!root.join("Dj Foo/Album/stale.wav").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Issue #322: one file that cannot go does not end the walk.
+    #[cfg(unix)]
+    #[test]
+    fn prune_goes_on_past_a_file_it_cannot_remove() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("baken-prune-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in ["A/locked/stale.wav", "B/stale.wav"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+        }
+        let locked = root.join("A/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let mut errors = Vec::new();
+        let removed = prune_tree(&root, &HashSet::new(), &mut errors);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(removed, 1);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("stale.wav"), "{errors:?}");
+        assert!(locked.join("stale.wav").exists() && !root.join("B").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2000,7 +2073,7 @@ mod tests {
             std::fs::write(&p, b"x").unwrap();
         }
         let keep = HashSet::from([root.join("Artist/Album/kept.wav")]);
-        assert_eq!(prune_tree(&root, &keep).unwrap(), 2);
+        assert_eq!(prune_tree(&root, &keep, &mut Vec::new()), 2);
         let mut left: Vec<_> = files
             .iter()
             .filter(|f| root.join(f).exists())
