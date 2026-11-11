@@ -203,6 +203,8 @@ impl Library {
                     "COLLECTION" => in_collection = true,
                     "PLAYLISTS" => in_playlists = true,
                     "TRACK" if in_collection => current = Some(track_from(&e)?),
+                    // Written with a closing tag by some tools.
+                    "TRACK" if in_playlists => lib.push_entry(&e, &node_stack)?,
                     "NODE" if in_playlists => {
                         let idx = lib.push_node(&e, &node_stack)?;
                         node_stack.push(idx);
@@ -211,12 +213,10 @@ impl Library {
                 },
                 Event::Empty(e) => match e.name().as_ref() {
                     "TRACK" if in_collection => lib.tracks.push(track_from(&e)?),
-                    "TRACK" if in_playlists => {
-                        if let (Some(Some(idx)), Some(key)) = (node_stack.last(), attr(&e, "Key")?)
-                        {
-                            lib.playlists[*idx].track_ids.push(key.trim().parse()?);
-                        }
-                    }
+                    "TRACK" if in_playlists => lib.push_entry(&e, &node_stack)?,
+                    // A value that does not parse is read like a missing one,
+                    // as `track_from` reads the track's own numbers: one odd
+                    // entry must not fail an export it has no part in.
                     "TEMPO" => {
                         if let Some(t) = current.as_mut() {
                             t.tempos.push(Tempo {
@@ -229,13 +229,11 @@ impl Library {
                     }
                     "POSITION_MARK" => {
                         if let Some(t) = current.as_mut() {
-                            let rgb =
-                                match (attr(&e, "Red")?, attr(&e, "Green")?, attr(&e, "Blue")?) {
-                                    (Some(r), Some(g), Some(b)) => {
-                                        Some((r.parse()?, g.parse()?, b.parse()?))
-                                    }
-                                    _ => None,
-                                };
+                            let channel = |name| Ok::<_, anyhow::Error>(parsed(&e, name)?);
+                            let rgb = match (channel("Red")?, channel("Green")?, channel("Blue")?) {
+                                (Some(r), Some(g), Some(b)) => Some((r, g, b)),
+                                _ => None,
+                            };
                             let (name, marked) =
                                 split_marker(attr(&e, "Name")?.unwrap_or_default());
                             t.cues.push(Cue {
@@ -243,11 +241,8 @@ impl Library {
                                 marked,
                                 kind: num(&e, "Type")? as u32,
                                 start: num(&e, "Start")?,
-                                end: attr(&e, "End")?.map(|v| v.trim().parse()).transpose()?,
-                                num: attr(&e, "Num")?
-                                    .map(|v| v.trim().parse())
-                                    .transpose()?
-                                    .unwrap_or(-1),
+                                end: parsed(&e, "End")?,
+                                num: parsed(&e, "Num")?.unwrap_or(-1),
                                 rgb,
                             });
                         }
@@ -275,6 +270,19 @@ impl Library {
             buf.clear();
         }
         Ok(lib)
+    }
+
+    /// A playlist's `<TRACK Key>`. Only a `KeyType="0"` playlist holds
+    /// TrackIDs; another one holds locations and is never exported, so its
+    /// entries are left out instead of failing the parse.
+    fn push_entry(&mut self, e: &BytesStart, stack: &[Option<usize>]) -> Result<()> {
+        if let Some(Some(idx)) = stack.last() {
+            let playlist = &mut self.playlists[*idx];
+            if playlist.key_type == "0" {
+                playlist.track_ids.extend(parsed::<u64>(e, "Key")?);
+            }
+        }
+        Ok(())
     }
 
     fn push_node(&mut self, e: &BytesStart, stack: &[Option<usize>]) -> Result<Option<usize>> {
@@ -323,10 +331,12 @@ fn attr(e: &BytesStart, name: &str) -> Result<Option<String>> {
 }
 
 fn num(e: &BytesStart, name: &str) -> Result<f64> {
-    Ok(attr(e, name)?
-        .map(|v| v.trim().parse::<f64>())
-        .transpose()?
-        .unwrap_or(0.0))
+    Ok(parsed(e, name)?.unwrap_or(0.0))
+}
+
+/// The attribute as a number, `None` when it is missing or does not parse.
+fn parsed<T: std::str::FromStr>(e: &BytesStart, name: &str) -> Result<Option<T>> {
+    Ok(attr(e, name)?.and_then(|v| v.trim().parse().ok()))
 }
 
 fn track_from(e: &BytesStart) -> Result<Track> {
@@ -359,7 +369,12 @@ fn track_from(e: &BytesStart) -> Result<Track> {
             "Comments" => t.comments = v,
             "PlayCount" => t.play_count = n() as u32,
             "Rating" => t.rating = n() as u32,
-            "Location" => t.location = baken_core::cdjsafe::decode_location(&v)?,
+            // A value that is no `file://` URL stays as written: no such file
+            // exists, so a playlist that uses the track reports it missing,
+            // and every other playlist exports (issue #323).
+            "Location" => {
+                t.location = baken_core::cdjsafe::decode_location(&v).unwrap_or(v);
+            }
             "Remixer" => t.remixer = v,
             "Tonality" => t.tonality = v,
             "Label" => t.label = v,
@@ -491,5 +506,33 @@ mod tests {
             Some(ActiveLoopWarning::NotAMemoryLoop { .. })
         ));
         assert_eq!(ActiveLoopWarning::check(&track(Vec::new())), None);
+    }
+
+    /// Issue #323: none of these has anything to do with the tracks a run
+    /// exports, and each used to fail the parse.
+    #[test]
+    fn odd_entries_do_not_fail_the_parse() {
+        let xml = r#"<DJ_PLAYLISTS><COLLECTION Entries="3">
+<TRACK TrackID="1" Name="Fine" Location="file://localhost/m/fine.wav">
+  <POSITION_MARK Name="" Type="0" Start="1.5" Num="" Red="" Green="1" Blue="2"/>
+  <POSITION_MARK Name="" Type="4" Start="2.0" End="soon" Num="3"/>
+  <TEMPO Inizio="" Bpm="fast" Metro="4/4" Battito="1"/>
+</TRACK>
+<TRACK TrackID="2" Name="Windows" Location="C:\Music\track.mp3"/>
+<TRACK TrackID="3" Name="Escape" Location="file://localhost/m/100%zz.wav"/>
+</COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="2">
+<NODE Name="By location" Type="1" KeyType="1" Entries="1"><TRACK Key="file://localhost/m/fine.wav"/></NODE>
+<NODE Name="Closing tags" Type="1" KeyType="0" Entries="2"><TRACK Key="1"></TRACK><TRACK Key="x"/><TRACK Key="3"/></NODE>
+</NODE></PLAYLISTS></DJ_PLAYLISTS>"#;
+        let lib = Library::parse(xml.as_bytes()).unwrap();
+
+        let cues = &lib.tracks[0].cues;
+        assert_eq!((cues[0].num, cues[0].rgb, cues[0].start), (-1, None, 1.5));
+        assert_eq!((cues[1].num, cues[1].end), (3, None));
+        assert_eq!(lib.tracks[0].tempos[0].bpm, 0.0);
+        assert_eq!(lib.tracks[1].location, r"C:\Music\track.mp3");
+        assert_eq!(lib.tracks[2].location, "file://localhost/m/100%zz.wav");
+        assert!(lib.playlists[0].track_ids.is_empty());
+        assert_eq!(lib.playlists[1].track_ids, [1, 3]);
     }
 }
