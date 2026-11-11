@@ -1837,12 +1837,20 @@ fn with_measured(dt: &DeviceTrack, audio: &Measured, mp3: Option<Mp3Audio>) -> D
 /// the number of files deleted. Paths are compared in NFC: on macOS 26
 /// `read_dir` lists an ExFAT or FAT stick's names in NFD whatever form they
 /// were written in, and the stick is written in the XML's NFC (issue #154).
+/// Case is ignored too: FAT, exFAT, and HFS+ keep a folder under the case it
+/// was created with, so a track whose artist is now spelled `DJ Foo` lives
+/// in the `Dj Foo` an earlier export made (issue #316). [`Layout`] never
+/// gives two tracks paths that differ only in case, so on a case-sensitive
+/// stick this keeps at most a file too many.
 ///
 /// A `._X` AppleDouble file is decided by its `X`: left alone while `X` stays,
 /// since a sandboxed caller may not remove it then (issue #192), and removed
 /// once `X` is gone, unless the volume already dropped it together with `X`.
 fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
-    fn walk(dir: &Path, keep: &HashSet<PathBuf>, removed: &mut usize) -> std::io::Result<bool> {
+    fn key(path: &Path) -> String {
+        fsname::nfc(path).to_string_lossy().to_lowercase()
+    }
+    fn walk(dir: &Path, keep: &HashSet<String>, removed: &mut usize) -> std::io::Result<bool> {
         let mut empty = true;
         let mut sidecars = Vec::new();
         for entry in std::fs::read_dir(dir)? {
@@ -1856,7 +1864,7 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
                 }
             } else if let Some(name) = entry.file_name().to_string_lossy().strip_prefix("._") {
                 sidecars.push((path.clone(), dir.join(name)));
-            } else if keep.contains(&fsname::nfc(&path)) {
+            } else if keep.contains(&key(&path)) {
                 empty = false;
             } else {
                 fsname::remove_file(&path)?;
@@ -1870,7 +1878,7 @@ fn prune_tree(root: &Path, keep: &HashSet<PathBuf>) -> Result<usize> {
         }
         Ok(empty)
     }
-    let keep: HashSet<PathBuf> = keep.iter().map(|p| fsname::nfc(p)).collect();
+    let keep: HashSet<String> = keep.iter().map(|p| key(p)).collect();
     let mut removed = 0;
     if root.is_dir() {
         walk(root, &keep, &mut removed)?;
@@ -1944,6 +1952,23 @@ mod tests {
             frames: 44100 * 401 / 2,
             ..Default::default()
         }
+    }
+
+    /// A folder keeps the case an earlier export created it with (#316).
+    #[test]
+    fn prune_keeps_a_file_whose_path_differs_only_in_case() {
+        let root = std::env::temp_dir().join(format!("baken-prune-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for f in ["Dj Foo/Album/One.wav", "Dj Foo/Album/stale.wav"] {
+            let p = root.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+        }
+        let keep = HashSet::from([root.join("DJ Foo/Album/one.wav")]);
+        assert_eq!(prune_tree(&root, &keep).unwrap(), 1);
+        assert!(root.join("Dj Foo/Album/One.wav").exists());
+        assert!(!root.join("Dj Foo/Album/stale.wav").exists());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// On a plain filesystem `._X` stays when `X` is removed, so prune has to
