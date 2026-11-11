@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 
 use super::analyzer::{AudioAnalysis, GainMethod};
+use super::replaygain;
 use super::tags::{self, Tags};
 
 /// Whether applying gain to this file could actually write it.
@@ -228,7 +229,9 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     // are lost (issue #117). A WAV's plain `fmt ` and its `bext` go back the
     // same way, or the file comes back as WAVE_FORMAT_EXTENSIBLE and its BWF
     // description, originator and dates blank (issue #218).
-    let tags = tags::read(file_path);
+    // Without their ReplayGain values, which describe the audio before the
+    // gain; ffmpeg is told to drop its own copies below (issue #327).
+    let tags = tags::read(file_path).and_then(Tags::without_replaygain);
     let source = probe_source_format(file_path);
     // The lossless path only handles .m4a/.mp4 when the payload is ALAC;
     // anything else in that container would be silently re-encoded as AAC.
@@ -249,6 +252,7 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
         // Stream-copy embedded artwork. Without this, muxer defaults re-encode
         // a JPEG cover to PNG and inflate the file (issue #77).
         .args(["-c:v", "copy"])
+        .args(replaygain::ffmpeg_args())
         .args(output_args(&ext, source.as_ref()))
         .arg(&temp_path);
 
@@ -336,18 +340,27 @@ pub fn process_file(
 
     // Native MP3/AAC gain via mp3rgain, in 1.5 dB steps.
     let steps = analysis.lossless_gain_steps;
+    // The ReplayGain tags of a file whose level moved go with it (issue
+    // #327); the lossless path drops them while it rewrites the file.
     match analysis.gain_method {
         GainMethod::FfmpegLossless => apply_gain_ffmpeg(file_path, analysis.effective_gain),
-        GainMethod::Mp3Lossless if steps != 0 => mp3rgain::apply_gain(file_path, steps)
-            .map(|_| ())
-            .context("mp3rgain failed to apply MP3 gain"),
-        // Raw ADTS has no `moov`, so the MP4 path refused every `.aac` file.
-        GainMethod::AacLossless if steps != 0 => if mp3rgain::adts::is_adts_file(file_path) {
-            mp3rgain::adts::apply_adts_gain(file_path, file_path, steps, None).map(|_| ())
-        } else {
-            mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, steps).map(|_| ())
+        GainMethod::Mp3Lossless if steps != 0 => {
+            mp3rgain::apply_gain(file_path, steps).context("mp3rgain failed to apply MP3 gain")?;
+            replaygain::strip_leading_id3v2(file_path)?;
+            replaygain::strip_ape(file_path)
         }
-        .context("mp3rgain failed to apply AAC gain"),
+        // Raw ADTS has no `moov`, so the MP4 path refused every `.aac` file.
+        GainMethod::AacLossless if steps != 0 => {
+            if mp3rgain::adts::is_adts_file(file_path) {
+                mp3rgain::adts::apply_adts_gain(file_path, file_path, steps, None)
+                    .context("mp3rgain failed to apply AAC gain")?;
+                replaygain::strip_leading_id3v2(file_path)
+            } else {
+                mp3rgain::aac::apply_aac_gain_to_path(file_path, file_path, steps)
+                    .context("mp3rgain failed to apply AAC gain")?;
+                replaygain::strip_mp4(file_path)
+            }
+        }
         _ => Ok(()),
     }
 }

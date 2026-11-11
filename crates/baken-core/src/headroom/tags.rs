@@ -102,6 +102,26 @@ pub fn read(path: &Path) -> Option<Tags> {
     }
 }
 
+impl Tags {
+    /// The tags without their ReplayGain values, which describe the audio
+    /// before the gain (issue #327). `None` when nothing else is left to
+    /// put back.
+    pub fn without_replaygain(self) -> Option<Tags> {
+        match self {
+            Tags::Riff(mut riff) => {
+                if let Some(id3) = riff.id3.as_mut() {
+                    super::replaygain::strip_id3v2(id3);
+                }
+                Some(Tags::Riff(riff))
+            }
+            Tags::Mp4(mut items) => {
+                items.retain(|item| !super::replaygain::is_gain_free_form(item));
+                (!items.is_empty()).then_some(Tags::Mp4(items))
+            }
+        }
+    }
+}
+
 /// Put `tags` back over a file ffmpeg has just written.
 pub fn restore(path: &Path, tags: &Tags) -> Result<()> {
     match (Container::of(path), tags) {
