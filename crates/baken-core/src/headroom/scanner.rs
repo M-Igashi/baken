@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
@@ -35,23 +35,30 @@ fn is_backup_dir(entry: &DirEntry) -> bool {
 }
 
 /// Resolve a list of input strings (file paths, directories, globs) into a
-/// deduplicated, sorted list of audio files.
+/// deduplicated, sorted list of audio files. A file reached twice, under two
+/// spellings or through a symlink, is listed once under the first spelling:
+/// MP3 and AAC gain is written in place, so a second entry would apply it
+/// twice (issue #313).
 pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
     let mut collected: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut add = |file: PathBuf| {
+        if seen.insert(same_file_key(&file)) {
+            collected.insert(file);
+        }
+    };
 
     for input in inputs {
         let path = PathBuf::from(input);
 
         if path.is_dir() {
-            for file in scan_audio_files(&path) {
-                collected.insert(file);
-            }
+            scan_audio_files(&path).into_iter().for_each(&mut add);
             continue;
         }
 
         if path.is_file() {
             if is_audio_candidate(&path) {
-                collected.insert(path);
+                add(path);
             }
             continue;
         }
@@ -63,12 +70,10 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
         {
             let p = entry.map_err(|e| anyhow!("Glob error for '{}': {}", input, e))?;
             if p.is_dir() {
-                for file in scan_audio_files(&p) {
-                    collected.insert(file);
-                }
+                scan_audio_files(&p).into_iter().for_each(&mut add);
                 matched_any = true;
             } else if p.is_file() && is_audio_candidate(&p) {
-                collected.insert(p);
+                add(p);
                 matched_any = true;
             }
         }
@@ -79,6 +84,12 @@ pub fn resolve_inputs(inputs: &[String]) -> Result<Vec<PathBuf>> {
     }
 
     Ok(collected.into_iter().collect())
+}
+
+/// What two paths to one file have in common: the canonical path, or the
+/// path itself when it cannot be resolved.
+pub(super) fn same_file_key(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn is_audio_candidate(path: &Path) -> bool {
@@ -115,4 +126,44 @@ pub fn is_mp3(path: &Path) -> bool {
 
 pub fn is_aac(path: &Path) -> bool {
     has_extension(path, AAC_EXTENSIONS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("baken-scan-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_file_given_under_two_spellings_is_listed_once() {
+        let dir = scratch("spellings");
+        let file = dir.join("a.mp3");
+        std::fs::write(&file, b"").unwrap();
+        let dotted = dir.join(".").join("a.mp3");
+        let inputs = [&dir, &dotted, &file].map(|p| p.to_string_lossy().into_owned());
+
+        let files = resolve_inputs(&inputs).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(files, [file]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_listed_file_is_not_a_second_file() {
+        let dir = scratch("symlink");
+        let file = dir.join("a.mp3");
+        std::fs::write(&file, b"").unwrap();
+        let link = dir.join("b.mp3");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let inputs = [&file, &link].map(|p| p.to_string_lossy().into_owned());
+
+        let files = resolve_inputs(&inputs).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(files, [file]);
+    }
 }

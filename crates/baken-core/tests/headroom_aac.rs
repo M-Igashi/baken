@@ -83,7 +83,16 @@ fn he_aac_is_skipped_before_measuring_and_before_the_backup() {
     if !encode(&v1, &["-c:a", "aac_at", "-profile:a", "4", "-b:a", "64k"])
         || !encode(
             &v2,
-            &["-c:a", "aac_at", "-profile:a", "28", "-b:a", "32k", "-f", "adts"],
+            &[
+                "-c:a",
+                "aac_at",
+                "-profile:a",
+                "28",
+                "-b:a",
+                "32k",
+                "-f",
+                "adts",
+            ],
         )
     {
         eprintln!("ffmpeg with aac_at not available, skipping");

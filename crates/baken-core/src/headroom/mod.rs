@@ -111,7 +111,7 @@ pub fn analyze(
 
 /// Apply the gain decided by [`analyze`] to each file in parallel, optionally
 /// copying the original into `backup_dir` first (directory structure relative
-/// to `base_dir` is preserved).
+/// to `base_dir` is preserved). A file listed twice is processed once.
 pub fn apply(
     analyses: &[AudioAnalysis],
     base_dir: &Path,
@@ -119,6 +119,11 @@ pub fn apply(
     progress: &dyn Progress,
     cancel: &CancelToken,
 ) -> ApplyOutcome {
+    let mut seen = std::collections::HashSet::new();
+    let analyses: Vec<&AudioAnalysis> = analyses
+        .iter()
+        .filter(|a| seen.insert(scanner::same_file_key(&a.path)))
+        .collect();
     let done = AtomicUsize::new(0);
     let results: Vec<Option<std::result::Result<(), (PathBuf, Error)>>> = analyses
         .par_iter()
