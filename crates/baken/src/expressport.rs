@@ -39,7 +39,12 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         export(&plan, p, c)
     })?;
     print_report(&plan, &report);
-    Ok(())
+    // After the summary, so a script sees the failure in the exit code too.
+    match report.failures.len() {
+        0 => Ok(()),
+        1 => anyhow::bail!("1 track failed and is not on the stick"),
+        n => anyhow::bail!("{n} tracks failed and are not on the stick"),
+    }
 }
 
 fn print_plan(plan: &Plan) {

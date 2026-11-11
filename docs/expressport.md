@@ -116,6 +116,8 @@ The stick keeps two things from its last export: the play history a player recor
 
 Before writing anything, `expressport` adds up what the run will write (audio not on the stick yet, the analysis files, `export.pdb` and the settings, in the stick's allocation units, plus 1 MiB) and stops when the stick has less free; the plan and `--dry-run` show both figures (macOS and Linux). If the stick still fills up, is pulled out or stops answering during the run, the export stops at that track and leaves `export.pdb` as it was, so the stick keeps its previous library. `export.pdb` and the settings are written next to the old files and renamed over them. `--prune` removes nothing in a run where a track failed, so a track that could not be written keeps the files an earlier export left for it ([#233](https://github.com/M-Igashi/baken/issues/233)).
 
+A run in which a track failed ends with exit code 1, after the summary. When every track fails (the drive with the music went away after the plan, say), nothing is written and the stick keeps its previous library ([#321](https://github.com/M-Igashi/baken/issues/321)).
+
 ## The stick
 
 ### Format: FAT32 with an MBR partition table

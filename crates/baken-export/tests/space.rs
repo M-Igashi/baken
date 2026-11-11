@@ -360,3 +360,23 @@ fn the_library_goes_into_the_root_the_stick_uses() {
     assert!(matches!(plan(&opts), Err(Error::TwoLibraries(_))));
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// Every source gone between plan and export: the stick keeps its library
+/// instead of getting an empty one (#321).
+#[test]
+fn a_run_in_which_every_track_fails_leaves_the_library_alone() {
+    let (root, opts) = setup("all-fail");
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let pdb = opts.device.join("PIONEER/rekordbox/export.pdb");
+    let before = std::fs::read(&pdb).unwrap();
+
+    let p = plan(&opts).unwrap();
+    std::fs::rename(root.join("music"), root.join("gone")).unwrap();
+    let err = export(&p, &(), &CancelToken::new()).unwrap_err();
+    assert!(
+        matches!(&err, baken_export::Error::AllTracksFailed { failures } if failures.len() == p.tracks.len()),
+        "{err}"
+    );
+    assert_eq!(std::fs::read(&pdb).unwrap(), before);
+    std::fs::remove_dir_all(&root).unwrap();
+}

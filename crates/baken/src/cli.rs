@@ -8,11 +8,15 @@ use dialoguer::{theme::ColorfulTheme, Confirm};
 use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::args::{Cli, Command, HeadroomArgs};
 use crate::progress::with_bar;
 use crate::report;
 use crate::updater;
+
+/// Files a headroom run could not analyze or could not write.
+static FAILED: AtomicUsize = AtomicUsize::new(0);
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -53,6 +57,13 @@ fn run_headroom(args: &HeadroomArgs) -> Result<()> {
     } else {
         run_interactive(tp_mode, gain_mode)
     };
+    // After everything is printed, so a script sees a failed file in the
+    // exit code as well (issue #320).
+    let result = result.and_then(|()| match FAILED.load(Ordering::Relaxed) {
+        0 => Ok(()),
+        1 => anyhow::bail!("1 file failed"),
+        n => anyhow::bail!("{n} files failed"),
+    });
 
     if let Some(handle) = update_check {
         updater::notify(handle);
@@ -111,11 +122,16 @@ fn analyze_and_report(
     let all_analyses = analyze_files(files, tp_mode, gain_mode)?;
     let summary = AnalysisSummary::from_analyses(&all_analyses);
 
+    if all_analyses.is_empty() && FAILED.load(Ordering::Relaxed) > 0 {
+        println!("\n{} No file could be analyzed.", style("⚠").yellow());
+        return Ok(None);
+    }
     if !summary.has_processable() {
         println!("\n{} No files need a gain change.", style("ℹ").blue());
-        let detail = match gain_mode {
-            GainMode::Normalize => "All files are already at the target ceiling.",
-            GainMode::BoostOnly => "All files are already at or above the target ceiling.",
+        let detail = match (FAILED.load(Ordering::Relaxed), gain_mode) {
+            (1.., _) => "That is of the files that could be analyzed; see the warnings above.",
+            (0, GainMode::Normalize) => "All files are already at the target ceiling.",
+            (0, GainMode::BoostOnly) => "All files are already at or above the target ceiling.",
         };
         println!("  {}", detail);
         return Ok(None);
@@ -348,6 +364,7 @@ fn analyze_files(
         headroom::analyze(files, tp_mode, gain_mode, p, c)
     })?;
 
+    FAILED.fetch_add(outcome.failures.len(), Ordering::Relaxed);
     for (path, e) in &outcome.failures {
         // `{:#}` and not `{}`: baken_core::Error is transparent over anyhow,
         // so plain Display stops at the outermost context and drops the cause
@@ -460,6 +477,7 @@ fn process_files(
         headroom::apply(analyses, base_dir, backup_dir, p, c)
     });
 
+    FAILED.fetch_add(outcome.failures.len(), Ordering::Relaxed);
     for (path, e) in &outcome.failures {
         let name = path
             .file_name()
