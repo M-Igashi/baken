@@ -4,7 +4,7 @@
 //! header.
 
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 /// `wFormatTag` of `WAVE_FORMAT_EXTENSIBLE`.
@@ -13,13 +13,12 @@ pub const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
 /// Enough for the WAV/AIFF chunk headers and a few hundred MP3 frames.
 const HEAD: u64 = 512 * 1024;
 
-fn head(path: &Path) -> Option<Vec<u8>> {
+/// `HEAD` bytes of the file from `offset`.
+fn window(path: &Path, offset: u64) -> Option<Vec<u8>> {
+    let mut file = File::open(path).ok()?;
+    file.seek(SeekFrom::Start(offset)).ok()?;
     let mut buf = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(HEAD)
-        .read_to_end(&mut buf)
-        .ok()?;
+    file.take(HEAD).read_to_end(&mut buf).ok()?;
     Some(buf)
 }
 
@@ -38,13 +37,20 @@ pub struct Header {
 /// `is_mp3` from ffprobe, so PCM that happens to look like frame syncs is
 /// never walked as MP3.
 pub fn read(path: &Path, is_mp3: bool) -> Header {
-    let Some(buf) = head(path) else {
+    let Some(buf) = window(path, 0) else {
         return Header::default();
     };
+    // An ID3v2 tag with a cover in it is easily larger than the window, so
+    // the frames are read from where the tag ends (issue #331).
+    let vbr_without_header = is_mp3
+        && match id3v2_len(&buf) {
+            0 => mp3_vbr_without_header(&buf),
+            tag => window(path, tag as u64).is_some_and(|audio| mp3_vbr_without_header(&audio)),
+        };
     Header {
         wav_format_tag: wav_format_tag(&buf),
         aifc_compression: aifc_compression(&buf),
-        vbr_without_header: is_mp3 && mp3_vbr_without_header(&buf),
+        vbr_without_header,
     }
 }
 
@@ -115,17 +121,23 @@ fn frame(b: &[u8]) -> Option<(u32, usize, usize)> {
     Some((bitrate, len, side_info))
 }
 
-fn mp3_vbr_without_header(buf: &[u8]) -> bool {
-    let mut off = 0;
-    if buf.starts_with(b"ID3") && buf.len() >= 10 {
-        let size = buf[6..10]
-            .iter()
-            .fold(0usize, |acc, &b| (acc << 7) | (b & 0x7F) as usize);
-        off = 10 + size + if buf[5] & 0x10 != 0 { 10 } else { 0 };
+/// Length of the ID3v2 tag `buf` starts with, header and footer included; 0
+/// without one.
+fn id3v2_len(buf: &[u8]) -> usize {
+    if !buf.starts_with(b"ID3") || buf.len() < 10 {
+        return 0;
     }
+    let size = buf[6..10]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 7) | (b & 0x7F) as usize);
+    10 + size + if buf[5] & 0x10 != 0 { 10 } else { 0 }
+}
+
+/// `buf` is the start of the MPEG stream, after any ID3v2 tag.
+fn mp3_vbr_without_header(buf: &[u8]) -> bool {
     // The first frame that is followed by another one, so a stray sync pattern
     // in padding is not taken for the stream.
-    let start = (off..buf.len().saturating_sub(4)).find(|&i| {
+    let start = (0..buf.len().saturating_sub(4)).find(|&i| {
         frame(&buf[i..])
             .is_some_and(|(_, len, _)| len > 0 && buf.get(i + len..).and_then(frame).is_some())
     });
@@ -210,5 +222,28 @@ mod tests {
         let mut with_header = mp3_frame(9, &xing);
         with_header.extend_from_slice(&vbr);
         assert!(!mp3_vbr_without_header(&with_header));
+    }
+
+    /// Issue #331: a tag larger than the window hid the frames behind it.
+    #[test]
+    fn vbr_is_found_behind_an_id3_tag_of_any_size() {
+        let vbr: Vec<u8> = (0..20)
+            .flat_map(|i| mp3_frame(if i % 2 == 0 { 9 } else { 14 }, &[]))
+            .collect();
+        let dir = std::env::temp_dir();
+        for tag_len in [0usize, 300, HEAD as usize + 4096] {
+            let mut file = Vec::new();
+            if tag_len > 0 {
+                file.extend_from_slice(b"ID3\x03\0\0");
+                file.extend((0..4).rev().map(|i| (tag_len >> (7 * i) & 0x7f) as u8));
+                file.resize(10 + tag_len, 0);
+            }
+            file.extend_from_slice(&vbr);
+            let path = dir.join(format!("baken-id3-{tag_len}-{}.mp3", std::process::id()));
+            std::fs::write(&path, &file).unwrap();
+            let header = read(&path, true);
+            let _ = std::fs::remove_file(&path);
+            assert!(header.vbr_without_header, "tag of {tag_len} bytes");
+        }
     }
 }
