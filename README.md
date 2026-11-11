@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/baken)](https://crates.io/crates/baken)
 [![Downloads](https://img.shields.io/github/downloads/M-Igashi/baken/total)](https://github.com/M-Igashi/baken/releases)
-[![License: MIT](https://img.shields.io/github/license/M-Igashi/baken)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/M-Igashi/baken)](https://github.com/M-Igashi/baken/blob/main/LICENSE)
 ![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)
 
 <a href="https://baken.ravers.workers.dev/get?from=baken-readme"><img src="https://toolbox.marketingtools.apple.com/api/v2/badges/download-on-the-mac-app-store/black/en-us" alt="Download on the Mac App Store" height="48"></a>
@@ -69,7 +69,7 @@ baken headroom --analyze-only ~/Music/DJ-Tracks      # report only, change nothi
 baken headroom ~/Music/DJ-Tracks --backup            # apply, keeping the originals in a backup folder
 ```
 
-Reference: [docs/headroom.md](docs/headroom.md). Guides: [why Auto Gain does not reach your CDJ](https://baken.ravers.workers.dev/auto-gain), [a LUFS target or a true peak ceiling?](https://baken.ravers.workers.dev/loudness-normalization)
+Reference: [docs/headroom.md](https://github.com/M-Igashi/baken/blob/main/docs/headroom.md). Guides: [why Auto Gain does not reach your CDJ](https://baken.ravers.workers.dev/auto-gain), [a LUFS target or a true peak ceiling?](https://baken.ravers.workers.dev/loudness-normalization)
 
 ### Sort (`baken rbsort`)
 
@@ -80,7 +80,7 @@ baken rbsort ~/Music/rekordbox/collection.xml
 baken rbsort ~/Music/rekordbox/collection.xml --playlist "Sets/Friday"
 ```
 
-Reference: [docs/rbsort.md](docs/rbsort.md). Guide: [how to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort)
+Reference: [docs/rbsort.md](https://github.com/M-Igashi/baken/blob/main/docs/rbsort.md). Guide: [how to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort)
 
 ### CDJ Safe (`baken cdjsafe`)
 
@@ -91,7 +91,7 @@ baken cdjsafe collection.xml --playlist "Sets/Friday" --check
 baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe-friday
 ```
 
-Reference: [docs/cdjsafe.md](docs/cdjsafe.md)
+Reference: [docs/cdjsafe.md](https://github.com/M-Igashi/baken/blob/main/docs/cdjsafe.md)
 
 ### USB Export (`baken expressport`)
 
@@ -107,7 +107,7 @@ baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday
 baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday"
 ```
 
-Reference: [docs/expressport.md](docs/expressport.md). Guides: [export to a USB stick without opening rekordbox](https://baken.ravers.workers.dev/usb-export), [what a USB export touches, measured](https://baken.ravers.workers.dev/usb-export-measured)
+Reference: [docs/expressport.md](https://github.com/M-Igashi/baken/blob/main/docs/expressport.md). Guides: [export to a USB stick without opening rekordbox](https://baken.ravers.workers.dev/usb-export), [what a USB export touches, measured](https://baken.ravers.workers.dev/usb-export-measured)
 
 ## Built for rekordbox, not instead of it
 
@@ -118,7 +118,7 @@ There is no shortage of tools that set out to replace rekordbox. Bake'n Deck is 
 - **rekordbox's own analysis is copied, not re-guessed.** Analysis is generated only for tracks rekordbox has never seen, and only when you ask for it.
 - **Measured, not guessed.** The stick format is checked byte for byte against real rekordbox 7 exports, and player limits come from Pioneer DJ's operating instructions only. Whatever has not been measured or tried on a player is labelled as such.
 - **Tried on real players.** DJs have played sticks written by `baken` on a CDJ-3000, CDJ-2000NXS2 players, a CDJ-2000NXS, and an XDJ-AZ ([#116](https://github.com/M-Igashi/baken/issues/116), [#242](https://github.com/M-Igashi/baken/issues/242), [#139](https://github.com/M-Igashi/baken/issues/139)).
-- **Supply chain, handled with care.** Dependencies are weighed before they come in, checked on every pull request, and releases carry checksums. See [SECURITY.md](SECURITY.md#supply-chain).
+- **Supply chain, handled with care.** Dependencies are weighed before they come in, checked on every pull request, and releases carry checksums. See [SECURITY.md](https://github.com/M-Igashi/baken/blob/main/SECURITY.md#supply-chain).
 - **The DJ decides.** A suspect file is flagged, not quietly fixed, and no feature, AI or otherwise, takes over a decision that belongs to the DJ.
 
 ## Bake'n Deck for Mac
@@ -137,15 +137,15 @@ One-time purchase, no subscription, no account, no network access. English and J
 
 | | |
 |---|---|
-| [docs/headroom.md](docs/headroom.md) | `baken headroom` reference: formats, 1.5 dB steps, the ceiling, the report, backups |
-| [docs/rbsort.md](docs/rbsort.md) | `baken rbsort` reference: the rekordbox workflow, flags, sort rules |
-| [docs/cdjsafe.md](docs/cdjsafe.md) | `baken cdjsafe` reference: the conversion, importing back, `--check` and the player tables |
-| [docs/expressport.md](docs/expressport.md) | `baken expressport` reference: what is written, flags, My Tags, stick formats, speed |
-| [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) | Why the ceiling is -0.5 dBTP for every file |
-| [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) | A six-track example: one-column sort against key then BPM |
-| [docs/dj-software-compatibility.md](docs/dj-software-compatibility.md) | Headroom next to Traktor, Serato, Engine DJ, and Lexicon |
-| [docs/mac-tuneup.md](docs/mac-tuneup.md) | Five macOS settings that slow rekordbox down, with the manual steps ([日本語](docs/mac-tuneup.ja.md)). No tool required |
-| [bench/README.md](bench/README.md) | The USB export benchmark against rbxport: script and raw results |
+| [docs/headroom.md](https://github.com/M-Igashi/baken/blob/main/docs/headroom.md) | `baken headroom` reference: formats, 1.5 dB steps, the ceiling, the report, backups |
+| [docs/rbsort.md](https://github.com/M-Igashi/baken/blob/main/docs/rbsort.md) | `baken rbsort` reference: the rekordbox workflow, flags, sort rules |
+| [docs/cdjsafe.md](https://github.com/M-Igashi/baken/blob/main/docs/cdjsafe.md) | `baken cdjsafe` reference: the conversion, importing back, `--check` and the player tables |
+| [docs/expressport.md](https://github.com/M-Igashi/baken/blob/main/docs/expressport.md) | `baken expressport` reference: what is written, flags, My Tags, stick formats, speed |
+| [docs/true-peak-ceiling.md](https://github.com/M-Igashi/baken/blob/main/docs/true-peak-ceiling.md) | Why the ceiling is -0.5 dBTP for every file |
+| [docs/rbsort-sort-comparison.md](https://github.com/M-Igashi/baken/blob/main/docs/rbsort-sort-comparison.md) | A six-track example: one-column sort against key then BPM |
+| [docs/dj-software-compatibility.md](https://github.com/M-Igashi/baken/blob/main/docs/dj-software-compatibility.md) | Headroom next to Traktor, Serato, Engine DJ, and Lexicon |
+| [docs/mac-tuneup.md](https://github.com/M-Igashi/baken/blob/main/docs/mac-tuneup.md) | Five macOS settings that slow rekordbox down, with the manual steps ([日本語](https://github.com/M-Igashi/baken/blob/main/docs/mac-tuneup.ja.md)). No tool required |
+| [bench/README.md](https://github.com/M-Igashi/baken/blob/main/bench/README.md) | The USB export benchmark against rbxport: script and raw results |
 
 The processing logic is a separate library crate, [`baken-core`](https://crates.io/crates/baken-core), so other front-ends can embed it without the terminal UI. To build from source: `git clone https://github.com/M-Igashi/baken.git && cd baken && cargo build --release`.
 

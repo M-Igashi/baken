@@ -5,6 +5,7 @@ members = ["crates/baken-core", "crates/baken-export", "crates/baken"]
 [workspace.package]
 version = "4.11.0"
 edition = "2021"
+rust-version = "1.89"
 authors = ["Jesse Pinkman <M-Igashi@users.noreply.github.com>"]
 license = "MIT"
 repository = "https://github.com/M-Igashi/baken"
