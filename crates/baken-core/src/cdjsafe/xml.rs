@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::location::decode_location;
 use super::transcode::{SAFE_BITRATE_KBPS, SAFE_SAMPLE_RATE};
-use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, unescaped};
+use crate::fsname::nfc_str;
+use crate::xmlutil::{bump_count_attr, emit_playlist, get_attr, playlist_node_attrs, unescaped};
 
 /// Name of the Type=0 folder NODE that holds the CDJ-safe playlists.
 pub const CDJSAFE_FOLDER_NAME: &str = "CDJ-safe (MP3)";
@@ -49,6 +50,7 @@ pub struct NewTrack {
 
 /// A playlist [`rewrite_xml`] writes under the `CDJ-safe (MP3)` folder: its
 /// folders and name there, and the new TrackIDs in playlist order.
+#[derive(Clone)]
 pub struct NewPlaylist {
     pub path: Vec<String>,
     pub track_ids: Vec<String>,
@@ -198,16 +200,122 @@ fn source_track_from(e: &BytesStart, id: String) -> Result<SourceTrack> {
     })
 }
 
+/// What an earlier run left in an XML that is fed in again: a previous
+/// `-out.xml`, or a collection exported after importing one (issue #332).
+#[derive(Default)]
+pub struct Earlier {
+    /// Top-level `CDJ-safe (MP3)` folders.
+    pub folders: usize,
+    /// The playlists in them, with their path below the folder.
+    pub playlists: Vec<NewPlaylist>,
+    /// TrackID by decoded `Location`, in NFC, of every `<COLLECTION>` track.
+    pub track_ids: HashMap<String, u64>,
+}
+
+/// Whether `e` is a `CDJ-safe (MP3)` folder; the caller knows it sits
+/// directly under ROOT.
+fn is_cdjsafe_folder(e: &BytesStart) -> Result<bool> {
+    let (name, ty, _) = playlist_node_attrs(e)?;
+    Ok(ty == "0" && name == CDJSAFE_FOLDER_NAME)
+}
+
+pub fn earlier(xml_data: &[u8]) -> Result<Earlier> {
+    let mut reader = Reader::from_reader(xml_data);
+    reader.config_mut().trim_text(false);
+    let mut found = Earlier::default();
+    let mut in_collection = false;
+    let mut in_playlists = false;
+    // Names from ROOT down, and whether the walk is inside such a folder.
+    let mut stack: Vec<String> = Vec::new();
+    let mut inside = false;
+    let mut current: Option<NewPlaylist> = None;
+    let track = |e: &BytesStart, found: &mut Earlier| -> Result<()> {
+        let id = get_attr(e, "TrackID")?.and_then(|id| id.trim().parse().ok());
+        let path = get_attr(e, "Location")?.and_then(|l| decode_location(&l).ok());
+        if let (Some(id), Some(path)) = (id, path) {
+            found.track_ids.entry(nfc_str(&path)).or_insert(id);
+        }
+        Ok(())
+    };
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(e)) => match e.name().as_ref() {
+                "COLLECTION" => in_collection = true,
+                "PLAYLISTS" => in_playlists = true,
+                "TRACK" if in_collection => track(&e, &mut found)?,
+                "NODE" if in_playlists => {
+                    let (name, ty, _) = playlist_node_attrs(&e)?;
+                    stack.push(name);
+                    if stack.len() == 2 && is_cdjsafe_folder(&e)? {
+                        inside = true;
+                        found.folders += 1;
+                    } else if inside && ty == "1" && current.is_none() {
+                        current = Some(NewPlaylist {
+                            path: stack[2..].to_vec(),
+                            track_ids: Vec::new(),
+                        });
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => match e.name().as_ref() {
+                "TRACK" if in_collection => track(&e, &mut found)?,
+                "TRACK" if in_playlists => {
+                    if let (Some(p), Some(key)) = (current.as_mut(), get_attr(&e, "Key")?) {
+                        p.track_ids.push(key);
+                    }
+                }
+                "NODE" if in_playlists && stack.len() == 1 && is_cdjsafe_folder(&e)? => {
+                    found.folders += 1;
+                }
+                _ => {}
+            },
+            Ok(Event::End(e)) => match e.name().as_ref() {
+                "COLLECTION" => in_collection = false,
+                "PLAYLISTS" => in_playlists = false,
+                "NODE" if in_playlists => {
+                    if current
+                        .as_ref()
+                        .is_some_and(|p| p.path.len() + 2 == stack.len())
+                    {
+                        found.playlists.extend(current.take());
+                    }
+                    stack.pop();
+                    inside &= stack.len() >= 2;
+                }
+                _ => {}
+            },
+            Err(e) => bail!("XML parse error: {}", e),
+            _ => {}
+        }
+    }
+    Ok(found)
+}
+
 /// Stream-copy the source XML, appending the new `<TRACK>` entries to
 /// `<COLLECTION>` (bumping `Entries`) and a `CDJ-safe (MP3)` folder holding
-/// the new playlists under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
+/// `playlists` under the `<PLAYLISTS>` ROOT NODE (bumping `Count`).
+///
+/// An XML an earlier run wrote is brought up to date instead of growing
+/// (issue #332): the `replaced` TrackIDs, tracks at a `Location` this run
+/// wrote again, leave `<COLLECTION>` for their new entries, and the
+/// `old_folders` top-level `CDJ-safe (MP3)` folders are left out, their
+/// playlists being part of `playlists`.
 pub fn rewrite_xml(
     xml_data: &[u8],
     sources: &[SourceTrack],
     new_tracks: &[NewTrack],
     playlists: &[NewPlaylist],
+    replaced: &HashSet<u64>,
+    old_folders: usize,
 ) -> Result<Vec<u8>> {
     assert_eq!(sources.len(), new_tracks.len());
+    let is_replaced = |e: &BytesStart| -> Result<bool> {
+        Ok(get_attr(e, "TrackID")?
+            .and_then(|id| id.trim().parse().ok())
+            .is_some_and(|id: u64| replaced.contains(&id)))
+    };
 
     let mut reader = Reader::from_reader(xml_data);
     reader.config_mut().trim_text(false);
@@ -215,6 +323,7 @@ pub fn rewrite_xml(
     let mut output: Vec<u8> = Vec::with_capacity(xml_data.len() + 64 * 1024);
     {
         let mut writer = Writer::new(&mut output);
+        let mut in_collection = false;
         let mut in_playlists = false;
         let mut playlists_depth: i32 = 0;
 
@@ -223,11 +332,18 @@ pub fn rewrite_xml(
                 Ok(Event::Eof) => break,
                 Ok(Event::Start(e)) => match e.name().as_ref() {
                     "COLLECTION" => {
+                        in_collection = true;
                         writer.write_event(Event::Start(bump_count_attr(
                             &e,
                             "Entries",
-                            new_tracks.len(),
+                            new_tracks.len() as isize - replaced.len() as isize,
                         )?))?;
+                    }
+                    "TRACK" if in_collection && is_replaced(&e)? => {
+                        reader.read_to_end(e.name())?;
+                    }
+                    "NODE" if in_playlists && playlists_depth == 1 && is_cdjsafe_folder(&e)? => {
+                        reader.read_to_end(e.name())?;
                     }
                     "PLAYLISTS" => {
                         in_playlists = true;
@@ -237,16 +353,27 @@ pub fn rewrite_xml(
                     "NODE" if in_playlists => {
                         playlists_depth += 1;
                         if playlists_depth == 1 {
-                            // ROOT NODE — bump Count by 1 (we insert one folder).
-                            writer.write_event(Event::Start(bump_count_attr(&e, "Count", 1)?))?;
+                            // ROOT NODE: one folder comes in, the old ones go.
+                            let folders = 1 - old_folders as isize;
+                            writer.write_event(Event::Start(bump_count_attr(
+                                &e, "Count", folders,
+                            )?))?;
                         } else {
                             writer.write_event(Event::Start(e))?;
                         }
                     }
                     _ => writer.write_event(Event::Start(e))?,
                 },
+                Ok(Event::Empty(e))
+                    if in_collection && e.name().as_ref() == "TRACK" && is_replaced(&e)? => {}
+                Ok(Event::Empty(e))
+                    if in_playlists
+                        && playlists_depth == 1
+                        && e.name().as_ref() == "NODE"
+                        && is_cdjsafe_folder(&e)? => {}
                 Ok(Event::End(e)) => match e.name().as_ref() {
                     "COLLECTION" => {
+                        in_collection = false;
                         for (src, new) in sources.iter().zip(new_tracks) {
                             emit_track(&mut writer, src, new)?;
                         }
@@ -536,7 +663,16 @@ mod tests {
             path: vec!["Gig".into()],
             track_ids: vec!["8".into(), "9".into()],
         }];
-        let out = rewrite_xml(SAMPLE_XML.as_bytes(), &sources, &new_tracks, &playlists).unwrap();
+        let nothing = HashSet::new();
+        let out = rewrite_xml(
+            SAMPLE_XML.as_bytes(),
+            &sources,
+            &new_tracks,
+            &playlists,
+            &nothing,
+            0,
+        )
+        .unwrap();
         let out_str = String::from_utf8(out).unwrap();
 
         // Collection Entries bumped 3 -> 5
@@ -566,6 +702,47 @@ mod tests {
         // Original tracks untouched
         assert!(out_str.contains(r#"TrackID="1" Name="Alpha &amp; Beta""#));
         assert!(out_str.contains(r#"Kind="FLAC File""#));
+
+        // Fed in again (issue #332): what the first run wrote is found...
+        let found = earlier(out_str.as_bytes()).unwrap();
+        assert_eq!(found.folders, 1);
+        assert_eq!(found.playlists.len(), 1);
+        assert_eq!(found.playlists[0].path, ["Gig"]);
+        assert_eq!(found.playlists[0].track_ids, ["8", "9"]);
+        assert_eq!(found.track_ids["/Users/dj/cdjsafe/gamma.mp3"], 8);
+        assert_eq!(found.track_ids["/Users/dj/cdjsafe/alpha beta.mp3"], 9);
+
+        // ...and a second run over the same files, for another playlist,
+        // replaces the two tracks and joins the folder instead of adding to
+        // either.
+        let sources = collect_tracks(out_str.as_bytes(), &ids).unwrap();
+        let mut written = found.playlists.clone();
+        written.push(NewPlaylist {
+            path: vec!["Sets".into(), "Sat".into()],
+            track_ids: vec!["9".into()],
+        });
+        let replaced = HashSet::from([8, 9]);
+        let again = rewrite_xml(
+            out_str.as_bytes(),
+            &sources,
+            &new_tracks,
+            &written,
+            &replaced,
+            found.folders,
+        )
+        .unwrap();
+        let again = String::from_utf8(again).unwrap();
+        assert!(again.contains(r#"<COLLECTION Entries="5">"#));
+        assert!(again.contains(r#"Name="ROOT" Count="2""#));
+        assert_eq!(again.matches(r#"Name="CDJ-safe (MP3)""#).count(), 1);
+        assert!(again.contains(r#"Name="CDJ-safe (MP3)" Count="2""#));
+        assert_eq!(again.matches(r#"TrackID="8""#).count(), 1);
+        assert_eq!(again.matches(r#"TrackID="9""#).count(), 1);
+        assert_eq!(again.matches("<TEMPO ").count(), 2);
+        assert_eq!(again.matches(r#"<NODE Name="Gig" Type="1""#).count(), 2);
+        assert!(again.contains(
+            r#"<NODE Name="Sat" Type="1" KeyType="0" Entries="1"><TRACK Key="9"/></NODE>"#
+        ));
     }
 
     #[test]
