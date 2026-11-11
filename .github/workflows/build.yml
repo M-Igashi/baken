@@ -19,27 +19,35 @@ permissions:
   contents: read
 
 jobs:
+  # The runners the release builds on, so a glibc newer than Ubuntu 22.04's
+  # 2.35 shows up here.
   linux-x86_64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: stable
-      - run: cargo build --release
+          components: clippy
+      - run: cargo build --release --locked
       - run: ls -l target/release/baken
-      - run: cargo test -p baken-export --lib -- onelibrary sqlcipher
+      - run: target/release/baken --version
+      - name: Highest glibc version the binary asks for
+        run: objdump -T target/release/baken | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+      # Tests that need ffmpeg or the private fixtures skip themselves.
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   linux-aarch64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: stable
-      - run: cargo install cross --git https://github.com/cross-rs/cross
-      - run: cross build --release --target aarch64-unknown-linux-gnu
-      - run: ls -l target/aarch64-unknown-linux-gnu/release/baken
+      - run: cargo build --release --locked
+      - run: ls -l target/release/baken
+      - run: target/release/baken --version
 
   windows:
     runs-on: windows-latest
@@ -48,8 +56,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable
         with:
           toolchain: stable
-      - run: cargo build --release
-      - run: cargo test -p baken-export --lib -- onelibrary sqlcipher locate
+      - run: cargo build --release --locked
+      - run: target\release\baken.exe --version
+      - run: cargo test -p baken-export --lib --locked -- onelibrary sqlcipher locate
 
   licenses:
     runs-on: ubuntu-latest
