@@ -37,6 +37,14 @@ fn size(bytes: &u64) -> String {
     }
 }
 
+/// One line for each failed track, name and reason.
+fn failed_tracks(failures: &[(String, String)]) -> String {
+    failures
+        .iter()
+        .map(|(name, why)| format!("\n  {name}: {why}"))
+        .collect()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("My Settings not found (MYSETTING.DAT, MYSETTING2.DAT, DJMMYSETTING.DAT). Searched: {}. In rekordbox, switch to EXPORT mode and open Preferences > DJ System > My Settings once so rekordbox writes them, or pass --settings-dir at a directory holding the files; the PIONEER folder of any stick rekordbox exported has them. Or pass --no-settings to write the stick without them, so the player keeps its own settings.", searched_paths(searched))]
@@ -56,6 +64,11 @@ pub enum Error {
 
     #[error("None of the selected tracks can be exported (missing source files or analysis)")]
     NothingToExport,
+
+    /// Every track failed while the export ran. Returned before `export.pdb`
+    /// is written, so the stick keeps the library it had (issue #321).
+    #[error("Every track failed, so the stick keeps the library it had:{}", failed_tracks(.failures))]
+    AllTracksFailed { failures: Vec<(String, String)> },
 
     #[error("Device path is not a directory: {}", .0.display())]
     DeviceNotFound(PathBuf),

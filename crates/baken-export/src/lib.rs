@@ -1178,6 +1178,13 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
     if let Some(e) = stopped {
         return Err(e);
     }
+    // Sources that went away after the plan (a drive unplugged, a share that
+    // dropped). An empty library over a working one helps nobody.
+    if exported.is_empty() && !report.failures.is_empty() {
+        return Err(Error::AllTracksFailed {
+            failures: report.failures,
+        });
+    }
     still_mounted()?;
 
     let date = build::today();

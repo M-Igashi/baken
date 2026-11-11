@@ -67,6 +67,7 @@ baken headroom --lossless --boost-only ./album/
 - `--backup` is **off** unless provided; bare `--backup` uses `<target>/backup`
 - CSV report is written unless `--no-report`; `--report PATH` sets a custom location
 - `--analyze-only` runs analysis + report only, skips processing
+- The exit code is 1 when a file could not be analyzed or written, after the summary is printed
 - `--boost-only` skips files above the ceiling instead of lowering them
 
 Run `baken headroom --help` for the full flag reference.
