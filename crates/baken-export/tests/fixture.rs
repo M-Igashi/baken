@@ -412,7 +412,7 @@ fn fixture_selection(root: &Path) -> (Library, Vec<DeviceTrack>, Vec<usize>) {
 fn track_row_fields(pdb: &[u8]) -> Vec<(u32, String, String)> {
     use baken_export::pdb::string::decode;
     let mut out = Vec::new();
-    for pg in pdb.chunks_exact(4096).skip(1) {
+    for pg in pdb.as_chunks::<4096>().0.iter().skip(1) {
         let table = u32::from_le_bytes(pg[8..12].try_into().unwrap());
         if pg[0x1b] & 0x40 != 0 || table != 0 {
             continue;
