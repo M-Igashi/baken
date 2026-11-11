@@ -115,8 +115,18 @@ fn select_targets(
 }
 
 /// The first playlist at `path`; it has to be TrackID-referenced.
+///
+/// `path` is what `--playlist` gave, split at every `/` with each part
+/// trimmed. A playlist whose own name holds a slash (`House/Techno`) or
+/// starts or ends with a space cannot match part for part, so when nothing
+/// does, the names are compared the way the argument was read (issue #326).
 fn find_target(all: &[CollectedPlaylist], path: &[String]) -> crate::Result<CollectedPlaylist> {
-    match all.iter().find(|p| p.path == path) {
+    let as_typed = |p: &&CollectedPlaylist| super::split_playlist_path(&p.path.join("/")) == path;
+    let found = all
+        .iter()
+        .find(|p| p.path == path)
+        .or_else(|| all.iter().find(as_typed));
+    match found {
         None => Err(Error::PlaylistNotFound(path.join("/"))),
         Some(p) if p.key_type != "0" => Err(Error::UnsupportedPlaylistType {
             path: p.path.join("/"),
@@ -637,5 +647,23 @@ mod tests {
             msg.contains("KeyType"),
             "expected KeyType error, got: {msg}"
         );
+    }
+
+    /// Issue #326.
+    #[test]
+    fn a_playlist_whose_name_holds_a_slash_can_be_named() {
+        let xml = r#"<DJ_PLAYLISTS><COLLECTION Entries="0"></COLLECTION><PLAYLISTS><NODE Type="0" Name="ROOT" Count="3">
+<NODE Name="House" Type="0" Count="1"><NODE Name="Techno" Type="1" KeyType="0" Entries="0"/></NODE>
+<NODE Name="House/Techno" Type="1" KeyType="0" Entries="0"/>
+<NODE Name=" Drum / Bass " Type="1" KeyType="0" Entries="0"/>
+</NODE></PLAYLISTS></DJ_PLAYLISTS>"#;
+        let (_, all) = scan_xml(xml.as_bytes()).unwrap();
+        let find = |arg: &str| find_target(&all, &crate::rbsort::split_playlist_path(arg));
+
+        // A real folder path comes first, then the name read the same way.
+        assert_eq!(find("House/Techno").unwrap().path, ["House", "Techno"]);
+        assert_eq!(find("Drum / Bass").unwrap().path, [" Drum / Bass "]);
+        assert_eq!(find("Drum/Bass").unwrap().path, [" Drum / Bass "]);
+        assert!(find("Drum").is_err());
     }
 }
