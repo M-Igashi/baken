@@ -375,9 +375,23 @@ fn ensure_xml_unchanged(plan: &Plan) -> Result<()> {
 }
 
 /// Assign collision-free output filenames: source stem, FAT32-sanitized,
-/// lowercase `.mp3` extension, numeric suffix on collision.
+/// lowercase `.mp3` extension, numeric suffix on collision. A source that
+/// lives in `out_dir` keeps its name to itself, so no output, its own
+/// included, is ever written over a source (issue #314).
 fn plan_filenames(sources: &[SourceTrack], out_dir: &Path) -> Vec<PathBuf> {
-    let mut taken: HashSet<String> = HashSet::new();
+    // Case-insensitive, like FAT32 and exFAT, and blind to the Unicode form:
+    // macOS stores both forms of a name as one file (issue #325).
+    let key = |name: &str| crate::fsname::nfc_str(name).to_lowercase();
+    let mut taken: HashSet<String> = sources
+        .iter()
+        .map(|src| Path::new(&src.location))
+        .filter(|src| {
+            src.parent()
+                .and_then(|dir| dir.canonicalize().ok())
+                .is_some_and(|dir| dir == out_dir)
+        })
+        .filter_map(|src| Some(key(src.file_name()?.to_str()?)))
+        .collect();
     sources
         .iter()
         .map(|src| {
@@ -388,8 +402,7 @@ fn plan_filenames(sources: &[SourceTrack], out_dir: &Path) -> Vec<PathBuf> {
             let stem = sanitize_filename(&stem);
             let mut filename = format!("{}.mp3", stem);
             let mut n = 1;
-            // Case-insensitive: FAT32/exFAT don't distinguish case.
-            while !taken.insert(filename.to_lowercase()) {
+            while !taken.insert(key(&filename)) {
                 n += 1;
                 filename = format!("{} ({}).mp3", stem, n);
             }
@@ -402,6 +415,11 @@ fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
     let src_path = Path::new(&src.location);
     // The XML keeps `dst` as planned; only the file on disk takes the native name.
     let dst = &crate::fsname::native(dst);
+    // Reached through a link, say. Copying a file onto itself empties it, and
+    // a failed transcode removes its output.
+    if let (Ok(a), Ok(b)) = (src_path.canonicalize(), dst.canonicalize()) {
+        anyhow::ensure!(a != b, "the output {} is the source itself", dst.display());
+    }
     let info: SourceInfo = transcode::probe(src_path)?;
 
     if info.is_compatible_mp3() {
@@ -725,5 +743,34 @@ mod tests {
         assert_eq!(out[0], PathBuf::from("/out/Track One.mp3"));
         assert_eq!(out[1], PathBuf::from("/out/Track One (2).mp3"));
         assert_eq!(out[2], PathBuf::from("/out/bad_name_.mp3"));
+    }
+
+    #[test]
+    fn two_unicode_forms_of_one_name_do_not_share_an_output() {
+        let sources = vec![src("/a/caf\u{e9}.wav"), src("/b/cafe\u{301}.wav")];
+        let out = plan_filenames(&sources, Path::new("/out"));
+        assert_eq!(out[0], PathBuf::from("/out/caf\u{e9}.mp3"));
+        assert_eq!(out[1], PathBuf::from("/out/cafe\u{301} (2).mp3"));
+    }
+
+    #[test]
+    fn no_output_takes_the_name_of_a_source_in_the_output_folder() {
+        let dir = std::env::temp_dir().join(format!("baken-outdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("elsewhere")).unwrap();
+        let dir = dir.canonicalize().unwrap();
+        let path = |name: &str| dir.join(name).to_str().unwrap().to_string();
+        let sources = vec![
+            src(&path("elsewhere/Song.wav")),
+            src(&path("song.mp3")),
+            src(&path("low.MP3")),
+        ];
+
+        let out = plan_filenames(&sources, &dir);
+        assert_eq!(out[0], dir.join("Song (2).mp3"));
+        assert_eq!(out[1], dir.join("song (3).mp3"));
+        assert_eq!(out[2], dir.join("low (2).mp3"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
