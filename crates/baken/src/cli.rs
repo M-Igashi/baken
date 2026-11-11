@@ -6,6 +6,7 @@ use clap::Parser;
 use console::{style, Style};
 use dialoguer::{theme::ColorfulTheme, Confirm};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use crate::args::{Cli, Command, HeadroomArgs};
@@ -26,6 +27,15 @@ pub fn run() -> Result<()> {
 }
 
 fn run_headroom(args: &HeadroomArgs) -> Result<()> {
+    args.check().map_err(anyhow::Error::msg)?;
+    // The guided mode asks questions; without a terminal it would analyse
+    // everything and then fail at the first one.
+    if !args.is_non_interactive() && !std::io::stdin().is_terminal() {
+        anyhow::bail!(
+            "baken headroom without arguments asks questions and needs a terminal. \
+             Pass a path to run without prompts, or --analyze-only to only measure."
+        );
+    }
     print_banner();
 
     // Runs in the background during analysis; the notification is printed

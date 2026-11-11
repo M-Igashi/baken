@@ -1,9 +1,9 @@
 use clap::{Args, Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use baken_core::cdjsafe::check::Player;
 use baken_core::headroom::{
-    GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH,
+    self, GainMode, TpTargetMode, DEFAULT_TARGET_TRUE_PEAK, SPLIT_TARGET_TRUE_PEAK_HIGH,
     SPLIT_TARGET_TRUE_PEAK_LOW,
 };
 
@@ -134,11 +134,12 @@ pub struct HeadroomArgs {
     /// Files, directories, or glob patterns to process. Defaults to current directory.
     pub paths: Vec<String>,
 
-    /// Delivery True Peak ceiling in dBTP (default: -0.5). Negative values only.
+    /// Delivery True Peak ceiling in dBTP (default: -0.5). 0 or below.
     #[arg(
         long,
         value_name = "DB",
         allow_hyphen_values = true,
+        value_parser = ceiling,
         conflicts_with = "tp_split_bitrate"
     )]
     pub tp_target: Option<f64>,
@@ -198,7 +199,49 @@ fn optional_path(s: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(s))
 }
 
+/// An existing folder with audio in it that baken did not make as a backup.
+fn holds_music(dir: &Path) -> bool {
+    dir.is_dir()
+        && !dir.join(headroom::BACKUP_MARKER).exists()
+        && !headroom::scan_audio_files(dir).is_empty()
+}
+
+/// A ceiling above 0 dBTP would turn every file up into clipping.
+fn ceiling(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(db) if db.is_finite() && db <= 0.0 => Ok(db),
+        Ok(_) => Err("the ceiling has to be 0 dBTP or below".into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 impl HeadroomArgs {
+    /// `--backup` and `--report` take an optional value, so in
+    /// `baken headroom --backup ~/Music/Set` the folder is the option's value
+    /// and no path is left: the run would rewrite the current directory and
+    /// put its backup into the music folder. Catch the forms that can only
+    /// be that mistake.
+    pub fn check(&self) -> Result<(), String> {
+        if !self.paths.is_empty() {
+            return Ok(());
+        }
+        let hint = |flag: &str, value: &Path| {
+            format!(
+                "{flag} took {} as its value, which left no files to process. \
+                 Put the path first: baken headroom {} {flag}",
+                value.display(),
+                value.display()
+            )
+        };
+        if let Some(dir) = self.backup.as_deref().filter(|d| holds_music(d)) {
+            return Err(hint("--backup", dir));
+        }
+        if let Some(path) = self.report.as_deref().filter(|p| p.is_dir()) {
+            return Err(hint("--report", path));
+        }
+        Ok(())
+    }
+
     /// Returns true if any non-interactive option or path was provided.
     pub fn is_non_interactive(&self) -> bool {
         !self.paths.is_empty()
@@ -321,4 +364,54 @@ pub struct RbsortArgs {
     /// Write the result here instead of overwriting the input XML.
     #[arg(long, short, value_name = "PATH")]
     pub output: Option<PathBuf>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headroom(args: &[&str]) -> Result<HeadroomArgs, clap::Error> {
+        let argv = ["baken", "headroom"].iter().chain(args);
+        match Cli::try_parse_from(argv)?.command {
+            Command::Headroom(args) => Ok(args),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn the_ceiling_is_zero_or_below() {
+        assert_eq!(
+            headroom(&["--tp-target", "-1.5"]).unwrap().tp_target,
+            Some(-1.5)
+        );
+        assert_eq!(
+            headroom(&["--tp-target", "0"]).unwrap().tp_target,
+            Some(0.0)
+        );
+        for bad in ["3", "nan", "inf", "-inf", "loud"] {
+            assert!(headroom(&["--tp-target", bad]).is_err(), "{bad}");
+        }
+    }
+
+    /// Issue #319: `--backup <music folder>` leaves no path to process.
+    #[test]
+    fn a_music_folder_taken_as_the_backup_value_is_refused() {
+        let dir = std::env::temp_dir().join(format!("baken-args-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.mp3"), b"").unwrap();
+        let music = dir.to_str().unwrap();
+
+        assert!(headroom(&["--backup", music]).unwrap().check().is_err());
+        assert!(headroom(&["--report", music]).unwrap().check().is_err());
+        assert!(headroom(&[music, "--backup"]).unwrap().check().is_ok());
+        assert!(headroom(&["--backup", "new-folder"])
+            .unwrap()
+            .check()
+            .is_ok());
+
+        std::fs::write(dir.join(headroom::BACKUP_MARKER), b"").unwrap();
+        assert!(headroom(&["--backup", music]).unwrap().check().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
