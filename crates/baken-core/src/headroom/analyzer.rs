@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use mp3rgain::bs1770::Bs1770Analyzer;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -253,6 +253,17 @@ struct FfprobeOutput {
 
 /// Codec of the first audio stream from ffmpeg's input dump
 /// ("Stream #0:0 ... Audio: alac (alac / 0x63616C61), 44100 Hz ...").
+fn ensure_codec(expected: bool, path: &Path, found: &Option<String>) -> Result<()> {
+    if expected {
+        return Ok(());
+    }
+    bail!(
+        "the file holds {} audio, not what .{} says; its gain cannot be changed",
+        found.as_deref().unwrap_or("unknown"),
+        path.extension().unwrap_or_default().to_string_lossy()
+    )
+}
+
 fn parse_stderr_codec(stderr: &str) -> Option<String> {
     stderr
         .lines()
@@ -579,9 +590,17 @@ fn measure_ffmpeg(path: &Path) -> Result<Measurement> {
     // An .m4a can hold Apple Lossless as well as AAC. ALAC is lossless: it
     // gets the exact ffmpeg gain like FLAC instead of native AAC steps, which
     // mp3rgain rejects ("No AAC audio track found").
+    // The extension alone is not enough for a native gain: an MPEG Layer II
+    // stream named `.mp3` would be patched as Layer III, which damages it and
+    // changes no level (issue #329). symphonia takes the common codecs, so
+    // this path sees the odd ones.
+    let found = parse_stderr_codec(&stderr);
+    let holds = |codec: &str| found.as_deref().is_none_or(|f| f == codec);
     let codec = if scanner::is_mp3(path) {
+        ensure_codec(holds("mp3"), path, &found)?;
         Codec::Mp3
-    } else if scanner::is_aac(path) && parse_stderr_codec(&stderr).as_deref() != Some("alac") {
+    } else if scanner::is_aac(path) && found.as_deref() != Some("alac") {
+        ensure_codec(holds("aac"), path, &found)?;
         Codec::Aac
     } else {
         Codec::Lossless
