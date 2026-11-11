@@ -24,7 +24,7 @@ To put the MP3s straight onto a stick instead of importing them into rekordbox, 
    | MP3 not exactly 320 kbps CBR @ 44.1 kHz | Re-encode (lossy→lossy, reported) |
    | MP3 already 320 kbps CBR @ 44.1 kHz | **Byte-identical copy** (no generation loss, LAME header untouched) |
 
-3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**. Each playlist comes back as `<playlist>-CDJ-safe` in its own folders under a `CDJ-safe (MP3)` folder, so `Sets/Friday` becomes `CDJ-safe (MP3)/Sets/Friday-CDJ-safe`; a playlist none of whose tracks could be reached is left out. The `-CDJ-safe` suffix keeps an imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
+3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**. Each playlist comes back as `<playlist>-CDJ-safe` in its own folders under a `CDJ-safe (MP3)` folder, so `Sets/Friday` becomes `CDJ-safe (MP3)/Sets/Friday-CDJ-safe`; a playlist none of whose tracks could be reached is left out. The `-CDJ-safe` suffix keeps an imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import. Given an XML an earlier run wrote (its `-out.xml`, or a collection exported after importing one), `cdjsafe` brings it up to date instead of adding to it: an MP3 the collection already lists keeps its TrackID, and the playlists go into the one `CDJ-safe (MP3)` folder, a playlist of the same path being replaced.
 4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
 
 If any track fails to convert, **no XML is written**: a partial USB defeats the point. The XML is written through a temp file and a rename, so an interrupted run never leaves a truncated file either. The same applies if the collection XML changed while the transcodes ran (a rekordbox export made mid-run): the MP3s already converted are kept and the command tells you to re-run, which only copies them.
@@ -60,8 +60,8 @@ baken cdjsafe <XML> [--playlist <PATH>]... --check [--player <MODEL>]...
 | Argument / Flag | Description |
 |------|-------------|
 | `<XML>` | Exported rekordbox XML (required) |
-| `--playlist <PATH>` | Playlist to convert or check; repeat for several. Top-level: just the name; nested: `Folder/Playlist`. Omitted: every playlist (see above) |
-| `--out-dir <DIR>` | Directory for the MP3 files (required unless `--check`; created if missing) |
+| `--playlist <PATH>` | Playlist to convert or check; repeat for several. Top-level: just the name; nested: `Folder/Playlist`. A playlist whose own name holds a `/` is found by that name too. Omitted: every playlist (see above) |
+| `--out-dir <DIR>` | Directory for the MP3 files (required unless `--check`; created if missing). Sources in it are never written over: an output that would take a source's name gets `(2)` |
 | `--output <PATH>` (`-o`) | Output XML path. Defaults to `<input-stem>-out.<ext>` next to the input |
 | `--check` | Write nothing; report what each class of player does with every track (see above) |
 

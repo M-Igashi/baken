@@ -34,7 +34,7 @@ Two editions, one engine:
 | **Arch Linux (AUR)** | `yay -S baken-bin` |
 | **Cargo** | `cargo install baken` |
 
-The command line needs ffmpeg (`baken rbsort` does not). Homebrew, winget, and the AUR install it for you; with Cargo or a binary from the [Releases](https://github.com/M-Igashi/baken/releases) page, install ffmpeg yourself. The Mac app bundles its own.
+The command line needs ffmpeg (`baken rbsort` does not). Homebrew, winget, and the AUR install it for you; with Cargo or a binary from the [Releases](https://github.com/M-Igashi/baken/releases) page, install ffmpeg yourself. The Linux binaries there need glibc 2.34 or newer (Ubuntu 22.04, Debian 12, RHEL 9). The Mac app bundles its own.
 
 > [!NOTE]
 > **Renamed from `headroom` at v3.0.0** ([#60](https://github.com/M-Igashi/baken/issues/60)). The old `headroom` packages no longer receive updates, so reinstall as `baken`. The loudness tool is now `baken headroom`.
@@ -62,7 +62,7 @@ rekordbox's Auto Gain lives in rekordbox's library, so a player reading your USB
 
 - **Gain only.** No limiter, no compression, no EQ.
 - **MP3 and AAC are never re-encoded.** The gain goes into the format's own gain field, in 1.5 dB steps, with the audio bit for bit as it was.
-- **Cues and beatgrids stay linked.** Files are rewritten in place with their tags, after an optional backup.
+- **Cues and beatgrids stay linked.** Files are rewritten in place with their tags, after an optional backup. Only ReplayGain values go, since they describe the level before the gain.
 
 ```bash
 baken headroom --analyze-only ~/Music/DJ-Tracks      # report only, change nothing

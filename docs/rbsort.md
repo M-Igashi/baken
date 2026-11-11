@@ -36,7 +36,7 @@ baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
 | Argument / Flag | Description |
 |------|-------------|
 | `<XML>` | Exported rekordbox XML (required). Sorted in place unless `--output` is given; the file is replaced in one step (temp file + rename), so an interrupted run never leaves a truncated XML |
-| `--playlist <PATH>` | Sort only this playlist. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`). Omitted: every TrackID-referenced playlist is sorted |
+| `--playlist <PATH>` | Sort only this playlist. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`). A playlist whose own name holds a `/` (`"House/Techno"`) is found by that name too. Omitted: every TrackID-referenced playlist is sorted |
 | `--output <PATH>` (`-o`) | Write the result here instead of overwriting the input XML |
 
 ## Sort rules
