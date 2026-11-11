@@ -100,7 +100,8 @@ impl PlayerHistory {
                     .map(|((_, track), index)| (track, *list, index)),
             );
         }
-        self.entries - model.history_entries.len()
+        // Saturating: two lists sharing an id carry an entry once each.
+        self.entries.saturating_sub(model.history_entries.len())
     }
 }
 
@@ -133,7 +134,7 @@ pub fn preferences(pdb: &[u8]) -> Option<(Preferences, Vec<&'static str>)> {
         rows.into_iter()
             .map(|r| Some((u16_at(r, 0)? as u16, u16_at(r, 2)? as u16, decode(r, 4)?.0)))
             .collect::<Option<Vec<_>>>()
-            .filter(|c| !c.is_empty())
+            .filter(|c| !c.is_empty() && distinct(c.iter().map(|c| c.0)))
     });
     match columns {
         Some(c) => prefs.columns = c,
@@ -153,7 +154,8 @@ pub fn preferences(pdb: &[u8]) -> Option<(Preferences, Vec<&'static str>)> {
             rows.into_iter()
                 .map(small)
                 .collect::<Option<Vec<_>>>()
-                .filter(|rows| !rows.is_empty())
+                // Byte 2 is the row's id, OneLibrary's primary key.
+                .filter(|rows| !rows.is_empty() && distinct(rows.iter().map(|r| r[2])))
         });
         match rows {
             Some(rows) => *slot = rows,
@@ -232,10 +234,10 @@ fn live_rows(pdb: &[u8], table: u32) -> Option<Vec<&[u8]>> {
             let n = (page[0x18] as usize | (page[0x19] as usize) << 8) & 0x1fff;
             for r in 0..n {
                 let base = PAGE_LEN.checked_sub((r / 16) * 36)?;
-                if u16_at(page, base - 4)? >> (r % 16) & 1 == 0 {
+                if u16_at(page, base.checked_sub(4)?)? >> (r % 16) & 1 == 0 {
                     continue;
                 }
-                let off = u16_at(page, base - 6 - 2 * (r % 16))?;
+                let off = u16_at(page, base.checked_sub(6 + 2 * (r % 16))?)?;
                 rows.push(page.get(HEAP_START + off..)?);
             }
         }
@@ -245,6 +247,13 @@ fn live_rows(pdb: &[u8], table: u32) -> Option<Vec<&[u8]>> {
         index = u32_at(page, 0x0c)? as usize;
     }
     None
+}
+
+/// Whether no id comes twice. A table with a repeated id is damaged, and
+/// its rows would collide on OneLibrary's primary keys.
+fn distinct<T: Eq + std::hash::Hash>(ids: impl Iterator<Item = T>) -> bool {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter().all(|id| seen.insert(id))
 }
 
 #[cfg(test)]
@@ -415,5 +424,27 @@ mod tests {
         unique.sort_unstable();
         unique.dedup();
         assert_eq!(unique.len(), 455);
+    }
+
+    /// A row count the page cannot hold used to underflow (issue #330).
+    #[test]
+    fn a_corrupt_row_count_reads_as_no_table() {
+        let mut pdb = super::super::write(&Export::default()).unwrap();
+        for page in pdb.chunks_exact_mut(PAGE_LEN).skip(1) {
+            page[0x18] = 0xff;
+            page[0x19] |= 0x1f;
+        }
+        assert_eq!(PlayerHistory::read(&pdb), None);
+        assert_eq!(
+            preferences(&pdb).map(|(p, _)| p),
+            Some(Preferences::default())
+        );
+        assert!(artwork_ids(&pdb).is_empty());
+    }
+
+    #[test]
+    fn ids_are_distinct_or_not() {
+        assert!(distinct([1, 2, 3].into_iter()));
+        assert!(!distinct([1, 2, 1].into_iter()));
     }
 }
