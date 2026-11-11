@@ -9,556 +9,143 @@
 
 **What you prep in rekordbox is what plays on the deck.**
 
-rekordbox does three things in software that never survive the trip to a CDJ. Bake'n Deck bakes each one into the files themselves:
+rekordbox does three things in software that never survive the trip to a CDJ: Auto Gain, a key then BPM order, and tolerance for file formats. Bake'n Deck bakes each one into the files themselves and writes the USB stick, and your library stays in rekordbox.
 
-| Subcommand | The gap it fills | What it does |
+| Tool | The gap | What it does |
 |---|---|---|
-| [`baken headroom`](#loudness-normalizer-baken-headroom) | Auto Gain is ignored on USB export | Measures LUFS / True Peak and bakes safe gain into the audio file — **no limiter**, dynamics preserved, cues stay linked |
-| [`baken rbsort`](#rekordbox-playlist-sorter-baken-rbsort) | No compound Key+BPM sort in rekordbox | Sorts every playlist by **Alphanumeric key (1A→12B) then BPM** inside your exported XML — CDJs play it in that exact order |
-| [`baken cdjsafe`](#cdj-safe-transcoder-baken-cdjsafe) | Pre-NXS2 CDJs only play MP3 reliably | Transcodes whole playlists to **320 kbps CBR MP3** with **cues and beatgrid carried over** — the emergency-backup USB |
-| [`baken expressport`](#direct-usb-export-baken-expressport) | Exporting to USB means launching rekordbox and waiting | **Writes the stick directly** from the `collection.xml` rekordbox exports: device library, rekordbox's own analysis files, audio, My Settings |
+| [**Headroom**](#headroom-baken-headroom)<br>`baken headroom` | Auto Gain is never written into the file | Gain only: no limiter, no compression, dynamics untouched. Every track lands on one true peak ceiling, -0.5 dBTP, and cues stay linked |
+| [**Sort**](#sort-baken-rbsort)<br>`baken rbsort` | A key then BPM order cannot be stored | Alphanumeric key 1A→12B, then BPM, written into the playlist itself. The CDJ plays the set in that order |
+| [**CDJ Safe**](#cdj-safe-baken-cdjsafe)<br>`baken cdjsafe` | Older CDJs only trust MP3 | A whole playlist as 320 kbps CBR MP3, cues and beatgrids carried over. The emergency stick that plays in any booth |
+| [**USB Export**](#usb-export-baken-expressport)<br>`baken expressport` | Writing the stick means opening rekordbox | The stick for CDJ and XDJ players, written straight from the collection XML with rekordbox's own waveforms, beat grids, and phrases |
 
-🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** — full docs, workflow guides, and FAQ.
+Two editions, one engine:
 
-## Built for rekordbox, not instead of it
+- **The `baken` command line**: free, MIT-licensed, on macOS, Windows, and Linux, and it always will be.
+- **[Bake'n Deck for Mac](#baken-deck-for-mac)**: the same engine in a native app on the Mac App Store.
 
-There is no shortage of tools that set out to replace rekordbox. Bake'n Deck is not one of them. rekordbox is where you analyse tracks, set beat grids and cues, build playlists and keep your library. Bake'n Deck takes on only the few steps rekordbox leaves out of the trip to the CDJ, and it goes through the doors rekordbox itself provides.
+🌐 **[baken.ravers.workers.dev](https://baken.ravers.workers.dev)** has the guides, the comparison with other tools, and the FAQ.
 
-- **Your library stays in rekordbox.** Every subcommand works on the collection XML rekordbox exports, and results go back through rekordbox's own Imported Library (the `rekordbox xml` tree). Nothing to migrate, nothing to sync back.
-- **rekordbox's database is never touched.** Its `master.db` is never read, decrypted or written.
-- **rekordbox's own analysis is copied, not re-guessed.** On a stick, the waveforms and phrases are rekordbox's analysis files, byte for byte apart from the rewrites rekordbox itself makes at export time. Analysis is generated only for tracks rekordbox has never seen, and only when you ask for it.
-- **Measured, not guessed.** The stick format was worked out from real rekordbox 7 exports and is checked against them byte for byte. Player limits come from Pioneer DJ's operating instructions only, cited page by page. Whatever has not been measured or tried on a player is labelled as such.
-- **Tried on real players.** DJs have played sticks written by `baken` on a CDJ-3000, CDJ-2000NXS2 players, a CDJ-2000NXS and an XDJ-AZ ([#116](https://github.com/M-Igashi/baken/issues/116), [#242](https://github.com/M-Igashi/baken/issues/242), [#139](https://github.com/M-Igashi/baken/issues/139)). Where rekordbox is still the safer route, the docs say so.
-- **Supply chain, handled with care.** A tool that rewrites your music library and writes your gig stick has to be trustworthy down to its dependencies. Each new dependency is weighed before it comes in: SQLCipher and a vendored OpenSSL were dropped in 4.6.0, and on Apple platforms the encryption uses the operating system's own CommonCrypto since 4.6.1. Every pull request goes through dependency review, which fails on a known vulnerability of moderate severity or higher, and a licence check stops the build on any licence not on the accepted list. Every GitHub Action is pinned to a full commit SHA and workflows are read-only unless a job needs more; crates.io releases use Trusted Publishing, so no crates.io token is stored anywhere. Release archives carry SHA-256 checksums.
-- **The DJ decides.** Bake'n Deck reports facts and leaves the call to you: a suspect file is flagged, not quietly fixed, and no feature, AI or otherwise, takes over a decision that belongs to the DJ.
-
-## Bake'n Deck for Mac
-
-[**Bake'n Deck for Mac**](https://baken.ravers.workers.dev/get?from=baken-readme) is the native app edition, on the Mac App Store. The same `baken-core` engine and the same numbers, in a window: Playlist, which takes one rekordbox playlist through Headroom, Sort, and onto the stick in skippable steps, with the sorted order shown before anything is written; Headroom for a whole folder, with a review table and audio preview; USB Export, which writes the stick from your collection XML with the same code as `baken expressport`, with a pre-flight and a report, marks the tracks the player you choose would refuse, and converts to 320 kbps MP3 on the way with CDJ Safe; on macOS 27, a [BPM and key check against rekordbox and energy and vocal tags on the stick](https://baken.ravers.workers.dev/music-understanding) with Apple's Music Understanding; per-run timestamped backups with one-click restore; and Mac Tune-up for the macOS settings that slow rekordbox down. One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
-
-The `baken` command line stays free and MIT-licensed on macOS, Windows and Linux, and always will.
-
-If rekordbox is slow on your Mac, the five macOS settings behind most of it are written up in [docs/mac-tuneup.md](docs/mac-tuneup.md), with the manual steps ([日本語版](docs/mac-tuneup.ja.md)). No tool required, and nothing to buy.
-
-## Installation
-
-The Mac app bundles its own ffmpeg, so there is nothing else to install. The command line requires ffmpeg; package managers install it automatically.
+## Install
 
 | Platform | Command |
 |----------|---------|
 | **macOS (Homebrew)** | `brew install M-Igashi/tap/baken` |
 | **Windows (winget)** | `winget install M-Igashi.baken` |
 | **Arch Linux (AUR)** | `yay -S baken-bin` |
-| **Cargo** | `cargo install baken` (ffmpeg must be installed separately) |
+| **Cargo** | `cargo install baken` |
 
-Pre-built binaries are available on the [Releases](https://github.com/M-Igashi/baken/releases) page (ffmpeg must be installed separately). To build from source: `git clone https://github.com/M-Igashi/baken.git && cd baken && cargo build --release`.
-
-The processing logic is a separate library crate, [`baken-core`](https://crates.io/crates/baken-core), so other front-ends can embed it without the terminal UI.
-
-## Quick Start
-
-```bash
-baken headroom ~/Music/DJ-Tracks                # analyze & bake loudness gain (interactive)
-baken rbsort collection.xml                     # sort every playlist by Key+BPM, in place
-baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe
-```
-
-Run `baken --help` or `baken <subcommand> --help` for the full reference.
+The command line needs ffmpeg (`baken rbsort` does not). Homebrew, winget, and the AUR install it for you; with Cargo or a binary from the [Releases](https://github.com/M-Igashi/baken/releases) page, install ffmpeg yourself. The Mac app bundles its own.
 
 > [!NOTE]
-> **Renamed from `headroom` at v3.0.0** ([#60](https://github.com/M-Igashi/baken/issues/60)). The old `headroom` install channels (brew/winget/cargo/AUR) no longer receive updates — reinstall via the `baken` packages above. The loudness analyzer now lives under the `baken headroom` subcommand.
+> **Renamed from `headroom` at v3.0.0** ([#60](https://github.com/M-Igashi/baken/issues/60)). The old `headroom` packages no longer receive updates, so reinstall as `baken`. The loudness tool is now `baken headroom`.
 
-## Highlights
+## Quick start
 
-- **Single binary** — [mp3rgain](https://github.com/M-Igashi/mp3rgain) built in; only ffmpeg required (and `rbsort` doesn't even need that)
-- **Truly lossless MP3/AAC gain** — global_gain header modification in 1.5 dB steps, no re-encode
-- **Uniform True Peak ceiling** — every track lands at -0.5 dBTP by default (AES TD1008 §7B): quiet tracks are raised, loud ones lowered. Tunable via `--tp-target`, or `--boost-only` to never turn anything down
-- **Non-destructive** — automatic backups; `rbsort`/`cdjsafe` only ever touch an exported XML, never your rekordbox library
-- **Metadata preserved** — files overwritten in place and every tag carried across verbatim, so rekordbox cues, hot cues, and beatgrids stay linked
-- **Interactive or scriptable** — guided two-stage confirmation, or flags/globs for pipelines and CI
-
-## Loudness Normalizer (`baken headroom`)
-
-Why rekordbox's Auto Gain never reaches a CDJ, where the setting is and what writing the gain into the file changes: **[rekordbox Auto Gain: why it does not reach your CDJ](https://baken.ravers.workers.dev/auto-gain)** ([日本語](https://baken.ravers.workers.dev/ja/auto-gain)). The two ways to even out levels in the file, compared: **[Loudness normalization for DJs: a LUFS target or a true peak ceiling?](https://baken.ravers.workers.dev/loudness-normalization)** ([日本語](https://baken.ravers.workers.dev/ja/loudness-normalization)).
-
-### How It Works
-
-1. Scans the target directory for audio files (FLAC, AIFF, WAV, MP3, AAC/M4A, ALAC/M4A)
-2. Measures LUFS (Integrated Loudness) and True Peak per ITU-R BS.1770-4, decoding in-process (ffmpeg is used for files the built-in decoder cannot open). A file that does not decode cleanly is reported as damaged and left alone (see [Damaged Files](#damaged-files))
-3. Computes the gain that puts each file's True Peak at the ceiling (-0.5 dBTP by default). Quiet files get a positive gain, loud files a negative one; `--boost-only` restricts this to positive gains.
-4. Categorizes files by processing method:
-   - **Green**: Lossless files (ffmpeg)
-   - **Yellow**: MP3/AAC files with enough headroom for native lossless gain
-   - MP3/AAC files already within one 1.5 dB step of the ceiling are left alone: nothing is re-encoded to move a file by less than a step
-5. Displays categorized report
-6. Confirmation: "Apply lossless gain adjustment?" (lossless + native MP3/AAC)
-7. Creates backups and processes files
-
-#### Example
-
-<details>
-<summary>Full interactive session (28 files analyzed → 8 processed)</summary>
-
-```
-$ cd ~/Music/DJ-Tracks
-$ baken headroom
-
-╭─────────────────────────────────────╮
-│            baken v3.0.1             │
-│   Bake'n Deck — CDJ Prep Toolkit    │
-╰─────────────────────────────────────╯
-
-▸ Target directory: /Users/xxx/Music/DJ-Tracks
-
-✓ Found 28 audio files
-✓ Analyzed 28 files
-
-● 3 lossless files (ffmpeg, precise gain)
-  Filename        LUFS    True Peak    Target        Gain
-  track01.flac   -13.3    -3.2 dBTP   -0.5 dBTP   +2.7 dB
-  track02.aif    -14.1    -4.5 dBTP   -0.5 dBTP   +4.0 dB
-  track03.wav    -12.5    -2.8 dBTP   -0.5 dBTP   +2.3 dB
-
-● 3 MP3 files (native lossless, 1.5 dB steps)
-  Filename        LUFS    True Peak    Target        Gain
-  track04.mp3    -14.0    -5.5 dBTP   -0.5 dBTP   +4.5 dB
-  track05.mp3    -13.5    -6.0 dBTP   -0.5 dBTP   +4.5 dB
-  track11.mp3     -6.8     0.3 dBTP   -0.5 dBTP   -1.5 dB
-
-● 2 AAC/M4A files (native lossless, 1.5 dB steps)
-  Filename        LUFS    True Peak    Target        Gain
-  track08.m4a    -13.0    -4.0 dBTP   -0.5 dBTP   +3.0 dB
-  track09.m4a    -12.5    -4.5 dBTP   -0.5 dBTP   +3.0 dB
-
-▸ TP target: -0.5 dBTP (uniform delivery ceiling, AES TD1008 §7B)
-▸ Gain mode: normalize (raise quiet files, lower loud ones)
-
-✓ Report saved: ./baken_report_20250109_123456.csv
-
-? Apply lossless gain adjustment to 3 lossless + 3 MP3 (lossless gain) + 2 AAC/M4A (lossless gain) files? [y/N] y
-
-? Create backup before processing? [Y/n] y
-✓ Backup directory: ./backup
-
-✓ Done! 8 files processed.
-  • 3 lossless files (ffmpeg)
-  • 3 MP3 files (native, lossless)
-  • 2 AAC/M4A files (native, lossless)
-```
-
-</details>
-
-### Usage
-
-#### Interactive Mode
-
-Run `baken headroom` without further arguments to use the guided workflow in the current directory:
+Export your collection once from rekordbox (*File > Export Collection in xml format*), then:
 
 ```bash
-cd ~/Music/DJ-Tracks
-baken headroom
+baken headroom ~/Music/DJ-Tracks                 # measure, then bake loudness gain (asks before writing)
+baken rbsort collection.xml                      # sort every playlist by key, then BPM
+baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe
+baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday"
 ```
 
-The tool will guide you through:
-1. Scanning and analyzing all audio files
-2. Reviewing the categorized report
-3. Confirming lossless processing
-4. Creating backups (recommended)
+`baken <subcommand> --help` lists every flag.
 
-#### Scriptable Mode
+## The four tools
 
-Pass paths, globs, or flags to run non-interactively (useful for pipelines and scripts):
+### Headroom (`baken headroom`)
+
+rekordbox's Auto Gain lives in rekordbox's library, so a player reading your USB stick never sees it. Headroom measures loudness (LUFS) and true peak for every track, then writes one gain change into each file so the whole library sits at one true peak ceiling, -0.5 dBTP by default. Quiet tracks come up, loud ones come down, and nothing else is touched.
+
+- **Gain only.** No limiter, no compression, no EQ.
+- **MP3 and AAC are never re-encoded.** The gain goes into the format's own gain field, in 1.5 dB steps, with the audio bit for bit as it was.
+- **Cues and beatgrids stay linked.** Files are rewritten in place with their tags, after an optional backup.
 
 ```bash
-# Analyze a directory without modifying anything
-baken headroom --analyze-only ~/Music/DJ-Tracks
-
-# Apply only lossless gain, with backup, save report to a specific path
-baken headroom --lossless --backup ./bak --report results.csv ./album/
-
-# Operate on specific files
-baken headroom --lossless track1.mp3 track2.flac
-
-# Glob patterns
-baken headroom --lossless --no-report "./music/**/*.mp3"
-
-# Tighter ceiling for streaming-platform delivery (Spotify / Apple / YouTube max)
-baken headroom --lossless --tp-target -1.0 ./album/
-
-# Restore the legacy bitrate-dependent split (pre-v1.10 behaviour)
-baken headroom --lossless --tp-split-bitrate ./album/
-
-# Only raise quiet tracks, never lower loud ones (pre-v3.3 behaviour)
-baken headroom --lossless --boost-only ./album/
+baken headroom --analyze-only ~/Music/DJ-Tracks      # report only, change nothing
+baken headroom ~/Music/DJ-Tracks --backup            # apply, keeping the originals in a backup folder
 ```
 
-**Non-interactive defaults** (when any flag or path is provided):
-- `--lossless` is **on** unless `--no-lossless`
-- `--reencode` and `--no-reencode` are accepted for compatibility and do nothing: no file is re-encoded for gain
-- `--backup` is **off** unless provided; bare `--backup` uses `<target>/backup`
-- CSV report is written unless `--no-report`; `--report PATH` sets a custom location
-- `--analyze-only` runs analysis + report only, skips processing
-- `--boost-only` skips files above the ceiling instead of lowering them
+Reference: [docs/headroom.md](docs/headroom.md). Guides: [why Auto Gain does not reach your CDJ](https://baken.ravers.workers.dev/auto-gain), [a LUFS target or a true peak ceiling?](https://baken.ravers.workers.dev/loudness-normalization)
 
-Run `baken headroom --help` for the full flag reference.
+### Sort (`baken rbsort`)
 
-### Processing Methods
+rekordbox sorts by key or by BPM, one column at a time, and a CDJ plays a playlist in the order it was stored. Sort rewrites the track order inside every playlist of your exported `collection.xml`: Alphanumeric key 1A → 12B, ascending BPM inside each key. Names and folders stay as they are. Point rekordbox's Imported Library at the file once, and the `rekordbox xml` tree becomes a sorted mirror of your playlists.
 
-baken selects the optimal method for each file based on format and headroom:
-
-| Format | Method | Precision | Quality Loss |
-|--------|--------|-----------|--------------|
-| FLAC, AIFF, WAV | ffmpeg | Arbitrary | None |
-| MP3, AAC-LC (`.m4a`, `.mp4`, raw `.aac`) | mp3rgain (built-in) | 1.5dB steps | **None** (global_gain modification) |
-| ALAC/M4A | ffmpeg (re-encoded as ALAC) | Arbitrary | **None** (lossless codec) |
-
-A lossy file closer to the ceiling than one 1.5 dB step is left alone rather than re-encoded, so no MP3 or AAC ever loses a generation to a gain change.
-
-HE-AAC (v1 and v2, in `.m4a` or raw `.aac`) is skipped and listed after the analysis. `global_gain` only reaches its AAC core: the decoder rebuilds the high band from SBR data stored at absolute levels, so a native gain change would leave the top end where it was, and nothing short of a re-encode can move it ([#268](https://github.com/M-Igashi/baken/issues/268)).
-
-Lossless files are written back in their **original sample format** — a 16-bit AIFF stays 16-bit, a 32-bit float WAV stays 32-bit float — so file size does not grow and float masters are not truncated. FLAC is the one partial exception: ffmpeg's FLAC encoder only accepts 16- and 24-bit output, so an 8-bit FLAC becomes 16-bit and a 20-bit FLAC becomes 24-bit.
-
-A WAV keeps its header form too. ffmpeg writes `WAVE_FORMAT_EXTENSIBLE` for integer PCM deeper than 16 bits and for anything faster than 48 kHz, so a plain WAV, the way DAWs and download stores write it, gets its own `fmt ` chunk back after the rewrite and reads the same in `baken cdjsafe --check` before and after a run ([#218](https://github.com/M-Igashi/baken/issues/218)).
-
-#### Raising and Lowering
-
-The gain for each file is `ceiling − measured True Peak`. Files below the ceiling get a positive gain, files above it (loudness-war masters, inter-sample overs from lossy encoding) get a negative one, so every track ends up at the same True Peak with no limiter involved. Pass `--boost-only` to keep the pre-v3.3 behaviour of raising quiet files only and leaving loud files untouched.
-
-#### Damaged Files
-
-A file with audio frames the decoder rejects is reported as damaged, with the number of frames and where the first one is, and gets no gain. So does a file that measures above 0 LUFS or +20 dBTP, a level no real file reaches. The numbers of such a file describe what the decoder made of the damage, not the music: an AAC whose last two and a half minutes are corrupt measured +22.3 LUFS and +37.6 dBTP through ffmpeg, and up to 4.4.0 it was offered -39 dB, which would have left the track almost silent ([#223](https://github.com/M-Igashi/baken/issues/223)). The damaged part may also play as a burst of noise on a player, so replace the file from its source; rekordbox analyses such a file without complaint. The terminal lists every damaged file with its full path, and the CSV report names the reason in its `Damage` column.
-
-#### Two-Tier Approach for Lossy Formats (MP3/AAC)
-
-Each MP3 and AAC/M4A file is categorized into one of two tiers:
-
-1. **Native Lossless** — the gain is at least one 1.5 dB step in either direction
-   - Truly lossless global_gain header modification in 1.5dB steps
-   - Uses built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library
-   - Raising rounds down to whole steps (never overshoots the ceiling); lowering rounds up (the result never exceeds the ceiling, e.g. TP +0.3 dBTP → -1.5 dB → -1.2 dBTP)
-   - Applied automatically (no user confirmation needed)
-
-2. **Skip** — True Peak within 0.05 dB of the ceiling; a lossy file less than one 1.5 dB step below it; or above the ceiling with `--boost-only`
-   - A raise smaller than one step could only be applied by re-encoding, and a lossy generation to move a file already within 1.5 dB of the ceiling is not a trade worth making
-   - It is also exactly where every lossy file lands after a native step, since lowering rounds up. Re-encoding there meant offering a third of a processed library up for another lossy generation on every later run ([#138](https://github.com/M-Igashi/baken/issues/138))
-   - Lowering never re-encodes either: small overshoots take one full native step instead
-
-### True Peak Ceiling
-
-#### Default — uniform delivery target
-
-Every file targets **-0.5 dBTP** by default. This is the maximum-aggression value that [AES TD1008](https://www.aes.org/technical/documentDownloads.cfm?docID=731) §7B describes for high-rate codec inputs ("may work satisfactorily with as little as -0.5 dBTP for the limiting threshold").
-
-| File class | Ceiling | Native lossless raise requires |
-|---|---|---|
-| Lossless (FLAC, AIFF, WAV) | **-0.5 dBTP** | — |
-| MP3 (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP (any TP above the ceiling is lowered natively) |
-| AAC/M4A (any bitrate) | **-0.5 dBTP** | TP ≤ -2.0 dBTP (any TP above the ceiling is lowered natively) |
-
-#### Why a single ceiling — pre-encode vs delivery
-
-TD1008 has two related but distinct numbers:
-
-1. **Generic delivery recommendation (§4)** — "Maximum True Peak level not exceed -1 dBTP at the codec input of lossy-encoded streams." This is the *pre-encode* limiter threshold.
-2. **High-rate codec relaxation (§7B)** — "High-rate (e.g., 256 kbps) coders may work satisfactorily with as little as -0.5 dBTP" — also a *codec-input* threshold; "the limiting threshold may need to be reduced below the recommended -1.0 dBTP" for lower bit rates.
-
-Both bullets describe the *limiter that sits in front of the encoder*. baken operates in the opposite position: on **already-encoded delivery files**. There is no further codec stage downstream to absorb additional overshoot, so the bitrate-dependent slack TD1008 grants the pre-encode limiter does not transfer to the end product. A single, codec-agnostic delivery ceiling is the correct interpretation. -0.5 dBTP is chosen because it is the most aggressive value TD1008 sanctions for any limiter in the chain; lossless and high-rate lossy files were already at -0.5, and low-rate files now stop giving up an unnecessary 0.5 dB of loudness.
-
-See [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) for a longer walk-through with citations.
-
-#### Tuning the ceiling
-
-| Goal | Flag | Resulting ceiling |
-|---|---|---|
-| Default (max-aggressive delivery) | *(none)* | -0.5 dBTP for all files |
-| Match Spotify / Apple Music / YouTube delivery max | `--tp-target -1.0` | -1.0 dBTP for all files |
-| Conservative master with extra player headroom | `--tp-target -2.0` | -2.0 dBTP for all files |
-| Mirror TD1008's pre-encode interpretation | `--tp-split-bitrate` | -0.5 dBTP ≥256 kbps, -1.0 dBTP <256 kbps |
-
-`--tp-target` and `--tp-split-bitrate` are mutually exclusive. `--tp-split-bitrate` reproduces the pre-1.10 default exactly.
-
-The native-lossless raise threshold scales with the chosen ceiling: it is always `target − 1.5 dB` (e.g. `-0.5` → TP ≤ -2.0; `-1.0` → TP ≤ -2.5; `-2.0` → TP ≤ -3.5). Files above the ceiling are always lowered natively.
-
-### Output
-
-#### CSV Report
-
-| Filename | Format | Bitrate (kbps) | LUFS | True Peak (dBTP) | Target (dBTP) | Headroom (dB) | Method | Effective Gain (dB) | Damage |
-|----------|--------|----------------|------|------------------|---------------|---------------|--------|---------------------|--------|
-| track01.flac | Lossless | - | -13.3 | -3.2 | -0.5 | +2.7 | ffmpeg | +2.7 | |
-| track04.mp3 | MP3 | 320 | -14.0 | -5.5 | -0.5 | +5.0 | mp3rgain | +4.5 | |
-| track06.mp3 | MP3 | 320 | -12.0 | -1.5 | -0.5 | +1.0 | none | 0.0 | |
-| track08.m4a | AAC | 256 | -13.0 | -4.0 | -0.5 | +3.5 | native | +3.0 | |
-| track10.m4a | AAC | 256 | -12.5 | -1.2 | -0.5 | +0.7 | none | 0.0 | |
-| track11.m4a | - | 307 | -7.7 | 3.3 | -0.5 | -3.8 | none | +0.0 | 1460 audio frames failed to decode, the first at 3:41.7 |
-
-#### Backup Structure
-
-```
-./
-├── track01.flac             ← Modified
-├── track04.mp3              ← Modified
-├── track08.m4a              ← Modified
-├── subfolder/
-│   └── track06.mp3          ← Modified
-└── backup/                  ← Created by baken
-    ├── track01.flac         ← Original
-    ├── track04.mp3          ← Original
-    ├── track08.m4a          ← Original
-    └── subfolder/
-        └── track06.mp3      ← Original
+```bash
+baken rbsort ~/Music/rekordbox/collection.xml
+baken rbsort ~/Music/rekordbox/collection.xml --playlist "Sets/Friday"
 ```
 
-### Notes & Technical Details
+Reference: [docs/rbsort.md](docs/rbsort.md). Guide: [how to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort)
 
-- **Files are overwritten in place** after backup — rekordbox metadata remains linked
-- **Analyse processed FLAC files again in rekordbox before a USB export from rekordbox.** headroom re-encodes FLAC, which moves every frame, and rekordbox copies the seek table of its earlier analysis onto the stick unchanged, so the player's table no longer points at the frames ([#219](https://github.com/M-Igashi/baken/issues/219)). `baken expressport` rebuilds the table from the file itself. Only FLAC analyses carry such a table, and MP3 and AAC are adjusted in place
-- **Export processed tracks to a stick again, even if they are already on it.** rekordbox copies a track's file only the first time it exports that track; later exports update the track information on the stick but leave the old file there ([AlphaTheta community](https://forums.pioneerdj.com/hc/en-us/community/posts/24823970381465-Metadata-update-export-sync-to-USB), [#257](https://github.com/M-Igashi/baken/issues/257)). Delete the processed tracks from the device in rekordbox (or format the stick) and export again. `baken expressport` copies a changed file again on its own ([#231](https://github.com/M-Igashi/baken/issues/231))
-- **Tags survive the rewrite**: MP3/AAC native gain never rewrites the container, and where ffmpeg does (the lossless formats) the source's raw tags are put back over the output byte for byte. That covers the payloads DJ software writes and ffmpeg has nowhere to put: ID3v2 `GEOB`/`PRIV` frames on MP3, AIFF and WAV, and free-form `----` atoms on ALAC and AAC in `.m4a` ([#117](https://github.com/M-Igashi/baken/issues/117)). A WAV's Broadcast Wave `bext` chunk (description, originator, dates, time reference) goes back the same way, which ffmpeg would write with the description, originator and dates blank; only BWF v2 loudness values are left out, since the gain changes them ([#218](https://github.com/M-Igashi/baken/issues/218))
-- Only files whose True Peak is **more than 0.05 dB away from the ceiling** are shown and processed
-- MP3/AAC native lossless raising requires at least **1.5dB headroom**; lowering always uses whole native steps
-- MP3/AAC files closer to the ceiling than one step are left alone; nothing is re-encoded for gain
-- An AAC file with frames mp3rgain cannot parse is left alone: those frames would keep their old level while the rest moved, which plays as a click on each one
-- macOS resource fork files (`._*`) are automatically ignored
+### CDJ Safe (`baken cdjsafe`)
 
-#### Why 1.5dB Steps?
+Players older than the NXS2 are only dependable with MP3, and the failure shows up in the booth. CDJ Safe converts a playlist to 320 kbps CBR MP3 at 44.1 kHz and writes a matching playlist into a new XML, where each track inherits the source's beatgrid and cues verbatim. `--check` writes nothing and reports what each player will do with every track.
 
-Both MP3 and AAC store a "global_gain" value as an integer. Each ±1 increment changes the gain by `2^(1/4)` = **±1.5 dB**. This is a format-level constraint, not a tool limitation.
+```bash
+baken cdjsafe collection.xml --playlist "Sets/Friday" --check
+baken cdjsafe collection.xml --playlist "Sets/Friday" --out-dir ~/Music/cdjsafe-friday
+```
 
-baken uses the built-in [mp3rgain](https://github.com/M-Igashi/mp3rgain) library to directly modify this field — no decoding or re-encoding involved.
+Reference: [docs/cdjsafe.md](docs/cdjsafe.md)
 
-#### Native Lossless Threshold
+### USB Export (`baken expressport`)
 
-Since native lossless gain only works in 1.5 dB steps, raising a file requires at least 1.5 dB of headroom to the configured target ceiling. The threshold scales automatically:
+A player reads a stick through a handful of files: the Device Library (`export.pdb`), the analysis files for each track, the audio, and your My Settings. `baken expressport` writes them straight from `collection.xml`, with no rekordbox launch. The waveforms, beat grid, and phrases are rekordbox's own analysis files, copied.
 
-| Target | Requires TP ≤ |
+- A re-run writes only what changed.
+- `--cdjsafe` puts every track on the stick as 320 kbps CBR MP3.
+- `--onelibrary` also writes OneLibrary for the CDJ-3000X, XDJ-AZ, OPUS-QUAD, and OMNIS-DUO. An XDJ-AZ has read it; the other three have not been tried yet.
+- Give it a stick of its own, formatted as FAT32 with an MBR partition table, and check the stick on a player before a gig, as with any stick.
+
+```bash
+baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday" --dry-run
+baken expressport collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday"
+```
+
+Reference: [docs/expressport.md](docs/expressport.md). Guides: [export to a USB stick without opening rekordbox](https://baken.ravers.workers.dev/usb-export), [what a USB export touches, measured](https://baken.ravers.workers.dev/usb-export-measured)
+
+## Built for rekordbox, not instead of it
+
+There is no shortage of tools that set out to replace rekordbox. Bake'n Deck is not one of them. rekordbox is where you analyse tracks, set beat grids and cues, build playlists, and keep your library. Bake'n Deck takes on only the few steps rekordbox leaves out of the trip to the CDJ.
+
+- **Your library stays in rekordbox.** Every tool works on the collection XML rekordbox exports, and results go back through rekordbox's own Imported Library. Nothing to migrate, nothing to sync back.
+- **rekordbox's database is never touched.** Its `master.db` is never read, decrypted, or written.
+- **rekordbox's own analysis is copied, not re-guessed.** Analysis is generated only for tracks rekordbox has never seen, and only when you ask for it.
+- **Measured, not guessed.** The stick format is checked byte for byte against real rekordbox 7 exports, and player limits come from Pioneer DJ's operating instructions only. Whatever has not been measured or tried on a player is labelled as such.
+- **Tried on real players.** DJs have played sticks written by `baken` on a CDJ-3000, CDJ-2000NXS2 players, a CDJ-2000NXS, and an XDJ-AZ ([#116](https://github.com/M-Igashi/baken/issues/116), [#242](https://github.com/M-Igashi/baken/issues/242), [#139](https://github.com/M-Igashi/baken/issues/139)).
+- **Supply chain, handled with care.** Dependencies are weighed before they come in, checked on every pull request, and releases carry checksums. See [SECURITY.md](SECURITY.md#supply-chain).
+- **The DJ decides.** A suspect file is flagged, not quietly fixed, and no feature, AI or otherwise, takes over a decision that belongs to the DJ.
+
+## Bake'n Deck for Mac
+
+[**Bake'n Deck for Mac**](https://baken.ravers.workers.dev/get?from=baken-readme) runs the same `baken-core` engine, with the same numbers, in a window.
+
+- **Playlist** takes one rekordbox playlist through Headroom, Sort, and onto the stick in skippable steps, and shows the sorted order before anything is written.
+- **Headroom** for a whole folder, with a review table, audio preview, and per-run backups with one-click restore.
+- **USB Export** with a pre-flight and a report. It marks the tracks the player you choose would refuse, and converts to 320 kbps MP3 on the way with CDJ Safe.
+- **On macOS 27**, a [BPM and key check against rekordbox, and energy and vocal tags on the stick](https://baken.ravers.workers.dev/music-understanding).
+- **Mac Tune-up** for the macOS settings that slow rekordbox down.
+
+One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
+
+## Documentation
+
+| | |
 |---|---|
-| -0.5 dBTP (default) | -2.0 dBTP |
-| -1.0 dBTP (`--tp-target -1.0`) | -2.5 dBTP |
-| -2.0 dBTP (`--tp-target -2.0`) | -3.5 dBTP |
+| [docs/headroom.md](docs/headroom.md) | `baken headroom` reference: formats, 1.5 dB steps, the ceiling, the report, backups |
+| [docs/rbsort.md](docs/rbsort.md) | `baken rbsort` reference: the rekordbox workflow, flags, sort rules |
+| [docs/cdjsafe.md](docs/cdjsafe.md) | `baken cdjsafe` reference: the conversion, importing back, `--check` and the player tables |
+| [docs/expressport.md](docs/expressport.md) | `baken expressport` reference: what is written, flags, My Tags, stick formats, speed |
+| [docs/true-peak-ceiling.md](docs/true-peak-ceiling.md) | Why the ceiling is -0.5 dBTP for every file |
+| [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) | A six-track example: one-column sort against key then BPM |
+| [docs/dj-software-compatibility.md](docs/dj-software-compatibility.md) | Headroom next to Traktor, Serato, Engine DJ, and Lexicon |
+| [docs/mac-tuneup.md](docs/mac-tuneup.md) | Five macOS settings that slow rekordbox down, with the manual steps ([日本語](docs/mac-tuneup.ja.md)). No tool required |
+| [bench/README.md](bench/README.md) | The USB export benchmark against rbxport: script and raw results |
 
-Example: 320 kbps file at -3.5 dBTP, default target → 2 steps (+3.0 dB) → -0.5 dBTP (optimal).
-
-Lowering has no such threshold: a file at +0.3 dBTP takes one step down (-1.5 dB) and lands at -1.2 dBTP, slightly under the ceiling rather than re-encoded to hit it exactly.
-
-#### Why files under the threshold are left alone
-
-A lossy file within one step of the ceiling can only be moved by re-encoding it, and that costs a generation of quality to gain less than 1.5 dB. It is also where every file ends up after a native step, so re-encoding there would mean re-encoding a large part of the library again on every later run. Both directions therefore stop at whole steps, and a run over a library that has already been processed finds nothing left to do.
-
-## rekordbox Playlist Sorter (`baken rbsort`)
-
-rekordbox does not expose a "sort by Key AND BPM" option in its UI. `baken rbsort` takes an exported rekordbox XML and rewrites every playlist in it so its tracks run **Alphanumeric key (1A → 12B) ascending** then **BPM ascending**. Playlists keep their names and folder positions; only the track order inside each one changes. rekordbox reads the sorted file back as its `rekordbox xml` tree, so you end up with a Key+BPM-sorted mirror of your `Playlists` sitting next to the originals.
-
-This is the same idea as `baken headroom` applied to playlist order: rekordbox's software-only features (Auto Gain, multi-column sort) don't follow your tracks to the CDJ. `rbsort` bakes Key+BPM order into the playlist itself — so when you export to USB in rekordbox's EXPORT mode, the CDJ plays the set in that exact order with no on-deck reordering.
-
-Step-by-step, with the sort rules, a comparison against single-column sort and the questions people ask: **[How to sort a rekordbox playlist by key and BPM](https://baken.ravers.workers.dev/sort)** ([日本語](https://baken.ravers.workers.dev/ja/sort)).
-
-### Workflow
-
-1. **Export**: *File > Export Collection in xml format*. Always save to the same path, e.g. `~/Music/rekordbox/collection.xml`. Either key display format works (*Preferences > View > Key display format*, Classic or Alphanumeric); the order is the same.
-2. **Run rbsort** on that file. It is sorted in place:
-   ```bash
-   baken rbsort ~/Music/rekordbox/collection.xml
-
-   # Only one playlist (top-level: just the name; nested: "Folder/Playlist")
-   baken rbsort ~/Music/rekordbox/collection.xml --playlist "Sets/Friday"
-
-   # Keep the export untouched and write elsewhere
-   baken rbsort ~/Music/rekordbox/collection.xml -o ~/Music/rekordbox/sorted.xml
-   ```
-3. **One-time setup**: *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select that same file.
-4. **Restart rekordbox** (it only re-reads the XML on startup) and open the **`rekordbox xml` tree** in the left sidebar. It is a *separate* tree from your main library — switch to it from the sidebar icon column on the far left. It mirrors your `Playlists` folder structure, every playlist already in Key+BPM order: `1A` (lowest BPM) → `1B` → `2A` → … → `12B` (highest BPM).
-5. **Use it**: drag any playlist from the `rekordbox xml` tree into your main `Playlists` (it lands as a new playlist; your original is unchanged), switch to *EXPORT* mode, plug in your USB / SD, then **right-click the playlist → Export Playlist**. CDJs read tracks in playlist order by default — your Key+BPM sort plays back on the deck in that exact order.
-
-**Keeping it in sync**: whenever your playlists change, repeat steps 1, 2 and the restart. The file path never changes, so the Imported Library setting keeps pointing at the freshly sorted export and the `rekordbox xml` tree stays an always-sorted copy of your library.
-
-> The sorted playlists live **only** in the `rekordbox xml` tree, not in your main `Playlists`. If you only see unsorted originals, you're looking at the local library — switch sidebar trees.
-
-### Usage
-
-```
-baken rbsort <XML> [--playlist <PATH>] [-o <PATH>]
-```
-
-| Argument / Flag | Description |
-|------|-------------|
-| `<XML>` | Exported rekordbox XML (required). Sorted in place unless `--output` is given; the file is replaced in one step (temp file + rename), so an interrupted run never leaves a truncated XML |
-| `--playlist <PATH>` | Sort only this playlist. Top-level playlists: just the name (e.g. `"Happy House and Trance"`). Nested: `/`-separate folder/playlist names (e.g. `"Folder/SubFolder/MyPlaylist"`). Omitted: every TrackID-referenced playlist is sorted |
-| `--output <PATH>` (`-o`) | Write the result here instead of overwriting the input XML |
-
-### Sort Rules
-
-- **Primary**: Alphanumeric key ascending — `1A → 1B → 2A → 2B → … → 12A → 12B`
-- **Secondary**: BPM ascending within each key group
-- Tracks with no key sort **after** all known keys; within a key group, tracks with BPM 0 / unanalyzed sort last
-
-See [docs/rbsort-sort-comparison.md](docs/rbsort-sort-comparison.md) for a 6-track walk-through showing how this compound sort differs from rekordbox / CDJ's single-column *Sort by Key* and *Sort by BPM*. The same walk-through, with the workflow around it, is at [baken.ravers.workers.dev/sort](https://baken.ravers.workers.dev/sort).
-
-### Notes
-
-- The `Tonality` field may be in either of rekordbox's key display formats: Alphanumeric (`8A`) or Classic (`Am`, `F#m`, `Db`). A Classic key sorts at its Alphanumeric position (`Am` with `8A`, `C` with `8B`). Anything else is sorted last.
-- Only `KeyType="0"` (TrackID-referenced) playlists are sorted. In all-playlists mode, other playlists pass through unchanged; for a single target, `rbsort` errors out.
-- Only the order of `<TRACK Key="…"/>` references changes. Playlist names, folder structure, `Count`/`Entries` attributes, whitespace and everything else in the XML are preserved byte-for-byte, so running `rbsort` twice on the same file is a no-op.
-- `baken rbsort` does **not** require ffmpeg — only the `headroom` and `cdjsafe` subcommands do.
-
-## CDJ-safe Transcoder (`baken cdjsafe`)
-
-*Added in v3.0.0. Design discussion: [#40](https://github.com/M-Igashi/baken/issues/40).*
-
-Pre-NXS2 CDJs (CDJ-2000NXS, CDJ-2000, CDJ-900NXS, CDJ-850, …) have inconsistent or absent support for anything that isn't MP3: FLAC needs an NXS2 (2016+), and ALAC/AIFF/WAV/AAC fail on specific firmware combinations — sometimes mid-set. `baken cdjsafe` is the emergency-backup path: it takes a gig playlist (or several, or every playlist in the XML) and produces a USB-ready set of files that **will play on any CDJ**, with your cues and beatgrid intact.
-
-```bash
-baken cdjsafe ~/Music/rekordbox/collection.xml \
-  --playlist "Sets/Friday" \
-  --out-dir ~/Music/cdjsafe-friday
-```
-
-Repeat `--playlist` for several playlists, or leave it out to take every playlist in the XML.
-
-### What it does
-
-1. Reads the chosen playlists from your exported `collection.xml`: the ones given with `--playlist`, or every TrackID-referenced playlist when it is left out, except the ones an earlier run wrote (the `CDJ-safe (MP3)` folder and playlists named `…-CDJ-safe`, in case you imported them back into rekordbox). A track in several playlists is converted once ([#255](https://github.com/M-Igashi/baken/issues/255)).
-2. Converts every track whose file exists to the CDJ-safe profile. Tracks whose files are missing on disk, or whose `Location` is not a decodable `file://` URL (a hand-edited row), are listed as skipped with the reason and left out (the emergency stick still gets everything that is there); only a run with nothing reachable at all is an error. Profile: — **320 kbps CBR MP3 @ 44.1 kHz**, ID3v2.3 tags, artwork kept (JPEG, capped at 500×500):
-
-   | Source | Action |
-   |---|---|
-   | FLAC, WAV, AIFF, ALAC | Re-encode |
-   | AAC/M4A (any bitrate) | Re-encode |
-   | MP3 not exactly 320 kbps CBR @ 44.1 kHz | Re-encode (lossy→lossy, reported) |
-   | MP3 already 320 kbps CBR @ 44.1 kHz | **Byte-identical copy** (no generation loss, LAME header untouched) |
-
-3. Emits an updated XML (default: `<input>-out.xml`) where each converted track is a **new entry with a fresh TrackID** that inherits the source's beatgrid (`TEMPO`) and hot/memory cues (`POSITION_MARK`) **verbatim**. Each playlist comes back as `<playlist>-CDJ-safe` in its own folders under a `CDJ-safe (MP3)` folder, so `Sets/Friday` becomes `CDJ-safe (MP3)/Sets/Friday-CDJ-safe`; a playlist none of whose tracks could be reached is left out. The `-CDJ-safe` suffix keeps an imported playlist from colliding with the original. New entries get a `[cdjsafe]` marker appended to their Comments so they're distinguishable after import.
-4. Reports every lossy→lossy re-encode so you can refresh those tracks from lossless masters before the next gig.
-
-If any track fails to convert, **no XML is written** — a partial USB defeats the point. The XML is written through a temp file and a rename, so an interrupted run never leaves a truncated file either. The same applies if the collection XML changed while the transcodes ran (a rekordbox export made mid-run): the MP3s already converted are kept and the command tells you to re-run, which only copies them.
-
-### Importing back into rekordbox
-
-1. *Preferences > Advanced > Database > rekordbox xml > Imported Library* → select the output XML, restart rekordbox.
-2. Open the `rekordbox xml` sidebar tree → `CDJ-safe (MP3)`.
-3. Right-click the imported tracks → **Import to Collection**. Cues and beatgrid come with them — no re-analysis needed.
-4. Export the playlists to USB in EXPORT mode as usual.
-
-### Checking playlists first (`--check`)
-
-```sh
-baken cdjsafe ~/Music/rekordbox/collection.xml --playlist "Sets/Friday" --check
-```
-
-Probes every track and prints, per track, what a pre-NXS2 player (CDJ-2000NXS, CDJ-900NXS), a CDJ-2000NXS2 and a CDJ-3000 will do with it: ✓ within the formats the player's operating instructions list, ✗ outside them (with the reason, such as FLAC on a pre-NXS2 player, a 32-bit float WAV, or a 192 kHz file), and ? where the manual says nothing (mono or multichannel files, `WAVE_FORMAT_EXTENSIBLE` WAVs, AIFF-C, VBR MP3 without a Xing header). A summary line per player follows, such as "3 of 42 tracks will not play on a pre-NXS2 player". Nothing is written and `--out-dir` is not needed. With more than one playlist (leave `--playlist` out to check every playlist) the per-track table is left out: only the tracks that need a look are listed, each with its format, and the summary still counts every track. The exit code is 1 when a player refuses a track or a track is missing or unreadable, so a script can run it before an export.
-
-`--player` checks against other players instead of those three, and can be given more than once: `--player xdj-az --player cdj-3000x`, or `--player all` for every table at once. Known are the pre-NXS2 class (also `CDJ-2000NXS` or `CDJ-900NXS`), CDJ-2000NXS2, CDJ-3000, CDJ-3000X, XDJ-1000MK2, XDJ-XZ, XDJ-RX3, XDJ-AZ, OPUS-QUAD and OMNIS-DUO ([#220](https://github.com/M-Igashi/baken/issues/220)). The exit code then follows the players asked for. The CDJ-3000X, XDJ-AZ and OPUS-QUAD list exactly what the CDJ-3000 lists; the OMNIS-DUO and the XDJ-1000MK2 stop at 48 kHz for lossless files; the XDJ-XZ (FLAC from firmware 1.10) and the XDJ-RX3 also stop at 48 kHz, play MP3 and AAC down to 32 kHz, and list no Apple Lossless. The CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO need OneLibrary, which `baken expressport` writes only with `--onelibrary`.
-
-The tables come from Pioneer's own operating instructions only, never from another tool's table; each one is cited in `crates/baken-core/src/cdjsafe/matrix.rs`. The CDJ-2000NXS2, for instance, lists WAV, AIFF, Apple Lossless and FLAC at up to 96 kHz from USB, while the CDJ-3000 lists MP3 and AAC at 44.1 and 48 kHz only. Every manual also says that some files do not play even in a supported format, so ✓ means "within the list", not a guarantee. `--check` only reports: a conversion still converts every track.
-
-MP3 and AAC tracks are also decoded to see where their audio stops. An encoder low-passes what its bitrate cannot pay for (LAME at about 17 kHz for 128 kbps, 19.5 kHz for 256 and 20 kHz for 320), and re-encoding at a higher bitrate keeps the lower cutoff, so a "320" made from a 128 kbps file has nothing above 17 kHz. A track of 256 kbps or more with nothing above 19 kHz, or of 192 kbps or more with nothing above 17 kHz, is listed with the measured frequency as likely transcoded from a lower bitrate ([#222](https://github.com/M-Igashi/baken/issues/222)). That is a measurement, not a verdict: some masters have little top end, so listen before deciding. It never changes the exit code, and nothing is skipped or converted because of it. Decoding costs about half a second of CPU per lossy track, spread over all cores: a 1374-track playlist with 533 MP3 and AAC files took 35 s instead of 8.
-
-### Usage
-
-```
-baken cdjsafe <XML> [--playlist <PATH>]... --out-dir <DIR> [-o <PATH>]
-baken cdjsafe <XML> [--playlist <PATH>]... --check [--player <MODEL>]...
-```
-
-| Argument / Flag | Description |
-|------|-------------|
-| `<XML>` | Exported rekordbox XML (required) |
-| `--playlist <PATH>` | Playlist to convert or check; repeat for several. Top-level: just the name; nested: `Folder/Playlist`. Omitted: every playlist (see above) |
-| `--out-dir <DIR>` | Directory for the MP3 files (required unless `--check`; created if missing) |
-| `--output <PATH>` (`-o`) | Output XML path. Defaults to `<input-stem>-out.<ext>` next to the input |
-| `--check` | Write nothing; report what each class of player does with every track (see above) |
-
-### Notes
-
-- The output profile is locked (320 kbps CBR / 44.1 kHz / ID3v2.3) — it's the only combination that plays reliably across the whole CDJ fleet, and CBR sidesteps rekordbox's VBR cue-offset problem.
-- ffmpeg writes a valid Xing/LAME header, so rekordbox compensates the LAME encoder delay and cues stay sample-aligned.
-- Filenames are FAT32/exFAT-sanitized; collisions get a numeric suffix.
-- Requires ffmpeg (with `libmp3lame`; `soxr` resampling is used when available).
-
-## Direct USB Export (`baken expressport`)
-
-*Added in v3.5.0 as a beta, out of beta since v4.3.0. The output is byte-checked against real rekordbox exports (design record: [#115](https://github.com/M-Igashi/baken/issues/115)), and testers have played sticks written by `baken` on a CDJ-3000 (firmware 3.22) and on CDJ-2000NXS2 players (1.85 and 1.87): playlists, beat grid, waveforms, cues, keys, search and My Settings, with copied and with generated analysis ([#116](https://github.com/M-Igashi/baken/issues/116), where further player reports are welcome). As with any stick, check it on a player before a gig.*
-
-`expressport` writes the USB stick itself, straight from your exported `collection.xml`: the device library (`export.pdb`), the analysis files (`PIONEER/USBANLZ`), the audio under `Contents/`, and your CDJ/DJM My Settings. No rekordbox launch, no re-import, no waiting for analysis. rekordbox's own database is never read. The USB Export page in [Bake'n Deck for Mac](#baken-deck-for-mac) (1.2.0 and later) runs this same export in a window.
-
-```bash
-baken expressport ~/Music/rekordbox/collection.xml --device /Volumes/MYUSB --playlist "Sets/Friday" --playlist "Sets/Warmup"
-```
-
-How it works, FAT32 and MBR, which players, and what rekordbox 7's library inconsistency warning means: **[Export rekordbox playlists to a USB stick without opening rekordbox](https://baken.ravers.workers.dev/usb-export)** ([日本語](https://baken.ravers.workers.dev/ja/usb-export)).
-
-### How it works
-
-- Title, artist, BPM, key, colour, rating, playlists, beat grid and cues all come from the XML. The key is shown on the player the way the XML spells it, as on a stick rekordbox exports: Classic `Am` stays `Am`, Alphanumeric `8A` stays `8A` (up to 4.1.1 a Classic key was left blank). Hot cues keep the colour set in rekordbox: each of its 16 hot cue colours goes onto the stick with the colour code and colour bytes rekordbox itself writes for it ([#236](https://github.com/M-Igashi/baken/issues/236)); up to 4.4.0 every colour but green went out as code 0.
-- Active loops (a memory loop the player starts by itself when playback reaches it) have no field in the XML, so a memory loop whose name starts with `[active]` (in any case) becomes the track's active loop, as in `[active] Build`; the marker is left out of the comment the player shows ([#210](https://github.com/M-Igashi/baken/issues/210)). A player takes one active loop per track: when several memory loops are marked, the earliest is used and the plan says so. rekordbox's own XML does not say which loop is active, so a loop set active in rekordbox needs the marker in its comment as well.
-- Waveforms are copied, not computed: every track should have been analysed in rekordbox once, and its `.DAT`/`.EXT`/`.2EX` files are copied from rekordbox's local analysis cache (`~/Library/Pioneer/rekordbox/share/PIONEER/USBANLZ`, `%APPDATA%\Pioneer\rekordbox\share\PIONEER\USBANLZ` on Windows, or `PIONEER/Master/share/PIONEER/USBANLZ` on a library drive). A library drive is looked for on every attached volume: on a Mac under `/Volumes`; on Linux under `/media`, `/mnt`, and `/run/media/$USER`; on Windows at the root of every local drive letter, removable or not (up to 4.8.0 Windows looked only in `%APPDATA%`). Network and optical drives are not searched, so a library there needs `--anlz-dir`. On the way the path is rewritten, the cue sections are filled from the XML and the phrase analysis is masked exactly as rekordbox does at export time. Tracks with no analysis are listed and left out. A FLAC's seek table in that analysis points at byte offsets in the file rekordbox analysed, so `expressport` checks it against the file and, when the file has changed since (a `baken headroom` run re-encodes FLAC), rebuilds it from the file the way rekordbox writes it; the plan lists those tracks ([#219](https://github.com/M-Igashi/baken/issues/219)).
-- `--generate-analysis` computes the analysis files from the audio instead, for tracks rekordbox has never seen (a Mixxx or Traktor library converted to `collection.xml`, or a machine without rekordbox). The beat grid and the cues come from the XML as always, so a track whose XML has no `TEMPO` gets no beat grid (the plan says how many; the player then detects the BPM while playing, and quantize and beat sync cannot use it); the waveforms are decoded and measured by `baken` ([#147](https://github.com/M-Igashi/baken/issues/147)). The scrolling waveform reproduces rekordbox's own to the pixel on the tracks it was checked against; the colour, three-band and preview waveforms are close approximations. Phrase analysis cannot be generated and is left out. Tracks that do have a rekordbox analysis are still copied, because copying is exact.
-- Audio already on the stick stays when it still matches its source, so re-running after a playlist change is quick: a copied file when its size and 64 KiB at its start, middle and end match the source, a `--cdjsafe` MP3 when it is whole and was written at least an hour after the source last changed (the hour absorbs the clock change, which shifts every time on a FAT stick). Anything else is written again, so a re-export after `baken headroom`, which changes MP3 and AAC files in place at the same size, carries the new audio ([#231](https://github.com/M-Igashi/baken/issues/231)). `export.pdb` is rebuilt every run.
-- Before writing anything, `expressport` adds up what the run will write (audio not on the stick yet, the analysis files, `export.pdb` and the settings, in the stick's allocation units, plus 1 MiB) and stops when the stick has less free; the plan and `--dry-run` show both figures (macOS and Linux). If the stick still fills up, is pulled out or stops answering during the run, the export stops at that track and leaves `export.pdb` as it was, so the stick keeps its previous library. `export.pdb` and the settings are written next to the old files and renamed over them. `--prune` removes nothing in a run where a track failed, so a track that could not be written keeps the files an earlier export left for it ([#233](https://github.com/M-Igashi/baken/issues/233)).
-- The My Settings files `MYSETTING.DAT`, `MYSETTING2.DAT` and `DJMMYSETTING.DAT` are copied from rekordbox's settings directory into `PIONEER/` on the stick (not its root; that is where rekordbox puts them too) and are **required** unless `--no-settings` is given, which writes none so the player keeps its own settings (what a DJ without rekordbox usually wants from a club's CDJs). rekordbox writes them once Preferences > DJ System > My Settings has been opened, a page that only exists in EXPORT mode. `DEVSETTING.DAT` is copied too when it is there; players write their own, and a real rekordbox 7 export does not always carry it. `djprofile.nxs`, which carries the name of your rekordbox DJ profile and which rekordbox puts on its sticks, is copied the same way; no player manual says what a player does with it ([#234](https://github.com/M-Igashi/baken/issues/234)). `--no-settings` leaves both out. A settings file a player saved onto the stick (its header names the player, where rekordbox's says `rekordbox`) is left as it is, so what you set on the CDJ survives the next export; the plan lists it.
-- `--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players.
-
-### Usage
-
-```
-baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--my-tags <FILE>] [--prune] [--dry-run]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--device <DIR>` | Root of the stick (required) |
-| `--playlist <PATH>` | Playlist to export; repeatable. Omitted: every TrackID-referenced playlist |
-| `--anlz-dir <DIR>` | rekordbox analysis directory when auto-detection fails |
-| `--settings-dir <DIR>` | Directory holding the `*SETTING.DAT` files and, if there is one, `djprofile.nxs` (default: rekordbox's own) |
-| `--no-settings` | Write no My Settings and no `djprofile.nxs`; the player keeps its own settings |
-| `--device-name <NAME>` | Name shown on the player (default: the stick's directory name) |
-| `--generate-analysis` | Compute the analysis files from the audio for tracks with no rekordbox analysis (grid and cues still from the XML; no phrase data) |
-| `--cdjsafe` | 320 kbps CBR MP3 for every track (needs ffmpeg) |
-| `--onelibrary` | Also write OneLibrary (`exportLibrary.db`) for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO; checked on an XDJ-AZ so far |
-| `--artwork` | Put the picture embedded in each audio file on the stick as its artwork |
-| `--my-tags <FILE>` | My Tags from a JSON file beside the XML, see [My Tags](#my-tags---my-tags) |
-| `--prune` | Delete audio and analysis on the stick this export no longer references |
-| `--dry-run` | Resolve and report, write nothing |
-
-### My Tags (`--my-tags`)
-
-rekordbox's XML carries no My Tags, so they come from a small file next to it ([#281](https://github.com/M-Igashi/baken/issues/281)):
-
-```
-baken expressport collection.xml --device /Volumes/MYUSB --my-tags mytags.json
-```
-
-```json
-{
-  "columns": [
-    {"name": "Genre", "tags": ["House", "Disco"]},
-    {"name": "Components", "tags": ["Vocal"]},
-    {"name": "Situation", "tags": ["Peak Time"]},
-    {"name": "Untitled Column", "tags": []}
-  ],
-  "tracks": {"12": ["House", "Vocal"], "40": ["Peak Time"]}
-}
-```
-
-- `columns` are rekordbox's four My Tag columns in order, each with its tags in the order the player lists them. A file with fewer than four gets rekordbox's names for the rest (Genre, Components, Situation, Untitled Column).
-- `tracks` maps the XML's `TrackID` to the names of that track's tags. Tracks the export does not take are ignored, so one file can cover a whole library. Since tracks name their tags, a tag name may appear in one column only.
-- The file is checked before anything is written: a track naming a tag that no column lists, a tag listed twice, more than four columns, or a name longer than 100 characters stops the plan with the reason. The plan shows how many of the exported tracks carry tags.
-- The tags go into `exportExt.pdb`, the file next to `export.pdb` where rekordbox keeps My Tags for the Device Library, and with `--onelibrary` into OneLibrary as well. Both follow rekordbox's layout: fed the My Tags rekordbox put on the owner's stick (30 tags on 132 of its 582 tracks), they come back on the same tracks, and the tag pages match rekordbox's byte for byte. Not checked on a player yet.
-- Without `--my-tags` the stick gets no `exportExt.pdb`, and OneLibrary carries rekordbox's four columns without tags.
-
-### Notes
-
-- **A rekordbox install is normally required**, on the same machine or on an attached library drive: the waveforms and the My Settings files are copied from rekordbox's own. A `collection.xml` produced by another tool (Mixxx, Traktor, a converter) needs `--generate-analysis` for the waveforms (see [#145](https://github.com/M-Igashi/baken/issues/145) and [#147](https://github.com/M-Igashi/baken/issues/147)) and either `--settings-dir` pointing at the `*SETTING.DAT` files from any stick rekordbox once exported, or `--no-settings`; nothing in the XML can stand in for the settings.
-- Built into the binaries; `cargo install baken --no-default-features` leaves it out.
-- The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older read. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) get it with `--onelibrary`. An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues and artwork all in place ([#139](https://github.com/M-Igashi/baken/issues/139)); the CDJ-3000X, OPUS-QUAD and OMNIS-DUO read the same database but have not been tried yet. It lists the same tracks under the same ids as `export.pdb` and is encrypted the way rekordbox's is. Like rekordbox's own, it leaves cues and waveforms to the analysis files, and with `--artwork` it names each track's picture. My Tags come with `--my-tags`; hot cue banks are not in it, since the XML does not carry them.
-- Format the stick as **FAT32 with an MBR partition table**. A CDJ-2000NXS2 or older reads neither exFAT nor a GPT disk and does not show such a stick at all; a CDJ-3000 also reads exFAT. The players' manuals also list FAT16 and HFS+. `expressport` reads the stick's filesystem and partition table before writing and warns when they rule out a player (macOS and Linux; on macOS the partition table comes from `diskutil`, on Linux from `lsblk`), and on macOS also when an HFS+ stick is case-sensitive, which AlphaTheta says might not be recognised. On Linux it also reads the partition type: `mkfs.vfat` on a partition that `fdisk` or `parted` made keeps type 83 (Linux), and two XDJ-700s showed FORMAT USB for such a stick until its type was set to `c`, W95 FAT32 LBA (`sudo fdisk /dev/sdX`, then `t`, `c`, `w`) ([#288](https://github.com/M-Igashi/baken/issues/288)). macOS does not mount FAT on such a partition at all.
-- **HFS+ on a Mac** (Disk Utility: Mac OS Extended (Journaled), scheme Master Boot Record) writes faster, and the players' manuals list it next to FAT16 and FAT32 ([#221](https://github.com/M-Igashi/baken/issues/221)). macOS writes HFS+ itself, while FAT32 goes through FSKit on macOS 26. On a SanDisk USB 3.2 stick, a 62-track, 3.3 GB playlist took 260 s on HFS+ against 423 to 438 s on FAT32, and a 527-track, 7 GB one 469 to 567 s against 1324 to 1362 s, with a quarter to a half of the writes reaching the stick and the same files on both. The directory and the three analysis files each track needs cost about 450 ms on FAT32 and almost nothing on HFS+. A CDJ-3000 owner measured 75 tracks on one 250 GB SanDisk USB 3.2 drive: 23.6 s on HFS+ against 219.6 s on FAT32 ([#287](https://github.com/M-Igashi/baken/issues/287)). On HFS+ the library goes into the hidden `.PIONEER` folder, the only place a CDJ-3000 looks on such a stick (see the next point). HFS+ also keeps file metadata itself, so no `._` files are written. Its limits: Windows cannot read or write it without extra software; the XDJ-R1, the first XDJ-RX and the CDJ-400 list FAT16 and FAT32 only (every other player manual checked lists HFS+); a case-sensitive one might not be recognised; and HFS+ stores accented and kana names decomposed (NFD) while `export.pdb` holds them composed (NFC), as on a stick rekordbox itself exports to HFS+. FAT32 stays the choice for a stick that also has to work on Windows or on those three players.
-- Use a stick dedicated to `expressport`; it is not meant to be layered over a stick rekordbox wrote. A stick rekordbox exported to loses its OneLibrary (`exportLibrary.db`, with `-wal` and `-shm`) and `exportExt.pdb` when `expressport` writes it, since they would go on describing rekordbox's library instead of the one just written: rekordbox reports that as a library inconsistency, and OneLibrary players would show the old library ([#208](https://github.com/M-Igashi/baken/issues/208)). The plan (and `--dry-run`) lists them before anything is written. With `--onelibrary` the database is replaced by the one just written instead, and with `--my-tags` so is `exportExt.pdb`; the rest go. Files players leave behind (`PIONEER/CDJ`, `RBFLTR.DAT`, ...) are never touched. On an HFS+ stick rekordbox keeps its library in the hidden folder `.PIONEER` instead of `PIONEER` (the audio stays in `Contents`; checked with rekordbox 7.2.18), and a CDJ-3000 (firmware 3.22) reads an HFS+ stick's library only from there: rekordbox's own HFS+ stick with `.PIONEER` renamed to `PIONEER` showed "rekordbox database not found", and so did one written by `expressport` 4.10.0 or older, which always used `PIONEER`. `expressport` therefore writes `.PIONEER` on HFS+, and on an HFS+ stick an older version wrote it renames `PIONEER` to `.PIONEER` before writing, so the audio and analysis already there are kept. On other filesystems it writes into whichever of the two already holds the stick's library, and into `PIONEER` on a stick with none. A stick with a library in both stops the plan until one is moved off ([#287](https://github.com/M-Igashi/baken/issues/287)). Finder shows `.PIONEER` with Cmd-Shift-.
-- **What the stick keeps from its last export**: the play history a player recorded on it, and the settings rekordbox writes into every export from its preferences (colour names, the browse columns, category and sort lists, and the Device Library background colour). The XML carries neither, so `expressport` reads them from the `export.pdb` on the stick and writes them into the new one ([#286](https://github.com/M-Igashi/baken/issues/286), [#289](https://github.com/M-Igashi/baken/issues/289)); a stick without one gets rekordbox's defaults. The plan says what it kept. Plays of tracks the export does not put on the stick are left out and counted, so import the history in rekordbox before an export that drops tracks if you want them.
-- **How long it takes**: an export runs at the stick's write speed, plus about 0.4 s per track for the directory and the three analysis files the format wants next to each audio file (measured on macOS 26 with a FAT32 stick: a new directory 150 ms, a file create 27 ms, a write and close 25 ms). A USB 3 stick that writes 25 MB/s needs about 40 s per GB, and many sticks slow down once warm: a 62-track, 3.3 GB playlist took 339 s on a cold stick and about 450 s later, and `cp -R` of the same files took 410 to 533 s. `--cdjsafe` adds the encoding, a few seconds per track ([#197](https://github.com/M-Igashi/baken/issues/197)). On Linux, check the mount options: udisks2 mounts FAT sticks with `flush`, which sends every closed file to the device at once, and cheap sticks are slow at that ([#173](https://github.com/M-Igashi/baken/issues/173)).
-- Check a finished stick on a player, not by opening it in rekordbox: rekordbox rewrites a device library it opens, and even changes a stick that is only mounted while it runs. The plan warns when rekordbox is running (macOS and Windows), so quit it or eject the stick in it before exporting ([#292](https://github.com/M-Igashi/baken/issues/292)). [rbsync](https://github.com/aquarazorda/rbsync) measured it deleting 768 of 5,825 playlist entries from a stick it opened and adding an `exportLibrary.db`. If that happened, run `expressport` again: it rewrites `export.pdb` and removes the `exportLibrary.db`, or replaces it with `--onelibrary`.
-- On macOS 26, which mounts ExFAT and FAT sticks through FSKit, the files on the stick keep the NFC names rekordbox puts in `export.pdb`, and Terminal's `rm` cannot remove files under such names ([#154](https://github.com/M-Igashi/baken/issues/154)); Finder and `--prune` can.
-- **Artwork** comes with `--artwork`, from the picture embedded in each audio file: ID3 in MP3 and AIFF, the picture block of FLAC, the cover of M4A (not WAV), JPEG, PNG or BMP. The XML carries none, and rekordbox keeps its own thumbnails in its database. Every track with a picture gets the four files rekordbox writes in `PIONEER/Artwork`, 80 and 240 pixels square, the picture fitted on black, made like rekordbox's own (measured on 1091 of them). On the owner's library 24 of the 35 tracks of a playlist had a picture: 96 files, 856 KB, and no measurable time on a local disk. On a FAT32 stick through macOS each file costs 50 to 70 ms beyond its size (the per-file costs measured in [#196](https://github.com/M-Igashi/baken/issues/196) and [#221](https://github.com/M-Igashi/baken/issues/221)), so the first run with it takes about a quarter of a second more per track; later runs leave unchanged files alone, and `--prune` removes the ones no track uses ([#235](https://github.com/M-Igashi/baken/issues/235)). A track keeps its artwork id from one run to the next, so a new track or a re-sorted playlist does not rewrite the other tracks' files ([#290](https://github.com/M-Igashi/baken/issues/290)).
+The processing logic is a separate library crate, [`baken-core`](https://crates.io/crates/baken-core), so other front-ends can embed it without the terminal UI. To build from source: `git clone https://github.com/M-Igashi/baken.git && cd baken && cargo build --release`.
 
 ## License
 

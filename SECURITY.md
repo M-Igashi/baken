@@ -24,3 +24,13 @@ This project is a CLI tool that processes local audio files. The primary securit
 - Command injection via filenames passed to ffmpeg
 - Dependency vulnerabilities in Rust crates
 - Malicious input files causing unexpected behavior
+
+## Supply chain
+
+A tool that rewrites your music library and writes your gig stick has to be trustworthy down to its dependencies.
+
+- **Dependencies are weighed before they come in.** SQLCipher and a vendored OpenSSL were dropped in 4.6.0, and on Apple platforms the encryption uses the operating system's own CommonCrypto since 4.6.1.
+- **Every pull request goes through dependency review**, which fails on a known vulnerability of moderate severity or higher, and a licence check stops the build on any licence not on the accepted list.
+- **Every GitHub Action is pinned to a full commit SHA**, and workflows are read-only unless a job needs more.
+- **crates.io releases use Trusted Publishing**, so no crates.io token is stored anywhere.
+- **Release archives carry SHA-256 checksums.**
