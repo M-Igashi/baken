@@ -263,7 +263,18 @@ fn apply_gain_ffmpeg(file_path: &Path, gain_db: f64) -> Result<()> {
     }
 
     restore_tags(&temp_path, tags.as_ref())?;
-    crate::fsname::replace(&temp_path, file_path).context("Failed to rename processed file")
+    // The new file takes the place of the old one, so it takes its mode too:
+    // a private file stays private (issue #328).
+    let finish = || -> Result<()> {
+        fs::set_permissions(&temp_path, fs::metadata(file_path)?.permissions())?;
+        crate::fsname::replace(&temp_path, file_path)?;
+        Ok(())
+    };
+    finish()
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&temp_path);
+        })
+        .context("Failed to rename processed file")
 }
 
 /// Put `tags` back over a freshly converted file, discarding it on failure so

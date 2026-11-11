@@ -15,7 +15,7 @@
 use anyhow::{bail, Context, Result};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::wav;
 
@@ -320,7 +320,11 @@ fn rewrite_chunks(
 /// to delete the destination to replace it, and that is not reliable while
 /// the process still holds it open (issue #137).
 fn rewrite(path: &Path, fill: impl FnOnce(&mut BufWriter<File>) -> Result<()>) -> Result<()> {
-    let temp = path.with_extension("tags.tmp");
+    // Appended, not swapped for the extension: `Track.wav` and `Track.aiff`
+    // are rewritten side by side and must not share a temp file.
+    let mut temp = path.as_os_str().to_owned();
+    temp.push(".tags.tmp");
+    let temp = PathBuf::from(temp);
     let build = || -> Result<()> {
         let mut out = BufWriter::new(File::create(&temp)?);
         fill(&mut out)?;

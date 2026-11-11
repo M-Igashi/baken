@@ -86,7 +86,12 @@ fn is_audio_candidate(path: &Path) -> bool {
     if filename.starts_with("._") {
         return false;
     }
-    is_supported_audio_file(path)
+    // `track.tmp.wav` is what a lossless rewrite works in. One left behind by
+    // a run that was killed is not a track (issue #328).
+    let leftover = path
+        .file_stem()
+        .is_some_and(|stem| Path::new(stem).extension().is_some_and(|e| e == "tmp"));
+    !leftover && is_supported_audio_file(path)
 }
 
 fn is_supported_audio_file(path: &Path) -> bool {
