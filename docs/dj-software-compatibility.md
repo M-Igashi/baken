@@ -100,8 +100,8 @@ Adjust the greeting, keep the structure.
 
 > Short answer: yes, this is safe for a rekordbox plus Traktor setup. Headroom rewrites the audio file itself, in place. It never renames or moves a file, never changes its duration, and never shifts the audio by a single sample:
 >
-> - MP3 and AAC: the gain is written into the frame gain field, in the format's native 1.5 dB steps. Nothing is re-encoded and the container is not touched at all.
-> - FLAC, WAV, AIFF and Apple Lossless: the gain is applied sample for sample, so the output has exactly the same number of samples as the input. Tags are carried across, including the binary frames DJ software hides in there (ID3 GEOB and PRIV, the free-form atoms in .m4a).
+> - MP3 and AAC: the gain is written into the frame gain field, in the format's native 1.5 dB steps. Nothing is re-encoded and no audio moves; only ReplayGain tags, which no longer fit the new level, are taken out of the tags.
+> - FLAC, WAV, AIFF and Apple Lossless: the gain is applied sample for sample, so the output has exactly the same number of samples as the input. Tags are carried across, including the binary frames DJ software hides in there (ID3 GEOB and PRIV, the free-form atoms in .m4a), except ReplayGain values.
 >
 > Since nothing a cue point or a beatgrid is anchored to moves, Traktor keeps its analysis and your cues, and so does rekordbox. Lexicon matches on file paths, which don't change either, so your sync keeps working as before.
 >
