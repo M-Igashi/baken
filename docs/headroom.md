@@ -36,7 +36,7 @@ The tool will guide you through:
 
 ### Scriptable
 
-Pass paths, globs, or flags to run non-interactively (useful for pipelines and scripts):
+Pass paths, globs, or flags to run non-interactively (useful for pipelines and scripts). Nothing is asked: unless `--analyze-only` is given, the gain is written at once, and a backup is made only with `--backup`.
 
 ```bash
 # Analyze a directory without modifying anything
