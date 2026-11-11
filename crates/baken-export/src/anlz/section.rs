@@ -91,8 +91,10 @@ impl AnlzFile {
         let n = u32::from_be_bytes(s.bytes.get(12..16)?.try_into().ok()?) as usize;
         let body = s.bytes.get(16..16 + n)?;
         let units: Vec<u16> = body
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_be_bytes(*c))
             .collect();
         Some(
             String::from_utf16_lossy(&units)

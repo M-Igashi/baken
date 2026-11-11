@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn a_corrupt_row_count_reads_as_no_table() {
         let mut pdb = super::super::write(&Export::default()).unwrap();
-        for page in pdb.chunks_exact_mut(PAGE_LEN).skip(1) {
+        for page in pdb.as_chunks_mut::<PAGE_LEN>().0.iter_mut().skip(1) {
             page[0x18] = 0xff;
             page[0x19] |= 0x1f;
         }
