@@ -77,8 +77,14 @@ impl Mp3Audio {
     }
 }
 
+/// How far past a damaged spot the next frame is looked for.
+const RESYNC: usize = 64 * 1024;
+
 /// Walk the MPEG audio frames of an MP3, skipping the ID3v2 tag and a
 /// Xing/Info header frame the way rekordbox does for its `PVBR` trailer.
+/// Only MPEG-1 Layer III is walked: an MPEG-2 file (22.05 or 24 kHz) counts
+/// no frames, since no rekordbox analysis of one has been seen to say what
+/// its trailer holds.
 pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
     let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let mut pos = 0usize;
@@ -89,27 +95,51 @@ pub fn mp3_audio(path: &Path) -> Result<Mp3Audio> {
             | (data[9] as usize & 0x7f);
         pos = 10 + size;
     }
-    const BITRATES: [u32; 16] = [
-        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
-    ];
-    const RATES: [u32; 4] = [44100, 48000, 32000, 0];
-    let mut audio = Mp3Audio::default();
-    let mut first = true;
-    let mut header_frames = None;
-    while pos + 4 <= data.len() {
-        let h = &data[pos..pos + 4];
+    // Length and sample rate of the MPEG-1 Layer III frame at `at`, if one
+    // starts there.
+    let frame_at = |at: usize| -> Option<(usize, u32)> {
+        const BITRATES: [u32; 16] = [
+            0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+        ];
+        const RATES: [u32; 4] = [44100, 48000, 32000, 0];
+        let h = data.get(at..at + 4)?;
         let sync = h[0] == 0xff && (h[1] & 0xe0) == 0xe0;
         let mpeg1_layer3 = (h[1] & 0x18) == 0x18 && (h[1] & 0x06) == 0x02;
         let bitrate = BITRATES[(h[2] >> 4) as usize];
         let rate = RATES[((h[2] >> 2) & 3) as usize];
-        if !(sync && mpeg1_layer3) || bitrate == 0 || rate == 0 {
+        (sync && mpeg1_layer3 && bitrate != 0 && rate != 0).then(|| {
+            let len = 144 * bitrate * 1000 / rate + ((h[2] >> 1) & 1) as u32;
+            (len as usize, rate)
+        })
+    };
+    let mut audio = Mp3Audio::default();
+    let mut first = true;
+    let mut header_frames = None;
+    while pos + 4 <= data.len() {
+        let Some((len, rate)) = frame_at(pos) else {
             if audio.frames == 0 {
                 pos += 1; // junk before the first frame
                 continue;
             }
-            break;
-        }
-        let len = (144 * bitrate * 1000 / rate + ((h[2] >> 1) & 1) as u32) as usize;
+            // Junk between frames (a damaged or spliced file): go on at the
+            // next frame of the same rate that is itself followed by a frame
+            // or ends the file, so that a sync pattern inside a trailing tag
+            // is not counted. Without this the count stopped here and the
+            // `PVBR` trailer came out short (issue #333).
+            let next = (pos + 1..data.len().min(pos + RESYNC)).find(|&at| {
+                frame_at(at).is_some_and(|(len, rate)| {
+                    rate == audio.sample_rate
+                        && (at + len == data.len() || frame_at(at + len).is_some())
+                })
+            });
+            match next {
+                Some(at) => {
+                    pos = at;
+                    continue;
+                }
+                None => break,
+            }
+        };
         if first {
             first = false;
             let body = &data[pos..(pos + len).min(data.len())];
@@ -186,6 +216,24 @@ mod tests {
         assert!(!walk(&other).complete);
         other[at - 4..at].fill(0);
         assert!(!walk(&other).complete);
+
+        // junk between two frames is stepped over (issue #333), and a tag
+        // after the last frame is not taken for more audio
+        let middle = 10
+            + tag_size
+            + 1044
+            + (0..500)
+                .map(|i| 1044 + (i % 9 != 0) as usize)
+                .sum::<usize>();
+        let mut spliced = data.clone();
+        spliced.splice(middle..middle, [0x55u8; 37]);
+        assert_eq!(walk(&spliced).frames, 1000);
+        let mut tagged = data.clone();
+        tagged.extend_from_slice(b"TAG");
+        tagged.extend_from_slice(&[0xff, 0xfb, 0xe0, 0]);
+        tagged.resize(tagged.len() + 121, b' ');
+        let tagged = walk(&tagged);
+        assert!(tagged.frames == 1000 && tagged.complete);
         std::fs::remove_file(&path).unwrap();
     }
 
