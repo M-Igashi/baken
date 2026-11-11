@@ -44,25 +44,34 @@ fn segment_beats(x: f64, step: Option<u32>) -> usize {
     }
 }
 
+/// The largest BPM the grid's `tempo` field can hold.
+const MAX_BPM: f64 = u16::MAX as f64 / 100.0;
+
 pub fn beats(tempos: &[Tempo], duration_ms: f64) -> Vec<Beat> {
     // Some writers put `Battito="1"` on every `TEMPO`; that says nothing.
     let bar_steps = tempos.iter().all(|t| (1..=4).contains(&t.battito))
         && tempos.iter().any(|t| t.battito != tempos[0].battito);
     let mut out = Vec::new();
     for (k, t) in tempos.iter().enumerate() {
-        if t.bpm <= 0.0 || !t.bpm.is_finite() {
+        // rekordbox writes neither; another tool's XML might. The tempo
+        // field holds BPM x 100 in 16 bits (issue #324).
+        if !(t.bpm > 0.0 && t.bpm <= MAX_BPM) || !t.inizio.is_finite() {
             continue;
         }
         let period = 60000.0 / t.bpm;
         let start = t.inizio * 1000.0;
+        // No segment holds more beats than the whole track has room for,
+        // whatever `Inizio` says.
+        let most = (duration_ms / period).ceil().max(0.0) as usize + 4;
         let count = match tempos.get(k + 1) {
             Some(next) => segment_beats(
                 (next.inizio * 1000.0 - start) / period,
                 bar_steps.then(|| (next.battito + 4 - t.battito) % 4),
-            ),
+            )
+            .min(most),
             None => {
                 let mut n = 0;
-                while start + n as f64 * period < duration_ms {
+                while n < most && start + n as f64 * period < duration_ms {
                     n += 1;
                 }
                 n
@@ -212,5 +221,23 @@ mod tests {
             b"PQT2\0\0\0\x38\0\0\0\x38\0\0\0\0\x01\0\0\x02"
         );
         assert!(s.bytes[20..].iter().all(|&b| b == 0));
+    }
+
+    /// Each of these used to loop for ever or ask for gigabytes (issue #324).
+    #[test]
+    fn absurd_tempos_are_bounded_by_the_track() {
+        let five_seconds = 5000.0;
+        for tempos in [
+            vec![tempo(0.1, 1e12, 1)],
+            vec![tempo(0.1, 1e300, 1)],
+            vec![tempo(-1e12, 120.0, 1)],
+            vec![tempo(f64::NEG_INFINITY, 120.0, 1)],
+            vec![tempo(0.0, 120.0, 1), tempo(1e9, 120.0, 1)],
+            vec![tempo(0.0, 120.0, 1), tempo(1e300, 120.0, 2)],
+        ] {
+            assert!(beats(&tempos, five_seconds).len() <= 2 * 14, "{tempos:?}");
+        }
+        // A sane grid is what it was: 120 BPM over 5 s is 10 beats.
+        assert_eq!(beats(&[tempo(0.0, 120.0, 1)], five_seconds).len(), 10);
     }
 }
