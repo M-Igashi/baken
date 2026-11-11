@@ -229,7 +229,7 @@ impl Library {
                     }
                     "POSITION_MARK" => {
                         if let Some(t) = current.as_mut() {
-                            let channel = |name| Ok::<_, anyhow::Error>(parsed(&e, name)?);
+                            let channel = |name| parsed(&e, name);
                             let rgb = match (channel("Red")?, channel("Green")?, channel("Blue")?) {
                                 (Some(r), Some(g), Some(b)) => Some((r, g, b)),
                                 _ => None,
