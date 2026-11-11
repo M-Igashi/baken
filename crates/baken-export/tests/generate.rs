@@ -28,7 +28,9 @@ fn duration_window_ms(ext: &AnlzFile) -> Option<(f64, f64)> {
 
 fn beat_rows(pqtz: &[u8]) -> Vec<(u16, u16, u32)> {
     pqtz[24..]
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .map(|c| {
             (
                 u16::from_be_bytes([c[0], c[1]]),

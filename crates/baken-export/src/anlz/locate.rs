@@ -85,7 +85,7 @@ fn mount_points() -> Vec<PathBuf> {
             dirs.push(PathBuf::from("/media").join(&user));
             dirs.push(PathBuf::from("/run/media").join(&user));
         }
-        return dirs;
+        dirs
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     return Vec::new();

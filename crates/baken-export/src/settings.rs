@@ -38,6 +38,7 @@ const DJ_PROFILE_SIZE: usize = 160;
 /// Where rekordbox 6 and 7 keep the files on this machine. Empty where
 /// rekordbox does not run, so `--settings-dir` is the only way in.
 pub fn default_dirs() -> Vec<PathBuf> {
+    #[allow(unused_mut)]
     let mut dirs = Vec::new();
     #[cfg(target_os = "macos")]
     if let Some(home) = std::env::var_os("HOME") {

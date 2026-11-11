@@ -62,7 +62,7 @@ pub fn encrypt(db: &mut [u8], passphrase: &[u8]) -> anyhow::Result<()> {
     let mut salt = [0; SALT];
     getrandom::fill(&mut salt).context("random bytes")?;
     let keys = Keys::derive(passphrase, &salt);
-    for (i, page) in db.chunks_exact_mut(PAGE).enumerate() {
+    for (i, page) in db.as_chunks_mut::<PAGE>().0.iter_mut().enumerate() {
         let pgno = i as u32 + 1;
         let start = start(pgno);
         let (data, tail) = page[start..].split_at_mut(PAGE - start - RESERVE);
@@ -91,14 +91,15 @@ pub fn decrypt(db: &[u8], wal: &[u8], passphrase: &[u8]) -> Vec<u8> {
         crypto::decrypt_cbc(&keys.cipher, &tail[..IV], data);
     };
     let mut plain = db.to_vec();
-    for (i, page) in plain.chunks_exact_mut(PAGE).enumerate() {
+    for (i, page) in plain.as_chunks_mut::<PAGE>().0.iter_mut().enumerate() {
         open(page, i as u32 + 1);
     }
     // A 32-byte header, then frames of a 24-byte header and a page; a frame
     // belongs to the log while it carries the header's salt.
     let be = |b: &[u8]| u32::from_be_bytes(b[..4].try_into().unwrap());
     let mut pending = Vec::new();
-    for frame in wal.get(32..).unwrap_or_default().chunks_exact(24 + PAGE) {
+    let frames = wal.get(32..).unwrap_or_default();
+    for frame in frames.as_chunks::<{ 24 + PAGE }>().0 {
         if frame[8..16] != wal[16..24] {
             break;
         }
