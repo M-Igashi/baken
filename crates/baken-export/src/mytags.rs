@@ -189,7 +189,8 @@ impl MyTags {
 fn check_name(name: &str, what: &str) -> anyhow::Result<()> {
     ensure!(!name.trim().is_empty(), "a {what} has an empty name");
     ensure!(
-        name.chars().count() <= MAX_NAME,
+        // UTF-16 units, which is what the row's one-byte string offset counts.
+        name.encode_utf16().count() <= MAX_NAME,
         "the {what} name \"{name}\" is longer than {MAX_NAME} characters"
     );
     Ok(())
@@ -312,5 +313,15 @@ mod tests {
         let long = "x".repeat(MAX_NAME + 1);
         let json = format!(r#"{{"columns": [{{"name": "Genre", "tags": ["{long}"]}}]}}"#);
         assert!(MyTags::parse(&json).is_err());
+    }
+
+    /// The row's string offset is one byte and counts UTF-16 units, two for
+    /// each of these (issue #330).
+    #[test]
+    fn a_name_is_measured_in_utf16_units() {
+        let json =
+            |name: &str| format!(r#"{{"columns": [{{"name": "Genre", "tags": ["{name}"]}}]}}"#);
+        assert!(MyTags::parse(&json(&"\u{1f3b5}".repeat(50))).is_ok());
+        assert!(MyTags::parse(&json(&"\u{1f3b5}".repeat(51))).is_err());
     }
 }

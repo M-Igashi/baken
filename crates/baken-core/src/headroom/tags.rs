@@ -358,7 +358,8 @@ fn find_moov(file: &mut File) -> io::Result<Option<(u64, u64, bool)>> {
             }
             n => n as u64,
         };
-        if size < 8 || pos + size > end {
+        // Compared without adding: a 64-bit size from the file can be anything.
+        if size < 8 || size > end - pos {
             break;
         }
         if &header[4..8] == b"moov" {
@@ -824,5 +825,20 @@ mod tests {
 
         let err = restore(&path, &Tags::Mp4(vec![free_form(b"x")])).unwrap_err();
         assert!(format!("{:#}", err).contains("moov is not the last box"));
+    }
+
+    /// A 64-bit box size is whatever the file says; adding it to the
+    /// position overflowed (issue #330).
+    #[test]
+    fn a_box_with_an_absurd_64_bit_size_ends_the_walk() {
+        let path = temp_path("hugebox.m4a");
+        let mut file = mp4_file(&[]);
+        file.extend_from_slice(&[0, 0, 0, 1]);
+        file.extend_from_slice(b"free");
+        file.extend_from_slice(&[0xff; 8]);
+        fs::write(&path, &file).unwrap();
+
+        let found = find_moov(&mut File::open(&path).unwrap()).unwrap();
+        assert!(found.is_some());
     }
 }

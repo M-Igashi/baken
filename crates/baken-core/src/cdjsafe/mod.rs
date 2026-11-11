@@ -425,8 +425,11 @@ fn build_new_tracks(dest_paths: &[PathBuf], max_track_id: u64) -> anyhow::Result
             let size = fs::metadata(dst)
                 .with_context(|| format!("Missing output file {}", dst.display()))?
                 .len();
+            let track_id = max_track_id
+                .checked_add(1 + i as u64)
+                .context("The collection's TrackIDs leave no room for new ones")?;
             Ok(NewTrack {
-                track_id: max_track_id + 1 + i as u64,
+                track_id,
                 location_url: encode_location(dst),
                 size,
             })

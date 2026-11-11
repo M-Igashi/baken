@@ -205,6 +205,8 @@ impl Meter {
                     .round() as u64;
             }
             let x = frame.iter().map(|&s| s as f64).sum::<f64>() / channels as f64;
+            // A NaN would stay in the filters' state for the rest of the track.
+            let x = if x.is_finite() { x } else { 0.0 };
             c.peak = c.peak.max(x.abs());
             c.white = c.white.max(white.step(x).abs());
             c.band[0] = c.band[0].max(low.step(x).abs());
@@ -617,5 +619,18 @@ mod tests {
         assert!(w.pwv3.iter().all(|&b| b == 0xe0));
         assert!(w.pwv7.iter().all(|b| *b == [0, 0, 0]));
         assert_eq!(w.gains, GAIN_FLOOR);
+    }
+
+    /// One NaN used to stay in the filters and blank the rest of the track
+    /// (issue #330).
+    #[test]
+    fn a_nan_sample_does_not_blank_what_follows() {
+        let mut samples = tone_samples(44100, 1.0, 1000.0, 0.8);
+        samples[2000] = f32::NAN;
+        samples[2001] = f32::NAN;
+        let w = analyze(&metered(44100, 2, &[&samples]));
+        let last = w.pwv7.last().unwrap();
+        assert!(last.iter().all(|&band| band > 0), "{last:?}");
+        assert!(w.pwv2.last().is_some_and(|&b| b > 1));
     }
 }
