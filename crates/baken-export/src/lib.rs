@@ -72,14 +72,54 @@ pub struct Options {
     pub my_tags: Option<PathBuf>,
 }
 
+/// Why [`plan`] left a track out. `Display` gives the English sentence the
+/// CLI prints; a caller with its own wording matches on the variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipReason {
+    /// A playlist refers to a TrackID the collection does not have.
+    NotInCollection,
+    /// The file the XML names is not there, and the stick holds no copy.
+    SourceMissing(PathBuf),
+    /// No rekordbox analysis for the file, and no `generate_analysis`.
+    NoAnalysis,
+    /// An analysis exists for the file name, but its beat grid is not the
+    /// XML's (issue #180).
+    AnalysisMismatch,
+    /// The track's text needs `bytes` in `export.pdb`, where one row can
+    /// take `max` at most (issue #293).
+    RowTooLarge { bytes: usize, max: usize },
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotInCollection => f.write_str("not in the collection"),
+            Self::SourceMissing(path) => write!(f, "source file missing: {}", path.display()),
+            Self::NoAnalysis => f.write_str("no rekordbox analysis found (analyse it in rekordbox first, or pass --generate-analysis)"),
+            Self::AnalysisMismatch => f.write_str("the rekordbox analysis found for this file name does not match the XML's beat grid (export the XML again after changing the grid, or pass --generate-analysis)"),
+            Self::RowTooLarge { bytes, max } => write!(f, "its title, comment and other text take {bytes} bytes in export.pdb, and a database page holds at most {max}; shorten the comment in rekordbox and export the XML again"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Skipped {
     pub name: String,
-    pub reason: String,
+    pub reason: SkipReason,
     /// The source file is not there (a drive not mounted, a file moved). A
     /// copy from an earlier export may still be on the stick, so `--prune`
     /// leaves the stick alone in such a run (issue #291).
     pub source_missing: bool,
+}
+
+/// A track that failed while [`export`] ran and was left out of the database.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    /// The track's `Name` in the XML. Two tracks can share one.
+    pub name: String,
+    /// [`PlanTrack::source`], the path `Progress::on_file_done` gets.
+    pub source: PathBuf,
+    pub message: String,
 }
 
 #[derive(Debug, Clone)]
@@ -302,7 +342,7 @@ pub struct Report {
     /// not all be found, and were left out.
     pub seek_tables_dropped: usize,
     pub cancelled: bool,
-    pub failures: Vec<(String, String)>,
+    pub failures: Vec<Failure>,
     /// What could not be done after `export.pdb` was written: copying My
     /// Settings, removing a stale file, removing a `._` file. The stick has
     /// its new library by then, so these are listed here and not returned as
@@ -385,7 +425,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             let Some(track) = library.track(tid) else {
                 skipped.push(Skipped {
                     name: format!("TrackID {tid}"),
-                    reason: "not in the collection".into(),
+                    reason: SkipReason::NotInCollection,
                     source_missing: false,
                 });
                 continue;
@@ -415,7 +455,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
                         None => {
                             skipped.push(Skipped {
                                 name: track.name.clone(),
-                                reason: format!("source file missing: {}", source.display()),
+                                reason: SkipReason::SourceMissing(source),
                                 source_missing: true,
                             });
                             continue;
@@ -426,13 +466,13 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             let entry = index.find(track);
             if entry.is_none() && !opts.generate_analysis {
                 let reason = if index.has_name(track) {
-                    "the rekordbox analysis found for this file name does not match the XML's beat grid (export the XML again after changing the grid, or pass --generate-analysis)"
+                    SkipReason::AnalysisMismatch
                 } else {
-                    "no rekordbox analysis found (analyse it in rekordbox first, or pass --generate-analysis)"
+                    SkipReason::NoAnalysis
                 };
                 skipped.push(Skipped {
                     name: track.name.clone(),
-                    reason: reason.into(),
+                    reason,
                     source_missing: false,
                 });
                 continue;
@@ -531,10 +571,10 @@ pub fn plan(opts: &Options) -> Result<Plan> {
             let t = tracks.remove(i);
             skipped.push(Skipped {
                 name: t.device.track.name,
-                reason: format!(
-                    "its title, comment and other text take {len} bytes in export.pdb, and a database page holds at most {}; shorten the comment in rekordbox and export the XML again",
-                    pdb::page::MAX_ROW
-                ),
+                reason: SkipReason::RowTooLarge {
+                    bytes: len,
+                    max: pdb::page::MAX_ROW,
+                },
                 source_missing: false,
             });
         }
@@ -1168,9 +1208,11 @@ pub fn export(plan: &Plan, progress: &dyn Progress, cancel: &CancelToken) -> Res
                         Ok(e) => e.to_string(),
                         Err(e) => e.to_string(),
                     };
-                    report
-                        .failures
-                        .push((pt.device.track.name.clone(), message));
+                    report.failures.push(Failure {
+                        name: pt.device.track.name.clone(),
+                        source: pt.source.clone(),
+                        message,
+                    });
                 }
             }
             progress.on_file_done(i + 1, total, &pt.source);

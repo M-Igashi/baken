@@ -38,10 +38,10 @@ fn size(bytes: &u64) -> String {
 }
 
 /// One line for each failed track, name and reason.
-fn failed_tracks(failures: &[(String, String)]) -> String {
+fn failed_tracks(failures: &[crate::Failure]) -> String {
     failures
         .iter()
-        .map(|(name, why)| format!("\n  {name}: {why}"))
+        .map(|f| format!("\n  {}: {}", f.name, f.message))
         .collect()
 }
 
@@ -68,7 +68,7 @@ pub enum Error {
     /// Every track failed while the export ran. Returned before `export.pdb`
     /// is written, so the stick keeps the library it had (issue #321).
     #[error("Every track failed, so the stick keeps the library it had:{}", failed_tracks(.failures))]
-    AllTracksFailed { failures: Vec<(String, String)> },
+    AllTracksFailed { failures: Vec<crate::Failure> },
 
     #[error("Device path is not a directory: {}", .0.display())]
     DeviceNotFound(PathBuf),

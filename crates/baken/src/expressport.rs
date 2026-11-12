@@ -331,8 +331,8 @@ fn print_report(plan: &Plan, r: &Report) {
         );
         return;
     }
-    for (name, err) in &r.failures {
-        println!("{} {}: {}", style("⚠").yellow(), name, err);
+    for f in &r.failures {
+        println!("{} {}: {}", style("⚠").yellow(), f.name, f.message);
     }
     if r.prune_skipped {
         let why = match (r.failures.len(), r.sources_missing) {
