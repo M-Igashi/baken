@@ -115,6 +115,8 @@ fn a_failed_track_keeps_prune_from_removing_files() {
     std::fs::rename(&source, root.join("b.wav")).unwrap();
     let report = export(&p, &(), &CancelToken::new()).unwrap();
     assert_eq!(report.failures.len(), 1);
+    assert_eq!(report.failures[0].name, "b");
+    assert_eq!(report.failures[0].source, source);
     assert!(report.prune_skipped);
     assert_eq!((report.pruned, report.tracks_in_database), (0, 1));
     assert!(b_on_stick.is_file() && stale.is_file());
@@ -208,7 +210,14 @@ fn a_track_too_large_for_a_page_is_skipped() {
     assert_eq!(p.tracks.len(), 1);
     assert_eq!(p.skipped.len(), 1);
     assert_eq!(p.skipped[0].name, "a");
-    assert!(p.skipped[0].reason.contains("shorten the comment"));
+    assert!(matches!(
+        p.skipped[0].reason,
+        baken_export::SkipReason::RowTooLarge { bytes, max } if bytes > max
+    ));
+    assert!(p.skipped[0]
+        .reason
+        .to_string()
+        .contains("shorten the comment"));
     export(&p, &(), &CancelToken::new()).unwrap();
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -317,7 +326,9 @@ fn a_track_whose_source_is_offline_stays_on_the_stick() {
     std::fs::write(&stick_copy, b"not the track").unwrap();
     let p = plan(&opts).unwrap();
     assert_eq!(p.offline().count(), 0);
-    assert!(p.skipped.iter().any(|s| s.name == "a" && s.source_missing));
+    assert!(p.skipped.iter().any(|s| s.name == "a"
+        && s.source_missing
+        && matches!(&s.reason, baken_export::SkipReason::SourceMissing(path) if path.ends_with("a.wav"))));
     std::fs::remove_dir_all(&root).unwrap();
 }
 
