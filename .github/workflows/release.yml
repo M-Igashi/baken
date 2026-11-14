@@ -397,7 +397,7 @@ jobs:
 
       - name: Create Release (with custom notes)
         if: steps.release_notes.outputs.exists == 'true'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v2
         with:
           files: |
             release/baken-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
@@ -409,7 +409,7 @@ jobs:
 
       - name: Create Release (auto-generated notes)
         if: steps.release_notes.outputs.exists == 'false'
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v2
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v2
         with:
           files: |
             release/baken-${{ steps.version.outputs.VERSION }}-macos-universal.tar.gz
