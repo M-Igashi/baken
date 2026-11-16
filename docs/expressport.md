@@ -23,7 +23,7 @@ Each point is explained below.
 ## Usage
 
 ```
-baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--my-tags <FILE>] [--prune] [--dry-run]
+baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]... [--settings-dir <DIR> | --no-settings] [--device-name <NAME>] [--generate-analysis] [--cdjsafe] [--onelibrary] [--artwork] [--my-tags <FILE>] [--browse <FILE>] [--prune] [--dry-run]
 ```
 
 | Flag | Description |
@@ -39,6 +39,7 @@ baken expressport <XML> --device <DIR> [--playlist <PATH>]... [--anlz-dir <DIR>]
 | `--onelibrary` | Also write OneLibrary (`exportLibrary.db`) for the CDJ-3000X, XDJ-AZ, OPUS-QUAD and OMNIS-DUO; checked on an XDJ-AZ so far |
 | `--artwork` | Put the picture embedded in each audio file on the stick as its artwork |
 | `--my-tags <FILE>` | My Tags from a JSON file beside the XML, see [My Tags](#my-tags---my-tags) |
+| `--browse <FILE>` | The categories the player lists and the keys it sorts by, from a JSON file, see [Categories and sort keys](#categories-and-sort-keys---browse) |
 | `--prune` | Delete audio and analysis on the stick this export no longer references |
 | `--dry-run` | Resolve and report, write nothing |
 
@@ -98,6 +99,28 @@ baken expressport collection.xml --device /Volumes/MYUSB --my-tags mytags.json
 - The tags go into `exportExt.pdb`, the file next to `export.pdb` where rekordbox keeps My Tags for the Device Library, and with `--onelibrary` into OneLibrary as well. Both follow rekordbox's layout: fed the My Tags rekordbox put on the owner's stick (30 tags on 132 of its 582 tracks), they come back on the same tracks, and the tag pages match rekordbox's byte for byte. Not checked on a player yet.
 - Without `--my-tags` the stick gets no `exportExt.pdb`, and OneLibrary carries rekordbox's four columns without tags.
 
+### Categories and sort keys (`--browse`)
+
+Which categories a player lists in its browse menu (ARTIST, ALBUM, KEY, ...) and which keys it offers for sorting are set per stick in rekordbox's device preferences. They live in `export.pdb`, not in the XML and not in My Settings, so without rekordbox a small file sets them ([#311](https://github.com/M-Igashi/baken/issues/311)):
+
+```
+baken expressport collection.xml --device /Volumes/MYUSB --browse browse.json
+```
+
+```json
+{
+  "categories": ["PLAYLIST", "ARTIST", "KEY", "BPM", "FOLDER", "SEARCH"],
+  "sort": ["DEFAULT", "BPM", "KEY", "DATE ADDED"]
+}
+```
+
+- A listed item is shown, in the file's order; every item not listed is hidden. Leave a key out and that list stays as the stick has it (rekordbox's defaults on a new stick).
+- Categories: GENRE, ARTIST, ALBUM, TRACK, BPM, RATING, YEAR, REMIXER, LABEL, ORIGINAL ARTIST, KEY, COLOR, TIME, BITRATE, FILE NAME, PLAYLIST, HOT CUE BANK, HISTORY, SEARCH, DATE ADDED, FOLDER, MATCHING. rekordbox shows ARTIST, ALBUM, TRACK, KEY, PLAYLIST, HISTORY, SEARCH, MATCHING, FOLDER, and DATE ADDED by default.
+- Sort keys: GENRE, ARTIST, ALBUM, BPM, RATING, REMIXER, LABEL, ORIGINAL ARTIST, KEY, COLOR, TIME, BITRATE, COMMENTS, DATE ADDED, DJ PLAY COUNT, DEFAULT, ALPHABET. rekordbox shows DEFAULT, ALPHABET, ARTIST, ALBUM, BPM, RATING, and KEY by default.
+- Names are the players' own; case, spaces, and punctuation do not matter (`Date Added`, `date-added`). An unknown name, a name listed twice, or an empty list stops the plan with the reason, before anything is written.
+- The lists go into `export.pdb` and, with `--onelibrary`, into OneLibrary. The stick keeps them: later exports without `--browse` carry them over like lists set in rekordbox. rekordbox's default lists written as a file give rekordbox's default tables byte for byte, and the lists on the owner's rekordbox stick written as a file give the rows rekordbox wrote there. Not checked on a player yet; a stick carrying lists copied from a rekordbox export showed them on a CDJ-2000NXS2.
+- A stick's lists can also be taken from a rekordbox export without this file: copy that stick's `PIONEER/rekordbox/export.pdb` onto yours before the export, and the lists are kept (see [What the stick keeps from its last export](#what-the-stick-keeps-from-its-last-export)).
+
 ### Device Library and OneLibrary
 
 The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and older read. Players that need OneLibrary (`exportLibrary.db`: CDJ-3000X, XDJ-AZ, OPUS-QUAD, OMNIS-DUO) get it with `--onelibrary`. An XDJ-AZ (firmware 2.00) read a stick written by 4.7.0 with playlists in order, title, artist, BPM and key, search, waveforms, beat grid, hot and memory cues and artwork all in place ([#139](https://github.com/M-Igashi/baken/issues/139)); the CDJ-3000X, OPUS-QUAD and OMNIS-DUO read the same database but have not been tried yet. It lists the same tracks under the same ids as `export.pdb` and is encrypted the way rekordbox's is. Like rekordbox's own, it leaves cues and waveforms to the analysis files, and with `--artwork` it names each track's picture. My Tags come with `--my-tags`; hot cue banks are not in it, since the XML does not carry them.
@@ -110,7 +133,7 @@ Audio already on the stick stays when it still matches its source, so re-running
 
 ### What the stick keeps from its last export
 
-The stick keeps two things from its last export: the play history a player recorded on it, and the settings rekordbox writes into every export from its preferences (colour names, the browse columns, category and sort lists, and the Device Library background colour). The XML carries neither, so `expressport` reads them from the `export.pdb` on the stick and writes them into the new one ([#286](https://github.com/M-Igashi/baken/issues/286), [#289](https://github.com/M-Igashi/baken/issues/289)); a stick without one gets rekordbox's defaults. The plan says what it kept. Plays of tracks the export does not put on the stick are left out and counted, so import the history in rekordbox before an export that drops tracks if you want them.
+The stick keeps two things from its last export: the play history a player recorded on it, and the settings rekordbox writes into every export from its preferences (colour names, the browse columns, category and sort lists, and the Device Library background colour). The XML carries neither, so `expressport` reads them from the `export.pdb` on the stick and writes them into the new one ([#286](https://github.com/M-Igashi/baken/issues/286), [#289](https://github.com/M-Igashi/baken/issues/289)); a stick without one gets rekordbox's defaults. The plan says what it kept. `--browse` sets the category and sort lists from a file instead. Plays of tracks the export does not put on the stick are left out and counted, so import the history in rekordbox before an export that drops tracks if you want them.
 
 ### Free space and interrupted runs
 

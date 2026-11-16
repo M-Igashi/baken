@@ -94,11 +94,16 @@ pub const SORT_ROWS: [[u8; 8]; 17] = [
     [0x0b, 0x00, 0x0c, 0x00, 0x00, 0x07, 0x00, 0x00],
 ];
 
+/// The category and sort lists as [`Preferences::changed`] names them.
+pub const CATEGORY_LIST: &str = "category list";
+pub const SORT_LIST: &str = "sort list";
+
 /// What rekordbox writes into every export from its own preferences, and the
 /// XML does not carry: the colour names (table 0x06), browse columns (0x10),
 /// categories (0x11), sort list (0x12) and the display bytes of the property
 /// row (0x13). rekordbox's defaults, or what the stick's `export.pdb` holds
-/// from an earlier export, which [`crate::plan`] carries over (issue #289).
+/// from an earlier export, which [`crate::plan`] carries over (issue #289);
+/// a browse file ([`crate::browse`]) replaces the categories and sort list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preferences {
     /// `(id, name)`, ids 1 to 8. The RGB values stay [`COLORS`]'.
@@ -141,8 +146,8 @@ impl Preferences {
         [
             (self.colors != d.colors, "colour names"),
             (self.columns != d.columns, "browse columns"),
-            (self.categories != d.categories, "category list"),
-            (self.sorts != d.sorts, "sort list"),
+            (self.categories != d.categories, CATEGORY_LIST),
+            (self.sorts != d.sorts, SORT_LIST),
             (self.display != d.display, "background colour"),
         ]
         .into_iter()

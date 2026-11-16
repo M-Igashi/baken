@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::fixed::Preferences;
+use super::fixed::{self, Preferences};
 use super::page::{HEAP_START, PAGE_LEN};
 use super::string::decode;
 use super::Export;
@@ -147,8 +147,8 @@ pub fn preferences(pdb: &[u8]) -> Option<(Preferences, Vec<&'static str>)> {
         (r[1] == 0 && r[3] == 0 && r[7] == 0).then_some(r)
     };
     for (table, what, slot) in [
-        (CATEGORIES, "category list", &mut prefs.categories),
-        (SORTS, "sort list", &mut prefs.sorts),
+        (CATEGORIES, fixed::CATEGORY_LIST, &mut prefs.categories),
+        (SORTS, fixed::SORT_LIST, &mut prefs.sorts),
     ] {
         let rows = live_rows(pdb, table).and_then(|rows| {
             rows.into_iter()
