@@ -7,6 +7,7 @@
 
 pub mod anlz;
 pub mod artwork;
+pub mod browse;
 pub mod build;
 pub mod collection;
 mod error;
@@ -70,6 +71,9 @@ pub struct Options {
     /// A My Tags file (issue #281, format in [`mytags`]): its tags go into
     /// `exportExt.pdb` and, with `onelibrary`, into OneLibrary.
     pub my_tags: Option<PathBuf>,
+    /// A browse file (issue #311, format in [`browse`]): the categories a
+    /// player lists and the keys it sorts by, in place of the stick's.
+    pub browse: Option<PathBuf>,
 }
 
 /// Why [`plan`] left a track out. `Display` gives the English sentence the
@@ -232,6 +236,9 @@ pub struct Plan {
     pub artwork: bool,
     /// [`Options::my_tags`], read and checked.
     pub my_tags: Option<mytags::MyTags>,
+    /// [`Options::browse`], read and checked; [`Plan::preferences`] already
+    /// holds its lists.
+    pub browse: Option<browse::Browse>,
 }
 
 impl Plan {
@@ -399,6 +406,11 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .as_deref()
         .map(mytags::MyTags::load)
         .transpose()?;
+    let browse = opts
+        .browse
+        .as_deref()
+        .map(browse::Browse::load)
+        .transpose()?;
 
     let anlz_roots = if opts.anlz_roots.is_empty() {
         anlz::locate::default_roots()
@@ -534,10 +546,14 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         .collect();
     let on_stick = std::fs::read(rb_dir.join("export.pdb")).ok();
     let mut player_history = on_stick.as_deref().and_then(pdb::PlayerHistory::read);
-    let (preferences, preferences_unreadable) = on_stick
+    let (mut preferences, mut preferences_unreadable) = on_stick
         .as_deref()
         .and_then(pdb::read::preferences)
         .unwrap_or_default();
+    if let Some(browse) = &browse {
+        browse.apply(&mut preferences);
+        preferences_unreadable.retain(|what| !browse.replaces().contains(what));
+    }
     let artwork_ids = match &on_stick {
         Some(pdb) if opts.artwork => pdb::read::artwork_ids(pdb),
         _ => HashMap::new(),
@@ -660,6 +676,7 @@ pub fn plan(opts: &Options) -> Result<Plan> {
         onelibrary: opts.onelibrary,
         artwork: opts.artwork,
         my_tags,
+        browse,
     })
 }
 

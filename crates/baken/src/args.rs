@@ -124,6 +124,12 @@ pub struct ExpressportArgs {
     #[arg(long, value_name = "FILE")]
     pub my_tags: Option<PathBuf>,
 
+    /// The player's browse menu from a JSON file: the categories it lists and the keys it
+    /// sorts by, in the file's order (set per stick in rekordbox, not in the XML). Without
+    /// it the stick keeps its lists. Format in the README.
+    #[arg(long, value_name = "FILE")]
+    pub browse: Option<PathBuf>,
+
     /// Resolve everything and print what would be written, without touching the stick.
     #[arg(long)]
     pub dry_run: bool,

@@ -27,6 +27,7 @@ pub fn run(args: &ExpressportArgs) -> Result<()> {
         onelibrary: args.onelibrary,
         artwork: args.artwork,
         my_tags: args.my_tags.clone(),
+        browse: args.browse.clone(),
     };
     let plan = plan(&opts)?;
     print_plan(&plan);
@@ -119,7 +120,13 @@ fn print_plan(plan: &Plan) {
             }
         }
     }
-    let kept = plan.preferences.changed();
+    let replaced = plan
+        .browse
+        .as_ref()
+        .map(|b| b.replaces())
+        .unwrap_or_default();
+    let mut kept = plan.preferences.changed();
+    kept.retain(|what| !replaced.contains(what));
     if !kept.is_empty() {
         println!(
             "{} Kept from the stick's export.pdb: {} (set in rekordbox, not in the XML)",
@@ -246,6 +253,20 @@ fn print_plan(plan: &Plan) {
             "{} Artwork: the picture embedded in each audio file, as 80 and 240 pixel thumbnails",
             style("▸").cyan()
         );
+    }
+    if let Some(browse) = &plan.browse {
+        for (what, list) in [
+            ("Categories", browse.categories()),
+            ("Sort keys", browse.sort()),
+        ] {
+            if let Some(list) = list {
+                println!(
+                    "{} {what} on the player: {} (the rest hidden)",
+                    style("▸").cyan(),
+                    list.join(", ")
+                );
+            }
+        }
     }
     if let Some(tags) = &plan.my_tags {
         let tagged = tags.tagged(plan.tracks.iter().map(|t| t.device.track.id));

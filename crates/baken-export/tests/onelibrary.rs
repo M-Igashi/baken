@@ -295,3 +295,42 @@ fn export_ext_that_cannot_be_written_is_reported() {
     assert_eq!(report.tracks_in_database, 1);
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+/// `--browse` (#311): the file's categories and sort keys reach `export.pdb`,
+/// and a later run without the file keeps them like any list on the stick.
+#[test]
+fn a_browse_file_sets_the_lists_and_the_stick_keeps_them() {
+    let (root, mut opts) = rekordbox_stick("browse");
+    let path = root.join("browse.json");
+    std::fs::write(
+        &path,
+        r#"{"categories": ["Playlist", "BPM"], "sort": ["Key"]}"#,
+    )
+    .unwrap();
+    opts.browse = Some(path.clone());
+    let p = plan(&opts).unwrap();
+    let browse = p.browse.as_ref().unwrap();
+    assert_eq!(browse.categories().unwrap(), ["PLAYLIST", "BPM"]);
+    assert_eq!(browse.sort().unwrap(), ["KEY"]);
+    assert_eq!(p.preferences.changed(), ["category list", "sort list"]);
+    export(&p, &(), &CancelToken::new()).unwrap();
+    let on_stick = || {
+        let pdb = std::fs::read(rb(&opts).join("export.pdb")).unwrap();
+        baken_export::pdb::read::preferences(&pdb).unwrap()
+    };
+    assert_eq!(on_stick(), (p.preferences.clone(), vec![]));
+
+    opts.browse = None;
+    let again = plan(&opts).unwrap();
+    assert!(again.browse.is_none());
+    assert_eq!(again.preferences, p.preferences);
+
+    std::fs::write(&path, r#"{"categories": ["Tempo"]}"#).unwrap();
+    opts.browse = Some(path);
+    let err = plan(&opts).unwrap_err().to_string();
+    assert!(
+        err.contains("browse.json") && err.contains("\"Tempo\" is not a category"),
+        "{err}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
