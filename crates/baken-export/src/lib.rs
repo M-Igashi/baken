@@ -340,7 +340,8 @@ pub struct Report {
     pub my_tags_error: Option<String>,
     /// [`Options::artwork`]: tracks that got artwork.
     pub artwork: usize,
-    /// Artwork files already on the stick byte for byte, so not written again.
+    /// Artwork files not written again: already on the stick byte for byte,
+    /// or left as they are beside audio that did not change (issue #367).
     pub artwork_unchanged: usize,
     /// FLAC seek tables rebuilt because the file changed after rekordbox
     /// analysed it (issue #219).
@@ -1456,15 +1457,26 @@ impl Drop for StopOnDrop<'_> {
 /// A track's analysis files, audio and final `DeviceTrack`, computed ahead
 /// of the stick writes (issue #160) from local files. `--cdjsafe` is the
 /// exception: it looks at the MP3 the stick may already hold, and reads it
-/// when that one can stay.
+/// when that one can stay. `--artwork` only asks the stick whether a track's
+/// files are there ([`artwork_on_stick`]).
 struct Prepared {
     files: Vec<(FileKind, AnlzFile)>,
     device: DeviceTrack,
     generated: bool,
     seek_table: Option<SeekTable>,
     audio: Audio,
-    /// `--artwork`: the thumbnails of the picture in the audio, if any.
-    artwork: Option<artwork::Thumbnails>,
+    artwork: Artwork,
+}
+
+/// `--artwork`: what a track's four thumbnail files get.
+enum Artwork {
+    /// No picture in the audio, or no `--artwork`.
+    None,
+    /// The thumbnails of the picture in the audio.
+    Made(artwork::Thumbnails),
+    /// The files the stick holds from an earlier export stay, as long as
+    /// [`write_track`] finds the audio there unchanged ([`artwork_on_stick`]).
+    OnStick,
 }
 
 /// Where the audio written to the stick comes from.
@@ -1521,9 +1533,40 @@ fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
     }
     prepared.audio = audio;
     if plan.artwork {
-        prepared.artwork = artwork::for_file(&pt.source);
+        prepared.artwork = if artwork_on_stick(plan, pt, &prepared.audio) {
+            Artwork::OnStick
+        } else {
+            artwork::for_file(&pt.source).map_or(Artwork::None, Artwork::Made)
+        };
     }
     Ok(prepared)
+}
+
+/// Whether the stick already holds this track's artwork: its `export.pdb`
+/// names an image for the track, the four files are there, and so is the
+/// audio they were made from, by its size here and by its bytes in
+/// [`write_track`]. Decoding and scaling every cover again was nearly all of
+/// an export that copies nothing (issue #367); a handful of `stat` calls on
+/// the stick take its place. A picture replaced inside the audio changes the
+/// file, which is then copied and its thumbnails made anew.
+fn artwork_on_stick(plan: &Plan, pt: &PlanTrack, audio: &Audio) -> bool {
+    let Some(&id) = plan.artwork_ids.get(&pt.device.usb_path) else {
+        return false;
+    };
+    let len = |path: &str| {
+        std::fs::metadata(device_path(&plan.device, path))
+            .map(|m| m.len())
+            .ok()
+    };
+    let audio_there = match audio {
+        Audio::OnStick => true,
+        Audio::Source => len(&pt.device.usb_path) == Some(pt.device.file_size),
+        Audio::Transcoded(_) => false,
+    };
+    audio_there
+        && artwork::files(plan.root, id)
+            .iter()
+            .all(|(path, _)| len(path).is_some_and(|n| n > 0))
 }
 
 /// `--cdjsafe`: the MP3 for the stick and its audio frames, encoded here on
@@ -1604,7 +1647,7 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             generated: true,
             seek_table: None,
             audio: Audio::Source,
-            artwork: None,
+            artwork: Artwork::None,
         });
     };
     let mut files = Vec::new();
@@ -1638,7 +1681,7 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
         generated: false,
         seek_table,
         audio: Audio::Source,
-        artwork: None,
+        artwork: Artwork::None,
     })
 }
 
@@ -1685,6 +1728,7 @@ fn write_track(
         std::fs::create_dir_all(parent).map_err(StickError::at(parent))?;
     }
     let existing = std::fs::metadata(&dest).ok().map(|m| m.len());
+    let kept_before = report.kept;
     prepared.device.file_size = match (&prepared.audio, existing) {
         (Audio::OnStick, Some(size)) => {
             report.kept += 1;
@@ -1726,7 +1770,24 @@ fn write_track(
     }
     // Last, so that a track failing above takes no id. One image per track
     // as rekordbox writes them, even for the tracks of one album.
-    if let Some(art) = &prepared.artwork {
+    let art = match std::mem::replace(&mut prepared.artwork, Artwork::None) {
+        Artwork::None => None,
+        Artwork::Made(art) => Some(art),
+        Artwork::OnStick => {
+            let audio_kept = report.kept > kept_before;
+            match audio_kept.then(|| artwork_ids.kept(&pt.device.usb_path)) {
+                Some(Some(id)) => {
+                    report.artwork += 1;
+                    report.artwork_unchanged += 4;
+                    prepared.device.artwork_id = id;
+                    None
+                }
+                // the audio was copied after all, or another track took the id
+                _ => artwork::for_file(&pt.source),
+            }
+        }
+    };
+    if let Some(art) = &art {
         let id = artwork_ids.assign(&pt.device.usb_path);
         for (path, medium) in artwork::files(plan.root, id) {
             let path = device_path(&plan.device, &path);
@@ -1764,10 +1825,16 @@ impl<'a> ArtworkIds<'a> {
         }
     }
 
+    /// The id the track has on the stick, unless another track took it.
+    fn kept(&mut self, usb_path: &str) -> Option<u32> {
+        let id = *self.on_stick.get(usb_path)?;
+        self.taken.insert(id).then_some(id)
+    }
+
     fn assign(&mut self, usb_path: &str) -> u32 {
-        match self.on_stick.get(usb_path) {
-            Some(&id) if self.taken.insert(id) => id,
-            _ => {
+        match self.kept(usb_path) {
+            Some(id) => id,
+            None => {
                 self.next += 1;
                 self.next - 1
             }

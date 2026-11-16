@@ -129,6 +129,60 @@ fn the_cover_goes_onto_the_stick_as_rekordbox_writes_it() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+/// Beside audio that did not change, the stick's thumbnails are not made
+/// again (#367): whatever the four files hold stays, and `export.pdb` goes on
+/// naming them. New audio, or a missing file, makes them anew.
+#[test]
+fn artwork_beside_unchanged_audio_is_left_alone() {
+    let (root, opts) = library("kept");
+    export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let ours = std::fs::read(art(&opts, "a1.jpg")).unwrap();
+    let names = ["a1.jpg", "a1_m.jpg", "b1.jpg", "b1_m.jpg"];
+    let put_others = || {
+        for name in names {
+            std::fs::write(art(&opts, name), b"another tool's thumbnail").unwrap();
+        }
+    };
+    let run = || export(&plan(&opts).unwrap(), &(), &CancelToken::new()).unwrap();
+    let pdb_names_it = || {
+        let pdb = std::fs::read(opts.device.join("PIONEER/rekordbox/export.pdb")).unwrap();
+        let needle = b"/PIONEER/Artwork/00001/a1.jpg";
+        pdb.windows(needle.len()).any(|w| w == needle)
+    };
+
+    put_others();
+    let kept = run();
+    assert_eq!((kept.artwork, kept.artwork_unchanged), (1, 4));
+    for name in names {
+        assert_eq!(
+            std::fs::read(art(&opts, name)).unwrap(),
+            b"another tool's thumbnail"
+        );
+    }
+    assert!(pdb_names_it());
+
+    // one of the four gone: all are made again
+    std::fs::remove_file(art(&opts, "b1_m.jpg")).unwrap();
+    let remade = run();
+    assert_eq!((remade.artwork, remade.artwork_unchanged), (1, 0));
+    assert_eq!(std::fs::read(art(&opts, "a1.jpg")).unwrap(), ours);
+
+    // another cover in the audio: the file is copied, its artwork made anew
+    // under the same id
+    put_others();
+    let music = root.join("music/cover.aif");
+    aiff_with_cover(&music, &png(200, 300));
+    let changed = run();
+    assert_eq!(
+        (changed.copied, changed.artwork, changed.artwork_unchanged),
+        (1, 1, 0)
+    );
+    let new = std::fs::read(art(&opts, "a1.jpg")).unwrap();
+    assert!(new != ours && new.starts_with(&[0xff, 0xd8]));
+    assert!(pdb_names_it() && !art(&opts, "a2.jpg").exists());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
 #[test]
 fn prune_removes_artwork_no_track_uses() {
     let (root, mut opts) = library("prune");
