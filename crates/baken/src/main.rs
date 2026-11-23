@@ -1,4 +1,5 @@
 mod args;
+mod awake;
 mod cdjsafe;
 mod cli;
 #[cfg(feature = "expressport")]
