@@ -42,6 +42,67 @@ pub fn prepare(file: &mut AnlzFile, kind: FileKind, usb_path: &str, cues_xml: &[
     }
 }
 
+/// Move an analysis `seconds` later, for a `--cdjsafe` MP3 that plays that
+/// much later than the source the analysis is of (issue #374): every beat of
+/// `PQTZ`, and the scrolling waveforms (`PWV3`, `PWV5`, `PWV7`, 150 columns a
+/// second) by whole columns of rekordbox's silence in front. The cues move
+/// with the track they are made from, and `PSSI` counts in beats. `PQT2`
+/// repeats beat times in a form not decoded, so it goes back to the empty
+/// one rekordbox also writes. The previews span the whole track, where 51 ms
+/// is a fraction of a column.
+pub fn delay(file: &mut AnlzFile, kind: FileKind, seconds: f64) {
+    if seconds <= 0.0 {
+        return;
+    }
+    let columns = (seconds * 150.0).round() as usize;
+    match kind {
+        FileKind::Dat => {
+            let ms = (seconds * 1000.0).round() as u32;
+            if let Some(s) = file.find_mut(b"PQTZ") {
+                let beats = s.bytes.get_mut(24..).unwrap_or_default();
+                for beat in beats.as_chunks_mut::<8>().0 {
+                    let time = u32::from_be_bytes([beat[4], beat[5], beat[6], beat[7]]);
+                    beat[4..8].copy_from_slice(&time.saturating_add(ms).to_be_bytes());
+                }
+            }
+        }
+        FileKind::Ext => {
+            if let Some(s) = file.find_mut(b"PQT2") {
+                *s = super::generate::pqt2_empty();
+            }
+            pad_front(file, b"PWV3", &[0xE0], columns);
+            pad_front(file, b"PWV5", &[0xFF, 0x80], columns);
+        }
+        FileKind::TwoEx => pad_front(file, b"PWV7", &[0, 0, 0], columns),
+    }
+}
+
+/// Put `columns` silent entries before those of the waveform section `tag`,
+/// whose 24-byte header gives the entry size at 12 and the count at 16.
+fn pad_front(file: &mut AnlzFile, tag: &[u8; 4], silent: &[u8], columns: usize) {
+    let Some(s) = file.find_mut(tag) else {
+        return;
+    };
+    let word = |at: usize| {
+        s.bytes
+            .get(at..at + 4)
+            .map(|b| u32::from_be_bytes(b.try_into().unwrap()))
+    };
+    let (Some(size), Some(count)) = (word(12), word(16)) else {
+        return;
+    };
+    if size as usize != silent.len() || columns == 0 {
+        return;
+    }
+    let mut payload = Vec::with_capacity(s.bytes.len() - 12 + columns * silent.len());
+    payload.extend_from_slice(&size.to_be_bytes());
+    payload.extend_from_slice(&(count + columns as u32).to_be_bytes());
+    payload.extend_from_slice(&s.bytes[20..24]);
+    payload.extend(silent.repeat(columns));
+    payload.extend_from_slice(&s.bytes[24..]);
+    *s = super::section::section(tag, 0x18, &payload);
+}
+
 /// `PVBR` for a CBR MP3: 400 zero entries and a trailer of audio frames x 1152.
 pub fn set_cbr_pvbr(file: &mut AnlzFile, audio_frames: u32) {
     if let Some(s) = file.find_mut(b"PVBR") {
@@ -172,6 +233,72 @@ fn xing_frames(tag: &[u8]) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::anlz::section::section;
+
+    /// Issue #374: 51 ms later is 51 ms on every beat and 8 columns of
+    /// silence before the scrolling waveforms.
+    #[test]
+    fn delay_moves_the_grid_and_the_scrolling_waveforms() {
+        let detail = |tag: &[u8; 4], size: u32, data: &[u8]| {
+            let mut p = size.to_be_bytes().to_vec();
+            p.extend((data.len() as u32 / size).to_be_bytes());
+            p.extend(0x0096_0000u32.to_be_bytes());
+            p.extend_from_slice(data);
+            section(tag, 0x18, &p)
+        };
+        let mut pqtz = vec![0u8; 12];
+        pqtz[8..12].copy_from_slice(&2u32.to_be_bytes());
+        for (n, time) in [(1u16, 25u32), (2, 525)] {
+            pqtz.extend(n.to_be_bytes());
+            pqtz.extend(12000u16.to_be_bytes());
+            pqtz.extend(time.to_be_bytes());
+        }
+        let file = |sections| AnlzFile {
+            header_tail: [0; 16],
+            sections,
+        };
+        let shift = 2257.0 / 44100.0;
+
+        let mut dat = file(vec![section(b"PQTZ", 0x18, &pqtz)]);
+        delay(&mut dat, FileKind::Dat, shift);
+        let beats = &dat.find(b"PQTZ").unwrap().bytes[24..];
+        assert_eq!(&beats[4..8], &76u32.to_be_bytes());
+        assert_eq!(&beats[12..16], &576u32.to_be_bytes());
+        assert_eq!(&beats[..4], &[0, 1, 0x2e, 0xe0], "number and tempo stay");
+
+        let mut ext = file(vec![
+            detail(b"PWV3", 1, &[0x21, 0x22]),
+            section(b"PQT2", 0x38, &[7; 60]),
+            detail(b"PWV5", 2, &[1, 2, 3, 4]),
+        ]);
+        delay(&mut ext, FileKind::Ext, shift);
+        let pwv3 = &ext.find(b"PWV3").unwrap().bytes;
+        assert_eq!(&pwv3[16..20], &10u32.to_be_bytes());
+        assert_eq!(&pwv3[24..], &[[0xE0; 8].as_slice(), &[0x21, 0x22]].concat());
+        assert_eq!(
+            pwv3.len(),
+            u32::from_be_bytes(pwv3[8..12].try_into().unwrap()) as usize
+        );
+        let pwv5 = &ext.find(b"PWV5").unwrap().bytes;
+        assert_eq!(&pwv5[16..20], &10u32.to_be_bytes());
+        assert_eq!(&pwv5[24..28], &[0xFF, 0x80, 0xFF, 0x80]);
+        assert_eq!(&pwv5[40..], &[1, 2, 3, 4]);
+        assert_eq!(
+            ext.find(b"PQT2"),
+            Some(&crate::anlz::generate::pqt2_empty())
+        );
+
+        let mut two = file(vec![detail(b"PWV7", 3, &[9, 9, 9])]);
+        delay(&mut two, FileKind::TwoEx, shift);
+        let pwv7 = &two.find(b"PWV7").unwrap().bytes;
+        assert_eq!(&pwv7[16..20], &9u32.to_be_bytes());
+        assert_eq!(&pwv7[24 + 24..], &[9, 9, 9]);
+
+        let mut same = file(vec![detail(b"PWV3", 1, &[0x21])]);
+        let before = same.clone();
+        delay(&mut same, FileKind::Ext, 0.0);
+        assert_eq!(same, before);
+    }
 
     #[test]
     fn mp3_audio_excludes_tags_and_the_info_frame() {

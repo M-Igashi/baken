@@ -46,6 +46,9 @@ pub struct NewTrack {
     pub track_id: u64,
     pub location_url: String,
     pub size: u64,
+    /// Seconds the MP3 plays later than its source (from `transcode`, 0 for
+    /// a copy): added to every beat grid and cue time.
+    pub shift: f64,
 }
 
 /// A playlist [`rewrite_xml`] writes under the `CDJ-safe (MP3)` folder: its
@@ -449,11 +452,50 @@ fn emit_track<W: std::io::Write>(
     } else {
         writer.write_event(Event::Start(e))?;
         for child in &src.children {
-            writer.write_event(child.borrow())?;
+            match shifted(child, new.shift) {
+                Some(moved) => writer.write_event(moved)?,
+                None => writer.write_event(child.borrow())?,
+            }
         }
         writer.write_event(Event::End(BytesEnd::new("TRACK")))?;
     }
     Ok(())
+}
+
+/// `child` with its times moved by `shift` seconds: `Inizio` of a `<TEMPO>`,
+/// `Start` and `End` of a `<POSITION_MARK>`, written with three decimals as
+/// rekordbox does. `None` when nothing moves, so that the element goes out as
+/// it came: no shift, another element, or a time that is not a number.
+fn shifted(child: &Event<'_>, shift: f64) -> Option<Event<'static>> {
+    let (e, empty) = match child {
+        Event::Empty(e) => (e, true),
+        Event::Start(e) => (e, false),
+        _ => return None,
+    };
+    let times: &[&str] = match e.name().as_ref() {
+        "TEMPO" => &["Inizio"],
+        "POSITION_MARK" => &["Start", "End"],
+        _ => return None,
+    };
+    if shift == 0.0 {
+        return None;
+    }
+    let mut moved = BytesStart::new(e.name().as_ref().to_string());
+    for attr in e.attributes() {
+        let attr = attr.ok()?;
+        let (key, value) = (attr.key.as_ref(), attr.value.as_ref());
+        if times.contains(&key) && !value.is_empty() {
+            let time: f64 = value.parse().ok()?;
+            moved.push_attribute((key, format!("{:.3}", time + shift).as_str()));
+        } else {
+            push_raw_attr(&mut moved, key, value);
+        }
+    }
+    Some(if empty {
+        Event::Empty(moved.into_owned())
+    } else {
+        Event::Start(moved.into_owned())
+    })
 }
 
 /// Push an attribute whose value bytes are already XML-escaped (taken
@@ -643,6 +685,61 @@ mod tests {
         assert_eq!(elem_children, 3);
     }
 
+    /// Issue #374: a transcode plays later than its source, so the new
+    /// track's grid and cues move with it; the source's own entry does not.
+    #[test]
+    fn a_transcoded_track_has_its_times_moved() {
+        let sources = collect_tracks(SAMPLE_XML.as_bytes(), &["1".to_string()]).unwrap();
+        let new_tracks = vec![NewTrack {
+            track_id: 9,
+            location_url: "file://localhost/Users/dj/cdjsafe/alpha%20beta.mp3".into(),
+            size: 9800000,
+            shift: 2257.0 / 44100.0,
+        }];
+        let out = rewrite_xml(
+            SAMPLE_XML.as_bytes(),
+            &sources,
+            &new_tracks,
+            &[],
+            &HashSet::new(),
+            0,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.contains(r#"<TEMPO Inizio="0.076" Bpm="120.00" Metro="4/4" Battito="1"/>"#));
+        assert!(out.contains(r#"<POSITION_MARK Name="" Type="0" Start="0.076" Num="-1"/>"#));
+        assert!(out.contains(r#"Start="30.551" Num="0" Red="40" Green="226" Blue="20"/>"#));
+        // the source track keeps its own
+        assert_eq!(out.matches(r#"Inizio="0.025""#).count(), 1);
+        assert_eq!(out.matches(r#"Start="30.5""#).count(), 1);
+
+        let event =
+            |xml: &'static str| Event::Empty(BytesStart::from_content(xml, xml.find(' ').unwrap()));
+        let text = |e: Option<Event>| {
+            e.map(|e| {
+                let mut w = Writer::new(Vec::new());
+                w.write_event(e).unwrap();
+                String::from_utf8(w.into_inner()).unwrap()
+            })
+        };
+        let lp = event(r#"POSITION_MARK Name="a &amp; b" Type="4" Start="10" End="12.5" Num="-1""#);
+        assert_eq!(
+            text(shifted(&lp, 0.025)).as_deref(),
+            Some(
+                r#"<POSITION_MARK Name="a &amp; b" Type="4" Start="10.025" End="12.525" Num="-1"/>"#
+            )
+        );
+        assert_eq!(text(shifted(&lp, 0.0)), None);
+        assert_eq!(
+            text(shifted(
+                &event(r#"POSITION_MARK Start="soon" Num="-1""#),
+                0.025
+            )),
+            None
+        );
+        assert_eq!(text(shifted(&event(r#"OTHER Start="1""#), 0.025)), None);
+    }
+
     #[test]
     fn rewrite_emits_new_tracks_playlist_and_bumped_counts() {
         let ids = vec!["7".to_string(), "1".to_string()];
@@ -652,11 +749,13 @@ mod tests {
                 track_id: 8,
                 location_url: "file://localhost/Users/dj/cdjsafe/gamma.mp3".into(),
                 size: 9000000,
+                shift: 0.0,
             },
             NewTrack {
                 track_id: 9,
                 location_url: "file://localhost/Users/dj/cdjsafe/alpha%20beta.mp3".into(),
                 size: 9800000,
+                shift: 0.0,
             },
         ];
         let playlists = [NewPlaylist {

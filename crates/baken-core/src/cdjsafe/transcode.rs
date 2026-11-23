@@ -137,24 +137,98 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
     })
 }
 
+/// Samples at 44.1 kHz that rekordbox and the players hear before the first
+/// sample ffmpeg encodes into an MP3 here: LAME's encoder delay (576), the
+/// decoder's (529), and the `Info` header frame ffmpeg writes first, which
+/// they decode as a frame of silence (1152). Measured on 2026-11-23 against
+/// rekordbox 7's own waveforms (issue #374).
+const OUTPUT_LEAD: i64 = 576 + 529 + 1152;
+
+/// ID3 `TXXX` frame in which [`transcode`] notes how many samples later than
+/// its source the MP3 plays (issue #374), for [`shift_of`].
+const MARK_KEY: &str = "BAKEN_CDJSAFE";
+
+/// Samples at 44.1 kHz by which the MP3 plays later than its source, as
+/// rekordbox and the players hear both. ffmpeg decodes the source with
+/// `skip_manual`, keeping the encoder delay and priming rekordbox keeps too
+/// (an MP3's LAME delay, AAC priming), so the source's own lead is only an
+/// MP3's `Info` frame, `info_frame` samples at `sample_rate`. Negative when
+/// that frame is longer than the new lead (MPEG-2.5).
+fn lag(sample_rate: u32, info_frame: Option<u32>) -> i64 {
+    let lead = f64::from(info_frame.unwrap_or(0)) / f64::from(sample_rate.max(1));
+    OUTPUT_LEAD - (lead * f64::from(SAFE_SAMPLE_RATE)).round() as i64
+}
+
+/// The audio filter that resamples to 44.1 kHz (`resampler`, empty for
+/// ffmpeg's default), counts time from the first sample (the delay kept by
+/// `skip_manual` starts before zero), and puts `silence` samples before the
+/// audio.
+fn audio_filter(resampler: &str, silence: i64) -> String {
+    let base = format!("aresample={SAFE_SAMPLE_RATE}{resampler},asetpts=N/SR/TB");
+    match silence {
+        n if n > 0 => format!("{base},adelay=delays={n}S:all=1"),
+        _ => base,
+    }
+}
+
+/// Seconds by which the MP3 at `path` plays later than the source
+/// [`transcode`] made it of, read from the note in its ID3v2 tag; `None` for
+/// any other file, an MP3 from before the note among them.
+pub fn shift_of(path: &Path) -> Option<f64> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 10];
+    file.read_exact(&mut head).ok()?;
+    if &head[..3] != b"ID3" {
+        return None;
+    }
+    let size = head[6..10]
+        .iter()
+        .fold(0u64, |acc, &b| (acc << 7) | u64::from(b & 0x7F));
+    let mut tag = Vec::new();
+    file.take(size).read_to_end(&mut tag).ok()?;
+    let key = format!("{MARK_KEY}\0");
+    let at = tag.windows(key.len()).position(|w| w == key.as_bytes())? + key.len();
+    let digits = tag[at..].iter().take_while(|b| b.is_ascii_digit()).count();
+    let samples: u32 = std::str::from_utf8(&tag[at..at + digits])
+        .ok()?
+        .parse()
+        .ok()?;
+    Some(f64::from(samples) / f64::from(SAFE_SAMPLE_RATE))
+}
+
 /// Re-encode `src` to the CDJ-safe profile at `dst`. Metadata is carried over
 /// by ffmpeg (`-map_metadata 0`) and written as ID3v2.3; front-cover artwork
-/// is kept, re-encoded to JPEG and capped at 500×500. ffmpeg's libmp3lame
-/// writes a valid Xing/LAME header by default, so rekordbox skips the encoder
-/// priming delay and cues stay aligned (issue #40 pitfall table).
-pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
+/// is kept, re-encoded to JPEG and capped at 500×500.
+///
+/// Returns the seconds by which the MP3 plays later than `src`, on the
+/// timeline rekordbox and the players use: they decode an MP3 without cutting
+/// the encoder delay its LAME header states and play the `Info` frame as
+/// silence, which comes to 51 ms for most sources and 25 ms for a CBR MP3
+/// with an `Info` frame of its own. The caller moves the source's cues, grid
+/// and waveforms by that much; every sample of the source is kept (issue
+/// #374). Only an MPEG-2.5 source with an `Info` frame would come out early
+/// instead; it gets that much silence in front and a shift of 0.
+pub fn transcode(src: &Path, dst: &Path) -> Result<f64> {
+    let info = probe(src)?;
+    let info_frame = (info.codec == "mp3")
+        .then(|| std::fs::File::open(src).ok())
+        .flatten()
+        .and_then(|mut f| super::info_frame_samples(&mut f));
+    let lag = lag(info.sample_rate, info_frame);
+    let (shift, silence) = (lag.max(0), (-lag).max(0));
     // Preferred: soxr very-high resampling. Not every ffmpeg build has
     // libsoxr, so fall back to the default swresample on failure.
-    let attempts: [&[&str]; 2] = [&["-af", "aresample=resampler=soxr:precision=28"], &[]];
+    let resamplers = [":resampler=soxr:precision=28", ""];
 
     let mut last_err = String::new();
-    for resample_args in attempts {
+    for resampler in resamplers {
         let mut cmd = crate::tools::ffmpeg();
-        cmd.args(["-y", "-nostdin", "-i"])
+        cmd.args(["-y", "-nostdin", "-flags2", "+skip_manual", "-i"])
             .arg(src)
             .args(["-map", "0:a:0", "-map", "0:v:0?"])
             .args(["-c:a", "libmp3lame", "-b:a", "320k", "-ar", "44100"])
-            .args(resample_args)
+            .args(["-af", &audio_filter(resampler, silence)])
             .args(["-c:v", "mjpeg", "-q:v", "2"])
             .args([
                 "-vf",
@@ -162,6 +236,8 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
             ])
             .args(["-disposition:v", "attached_pic"])
             .args(["-map_metadata", "0", "-id3v2_version", "3", "-f", "mp3"])
+            .arg("-metadata")
+            .arg(format!("{MARK_KEY}={shift}"))
             .arg(dst);
 
         let output = cmd
@@ -172,7 +248,7 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
         if output.status.success() {
             let errors = decode_errors(&stderr);
             if errors <= MAX_DECODE_ERRORS {
-                return Ok(());
+                return Ok(shift as f64 / f64::from(SAFE_SAMPLE_RATE));
             }
             let _ = std::fs::remove_file(dst);
             bail!(
@@ -223,6 +299,32 @@ mod tests {
         assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
         assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
         assert_eq!(parse_bits(&None), None);
+    }
+
+    /// How much later than its source the MP3 plays (issue #374): the new
+    /// MP3's whole lead, less an `Info` frame the source already played as
+    /// silence.
+    #[test]
+    fn lag_follows_the_source_lead() {
+        assert_eq!(lag(44100, None), 2257);
+        assert_eq!(lag(48000, None), 2257);
+        assert_eq!(lag(44100, Some(1152)), 1105);
+        assert_eq!(lag(48000, Some(1152)), 1199);
+        assert_eq!(lag(22050, Some(576)), 1105);
+        // MPEG-2.5: one frame is longer than the new lead
+        assert_eq!(lag(8000, Some(576)), -918);
+    }
+
+    #[test]
+    fn audio_filter_pads_only_what_would_come_out_early() {
+        assert_eq!(
+            audio_filter(":resampler=soxr:precision=28", -2257),
+            "aresample=44100:resampler=soxr:precision=28,asetpts=N/SR/TB"
+        );
+        assert_eq!(
+            audio_filter("", 918),
+            "aresample=44100,asetpts=N/SR/TB,adelay=delays=918S:all=1"
+        );
     }
 
     #[test]

@@ -147,6 +147,21 @@ pub struct Track {
 }
 
 impl Track {
+    /// The track with every beat grid and cue time `seconds` later: what a
+    /// `--cdjsafe` MP3 needs, which plays that much later than the source
+    /// these times are of (issue #374).
+    pub fn delayed(&self, seconds: f64) -> Track {
+        let mut track = self.clone();
+        for tempo in &mut track.tempos {
+            tempo.inizio += seconds;
+        }
+        for cue in &mut track.cues {
+            cue.start += seconds;
+            cue.end = cue.end.map(|end| end + seconds);
+        }
+        track
+    }
+
     pub fn file_name(&self) -> &str {
         self.location.rsplit('/').next().unwrap_or(&self.location)
     }

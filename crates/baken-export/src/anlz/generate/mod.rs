@@ -7,4 +7,4 @@ pub mod waveform;
 
 pub use assemble::build_files;
 pub use grid::{beats, pqt2_empty, pqtz, Beat};
-pub use waveform::{measure, Measured, Meter};
+pub use waveform::{measure, measure_delayed, Measured, Meter};

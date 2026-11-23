@@ -59,7 +59,7 @@ Waveforms are copied, not computed: every track should have been analysed in rek
 
 ### Tracks rekordbox never analysed (`--generate-analysis`)
 
-`--generate-analysis` computes the analysis files from the audio instead, for tracks rekordbox has never seen (a Mixxx or Traktor library converted to `collection.xml`, or a machine without rekordbox). The beat grid and the cues come from the XML as always, so a track whose XML has no `TEMPO` gets no beat grid (the plan says how many; the player then detects the BPM while playing, and quantize and beat sync cannot use it); the waveforms are decoded and measured by `baken` ([#147](https://github.com/M-Igashi/baken/issues/147)). The scrolling waveform reproduces rekordbox's own to the pixel on the tracks it was checked against; the colour, three-band and preview waveforms are close approximations. Phrase analysis cannot be generated and is left out. Tracks that do have a rekordbox analysis are still copied, because copying is exact.
+`--generate-analysis` computes the analysis files from the audio instead, for tracks rekordbox has never seen (a Mixxx or Traktor library converted to `collection.xml`, or a machine without rekordbox). The beat grid and the cues come from the XML as always, so a track whose XML has no `TEMPO` gets no beat grid (the plan says how many; the player then detects the BPM while playing, and quantize and beat sync cannot use it); the waveforms are decoded and measured by `baken` ([#147](https://github.com/M-Igashi/baken/issues/147)). The scrolling waveform reproduces rekordbox's own to the pixel on the tracks it was checked against; the colour, three-band and preview waveforms are close approximations. An MP3 is decoded the way rekordbox decodes it, with the encoder delay kept and the `Info` frame of a CBR file played as silence, so its waveform sits under the XML's grid (up to 4.14.0 it was 25 to 51 ms early, [#374](https://github.com/M-Igashi/baken/issues/374)). Phrase analysis cannot be generated and is left out. Tracks that do have a rekordbox analysis are still copied, because copying is exact.
 
 ### My Settings
 
@@ -67,7 +67,7 @@ The My Settings files `MYSETTING.DAT`, `MYSETTING2.DAT` and `DJMMYSETTING.DAT` a
 
 ### CDJ Safe on the way (`--cdjsafe`)
 
-`--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players.
+`--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players. An MP3 plays 51 ms later than a lossless source does, as rekordbox and the players decode it (25 ms for a CBR MP3 source), so the analysis is moved by that much: every beat of the grid, every cue, and the scrolling waveforms, which get eight columns of silence in front (2 ms coarser than the shift). No sample of the audio is cut. Up to 4.14.0 the analysis went out unmoved and sat 51 ms ahead of the audio ([#374](https://github.com/M-Igashi/baken/issues/374)).
 
 ### Artwork (`--artwork`)
 
@@ -129,7 +129,7 @@ The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and
 
 ### What is written again
 
-Audio already on the stick stays when it still matches its source, so re-running after a playlist change is quick: a copied file when its size and 64 KiB at its start, middle and end match the source, a `--cdjsafe` MP3 when it is whole and was written at least an hour after the source last changed (the hour absorbs the clock change, which shifts every time on a FAT stick). Anything else is written again, so a re-export after `baken headroom`, which changes MP3 and AAC files in place at the same size, carries the new audio ([#231](https://github.com/M-Igashi/baken/issues/231)). `export.pdb` is rebuilt every run.
+Audio already on the stick stays when it still matches its source, so re-running after a playlist change is quick: a copied file when its size and 64 KiB at its start, middle and end match the source, a `--cdjsafe` MP3 when it is whole, was written at least an hour after the source last changed (the hour absorbs the clock change, which shifts every time on a FAT stick), and says in its tags how much later than its source it plays (MP3s that 4.14.0 or earlier put there do not, and are converted again once). Anything else is written again, so a re-export after `baken headroom`, which changes MP3 and AAC files in place at the same size, carries the new audio ([#231](https://github.com/M-Igashi/baken/issues/231)). `export.pdb` is rebuilt every run.
 
 ### What the stick keeps from its last export
 

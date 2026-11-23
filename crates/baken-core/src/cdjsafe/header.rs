@@ -133,15 +133,53 @@ fn id3v2_len(buf: &[u8]) -> usize {
     10 + size + if buf[5] & 0x10 != 0 { 10 } else { 0 }
 }
 
-/// `buf` is the start of the MPEG stream, after any ID3v2 tag.
-fn mp3_vbr_without_header(buf: &[u8]) -> bool {
-    // The first frame that is followed by another one, so a stray sync pattern
-    // in padding is not taken for the stream.
-    let start = (0..buf.len().saturating_sub(4)).find(|&i| {
+/// Where the MPEG stream in `buf` starts: the first frame that is followed by
+/// another one, so a stray sync pattern in padding is not taken for it.
+fn first_frame(buf: &[u8]) -> Option<usize> {
+    (0..buf.len().saturating_sub(4)).find(|&i| {
         frame(&buf[i..])
             .is_some_and(|(_, len, _)| len > 0 && buf.get(i + len..).and_then(frame).is_some())
-    });
-    let Some(start) = start else {
+    })
+}
+
+/// Samples in the first frame of an MP3 when that frame is an `Info` header
+/// with a table of contents, the form LAME and ffmpeg write for CBR: 1152 for
+/// MPEG-1, 576 for MPEG-2 and 2.5. rekordbox decodes such a frame as audio,
+/// a frame of silence, where it skips a `Xing` frame (issue #374: of the
+/// library's MP3s that rekordbox 7 analysed, 135 with such a frame give its
+/// waveform only with that frame of silence in front, while 10 with a `Xing`
+/// frame and the one `Info` frame without a table give it without). MPEG-2
+/// files were not among them; they follow the same rule here. `None` for
+/// everything else, other formats included.
+pub(crate) fn info_frame_samples<R: Read + Seek>(file: &mut R) -> Option<u32> {
+    let mut head = |offset: u64| -> Option<Vec<u8>> {
+        file.seek(SeekFrom::Start(offset)).ok()?;
+        let mut buf = Vec::new();
+        file.by_ref().take(HEAD).read_to_end(&mut buf).ok()?;
+        Some(buf)
+    };
+    let mut buf = head(0)?;
+    let tag = id3v2_len(&buf);
+    if tag > 0 {
+        buf = head(tag as u64)?;
+    }
+    let start = first_frame(&buf)?;
+    let (_, _, side_info) = frame(&buf[start..])?;
+    let at = start + 4 + side_info;
+    let flags = u32::from_be_bytes(buf.get(at + 4..at + 8)?.try_into().ok()?);
+    if buf.get(at..at + 4)? != b"Info" || flags & 4 == 0 {
+        return None;
+    }
+    Some(if (buf[start + 1] >> 3) & 3 == 3 {
+        1152
+    } else {
+        576
+    })
+}
+
+/// `buf` is the start of the MPEG stream, after any ID3v2 tag.
+fn mp3_vbr_without_header(buf: &[u8]) -> bool {
+    let Some(start) = first_frame(buf) else {
         return false;
     };
     let (_, _, side_info) = frame(&buf[start..]).unwrap();
@@ -222,6 +260,32 @@ mod tests {
         let mut with_header = mp3_frame(9, &xing);
         with_header.extend_from_slice(&vbr);
         assert!(!mp3_vbr_without_header(&with_header));
+    }
+
+    /// Issue #374: rekordbox decodes an `Info` frame with a table of
+    /// contents as a frame of silence, and skips a `Xing` frame.
+    #[test]
+    fn info_frame_with_a_table_counts_as_one_frame() {
+        let header = |tag: &[u8; 4], flags: u8| {
+            let mut body = [0u8; 40];
+            body[32..36].copy_from_slice(tag);
+            body[39] = flags;
+            let mut file = b"ID3\x03\0\0\0\0\0\x0a".to_vec();
+            file.resize(20, 0);
+            file.extend(mp3_frame(14, &body));
+            file.extend((0..10).flat_map(|_| mp3_frame(14, &[])));
+            std::io::Cursor::new(file)
+        };
+        assert_eq!(info_frame_samples(&mut header(b"Info", 0x0f)), Some(1152));
+        assert_eq!(info_frame_samples(&mut header(b"Info", 0x07)), Some(1152));
+        assert_eq!(info_frame_samples(&mut header(b"Info", 0x03)), None);
+        assert_eq!(info_frame_samples(&mut header(b"Xing", 0x0f)), None);
+        let cbr: Vec<u8> = (0..10).flat_map(|_| mp3_frame(14, &[])).collect();
+        assert_eq!(info_frame_samples(&mut std::io::Cursor::new(cbr)), None);
+        assert_eq!(
+            info_frame_samples(&mut std::io::Cursor::new(b"fLaC".to_vec())),
+            None
+        );
     }
 
     /// Issue #331: a tag larger than the window hid the frames behind it.
