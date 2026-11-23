@@ -115,18 +115,31 @@ fn pqtz_from_tempo_list_matches_local_anlz() {
 }
 
 /// Generated waveforms against rekordbox's, for fixture tracks whose audio is
-/// still where `collection.xml` says (the library drive). Skips otherwise.
+/// still where `collection.xml` says (the library drive) and as rekordbox
+/// analysed it: the same length, and the same level, which the first byte of
+/// `PWV4` (the highest sample) shows. Skips otherwise. The blue detail and the
+/// colour and three-band sections are rekordbox's own values (issue #377).
 #[test]
-fn waveforms_match_rekordbox_within_tolerance() {
+fn waveforms_match_rekordbox() {
     use baken_export::anlz::generate::{build_files, measure};
     let Some(root) = fixture_root() else { return };
     let lib = Library::load(&root.join("collection.xml")).unwrap();
     let index = AnlzIndex::build(&[root.join("local-anlz")]).unwrap();
+    let share = |a: &[u8], b: &[u8], step: usize, at: usize, close: i16| {
+        let pairs = a
+            .iter()
+            .skip(at)
+            .step_by(step)
+            .zip(b.iter().skip(at).step_by(step));
+        let (same, n) = pairs.fold((0, 0), |(same, n), (&x, &y)| {
+            let near = (i16::from(x as i8) - i16::from(y as i8)).abs() <= close;
+            (same + usize::from(near), n + 1)
+        });
+        same as f64 / n as f64
+    };
     let mut compared = 0;
-    let (mut heights, mut whites, mut columns) = (0usize, 0usize, 0usize);
-    let mut band_corr = [0.0f64; 3];
-    for track in &lib.tracks {
-        if compared == 4 {
+    for track in lib.tracks.iter().step_by(13) {
+        if compared == 3 {
             break;
         }
         let source = Path::new(&track.location);
@@ -148,55 +161,38 @@ fn waveforms_match_rekordbox_within_tolerance() {
         );
         let audio = measure(source).unwrap();
         let [_, ours_ext, ours_two] = build_files(track, "/Contents/x.flac", &audio, None);
-        compared += 1;
-
-        let t3 = &theirs_ext.find(b"PWV3").unwrap().bytes[24..];
-        let o3 = &ours_ext.find(b"PWV3").unwrap().bytes[24..];
-        assert!(
-            (t3.len() as i64 - o3.len() as i64).abs() <= 30,
-            "{}: {} vs {} columns",
-            track.name,
-            t3.len(),
-            o3.len()
-        );
-        let n = t3.len().min(o3.len());
-        columns += n;
-        heights += (0..n).filter(|&i| t3[i] & 0x1f == o3[i] & 0x1f).count();
-        whites += (0..n).filter(|&i| t3[i] >> 5 == o3[i] >> 5).count();
-
-        let t7 = &theirs_two.find(b"PWV7").unwrap().bytes[24..];
-        let o7 = &ours_two.find(b"PWV7").unwrap().bytes[24..];
-        for j in 0..3 {
-            let a: Vec<f64> = (0..n).map(|i| t7[i * 3 + j] as f64).collect();
-            let b: Vec<f64> = (0..n).map(|i| o7[i * 3 + j] as f64).collect();
-            band_corr[j] += correlation(&a, &b);
+        let body =
+            |f: &AnlzFile, tag: &[u8; 4], from: usize| f.find(tag).unwrap().bytes[from..].to_vec();
+        let pair = |tag: &[u8; 4], from: usize| {
+            let (theirs, ours) = match tag {
+                b"PWV7" | b"PWV6" | b"PWVC" => (&theirs_two, &ours_two),
+                _ => (&theirs_ext, &ours_ext),
+            };
+            (body(theirs, tag, from), body(ours, tag, from))
+        };
+        let (t3, o3) = pair(b"PWV3", 24);
+        let (t4, o4) = pair(b"PWV4", 24);
+        if t3.len() != o3.len() || share(&t4, &o4, 6, 0, 0) < 0.97 {
+            continue;
         }
-        for (tag, theirs, ours) in [
-            (b"PWV4", &theirs_ext, &ours_ext),
-            (b"PWV6", &theirs_two, &ours_two),
-            (b"PWVC", &theirs_two, &ours_two),
-        ] {
-            assert_eq!(
-                theirs.find(tag).unwrap().bytes.len(),
-                ours.find(tag).unwrap().bytes.len(),
-                "{} length",
-                std::str::from_utf8(tag).unwrap()
+        compared += 1;
+        let name = &track.name;
+        assert!(share(&t3, &o3, 1, 0, 0) > 0.98, "{name}: PWV3");
+        let (t5, o5) = pair(b"PWV5", 24);
+        assert!(share(&t5, &o5, 1, 0, 0) > 0.98, "{name}: PWV5");
+        let (t7, o7) = pair(b"PWV7", 24);
+        assert!(share(&t7, &o7, 1, 0, 0) > 0.98, "{name}: PWV7");
+        let (t6, o6) = pair(b"PWV6", 20);
+        assert!(share(&t6, &o6, 1, 0, 1) > 0.98, "{name}: PWV6");
+        assert_eq!(pair(b"PWVC", 14).0, pair(b"PWVC", 14).1, "{name}: PWVC");
+        for byte in 0..3 {
+            assert!(
+                share(&t4, &o4, 6, byte, 0) > 0.9,
+                "{name}: PWV4 byte {byte}"
             );
         }
     }
-    if compared == 0 {
-        return;
-    }
-    let (h, w) = (
-        heights as f64 / columns as f64,
-        whites as f64 / columns as f64,
-    );
-    eprintln!(
-        "waveforms: {compared} tracks, {columns} columns, height identical {h:.3}, whiteness identical {w:.3}, band correlation {:?}",
-        band_corr.map(|c| (c / compared as f64 * 1000.0).round() / 1000.0)
-    );
-    assert!(h > 0.9 && w > 0.9, "height {h} whiteness {w}");
-    assert!(band_corr.iter().all(|&c| c / compared as f64 > 0.75));
+    eprintln!("waveforms: {compared} tracks");
 }
 
 /// Where the file has not changed since rekordbox analysed it, the table
@@ -240,17 +236,4 @@ fn seek_tables_are_rebuilt_as_rekordbox_writes_them() {
         }
     }
     eprintln!("seek tables: {fitting} rebuilt byte for byte, {stale} stale ones rebuilt to fit");
-}
-
-fn correlation(a: &[f64], b: &[f64]) -> f64 {
-    let n = a.len() as f64;
-    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
-    let cov: f64 = a.iter().zip(b).map(|(x, y)| (x - ma) * (y - mb)).sum();
-    let va: f64 = a.iter().map(|x| (x - ma).powi(2)).sum();
-    let vb: f64 = b.iter().map(|y| (y - mb).powi(2)).sum();
-    if va == 0.0 || vb == 0.0 {
-        0.0
-    } else {
-        cov / (va * vb).sqrt()
-    }
 }

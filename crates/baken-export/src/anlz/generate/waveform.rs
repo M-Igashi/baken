@@ -1,19 +1,29 @@
 //! Waveform sections computed from decoded audio.
 //!
-//! The rules were recovered by comparing rekordbox 7.2 analysis files with the
-//! audio they describe (1070 tracks, issue #147). Two of them reproduce
-//! rekordbox byte for byte on 99.5% of columns: the monochrome height and the
-//! whiteness of the scrolling waveform. The colour and three-band sections are
-//! approximations fitted to the same data; their exact filters and gains are
-//! not recoverable and the tests compare them with a tolerance.
+//! Every rule here is kept because it reproduces rekordbox 7's own analysis
+//! files of the audio it was run on.
 //!
-//! Column grid: every detail section has 150 columns per second, column `i`
-//! covering samples `[round(i * rate / 150), round((i + 1) * rate / 150))` of
-//! the mono mix `(L + R) / 2`. The previews (400, 100 and 1200 columns) are
-//! aggregates of those columns.
+//! The blue scrolling waveform (`PWV3`) was recovered by comparing 1070
+//! analysis files with their audio (issue #147): height and whiteness are
+//! rekordbox's on 99.5% of columns. Its grid is 150 columns per second,
+//! column `i` covering samples `[round(i * rate / 150), round((i + 1) * rate
+//! / 150))` of the mono mix `(L + R) / 2`.
+//!
+//! The colour and three-band sections (`PWV5`, `PWV4`, `PWV7`, `PWV6`,
+//! `PWVC`) follow rekordbox's own arithmetic as rbxport documented it
+//! (`rekordbox-waveforms.md`; facts only, no code taken), checked here
+//! against rekordbox's files of 40 tracks in five formats (issue #377):
+//! `PWV5` and `PWV7` are identical on 99.5% of entries or more, `PWV6` on 97%
+//! and within one everywhere, `PWVC` on 39 tracks, the first three bytes of
+//! `PWV4` on 93 to 100%. They work on milliseconds: each keeps the peak of
+//! ten filtered bands and of the raw signal, and the sections lay their
+//! points over the milliseconds ([`points`]). The last three bytes of `PWV4`
+//! are the closest reading of that description, not rekordbox's values (mean
+//! error 3, 9 and 12 of 127), and the blue previews (`PWAV`, `PWV2`) are still
+//! this crate's own approximations.
 //!
 //! Tracks are measured as they are decoded ([`Meter`]), so only the columns
-//! are ever held, a few MB for a whole track (issue #171).
+//! and milliseconds are held: about 33 KB for a second of audio.
 
 use crate::anlz::section::{section, Section};
 use baken_core::decode::decode_with;
@@ -26,9 +36,9 @@ pub struct Waveforms {
     pub pwv3: Vec<u8>,
     /// `PWV5`: rrrgggbbbhhhhh00 per 1/150 s.
     pub pwv5: Vec<u16>,
-    /// `PWV7`: low, mid, high per 1/150 s, 0..=127.
+    /// `PWV7`: low, mid, high per 1/150 s.
     pub pwv7: Vec<[u8; 3]>,
-    /// `PWVC`: low, mid, high gain.
+    /// `PWVC`: low, mid, high gain in hundredths.
     pub gains: [u16; 3],
     /// `PWAV`: 400 columns.
     pub pwav: Vec<u8>,
@@ -48,15 +58,6 @@ const COLOUR_COLUMNS: usize = 1200;
 /// Second-order Butterworth low-pass whose peak, relative to the column peak,
 /// is the whiteness.
 const WHITENESS_LOWPASS_HZ: f64 = 150.0;
-/// Three-band crossovers.
-const LOW_HZ: f64 = 300.0;
-const MID_LOW_HZ: f64 = 250.0;
-const MID_HIGH_HZ: f64 = 1500.0;
-const HIGH_HZ: f64 = 2500.0;
-/// Per-column release of the band envelopes (low, mid, high).
-const RELEASE: [f64; 3] = [0.97, 0.93, 0.90];
-/// Gain rule per band: `clamp(round(target / max_envelope), floor, cap)`, and
-/// the byte scale applied on top of the gain.
 /// rekordbox never writes a preview column lower than these: on the
 /// reference stick every `PWAV` height is at least 2 and every `PWV2` byte
 /// at least 1 (587 of 587 `.DAT` files). Nexus-era firmware reads a zero
@@ -67,14 +68,20 @@ const PWV2_MIN_HEIGHT: u8 = 1;
 /// whiteness 5 (8449 of the 9809 height-2 columns on the reference stick).
 const PWAV_FLOOR: u8 = (5 << 5) | PWAV_MIN_HEIGHT;
 
-const GAIN_TARGET: [f64; 3] = [78.0, 105.0, 115.0];
-const GAIN_FLOOR: [u16; 3] = [80, 80, 95];
-const GAIN_CAP: [u16; 3] = [267, 300, 500];
-const BAND_SCALE: [f64; 3] = [1.25, 1.15, 0.6];
-/// `PWV6` is the column mean of `PWV7` times these; `PWV4` bytes 3..=5 are
-/// `PWV6` times these.
-const PWV6_SCALE: [f64; 3] = [0.56, 0.71, 2.0];
-const PWV4_SCALE: [f64; 3] = [2.4, 1.6, 1.1];
+/// `PWVC` never goes below 0.80 or above these (low, mid, high), in hundredths.
+const GAIN_FLOOR: u16 = 80;
+const GAIN_CAP: [f64; 3] = [3.0, 3.0, 5.0];
+/// How far back the `PWV7` envelope of each band starts, in milliseconds, and
+/// how much of the gap to a lower value it keeps per millisecond.
+const ENVELOPE_MS: [usize; 3] = [300, 200, 100];
+const ENVELOPE_KEEP: [f64; 3] = [0.99, 0.98, 0.97];
+/// Milliseconds either side of a point that its low, mid and high colour
+/// take in.
+const COLOUR_WIDEN: [usize; 3] = [12, 1, 0];
+/// `PWV5` height: `trunc(trunc(peak * 32767 / loudest)^2 * this)`.
+const HEIGHT_SCALE: f64 = 2.9327451233027466e-8;
+/// `PWV5` and `PWV7` of silence, as rekordbox writes them.
+const PWV5_SILENCE: u16 = 0xff80;
 
 /// Direct form I biquad.
 #[derive(Clone, Copy)]
@@ -136,19 +143,138 @@ impl Biquad {
 pub(crate) struct Column {
     peak: f64,
     white: f64,
-    band: [f64; 3],
     sumsq: f64,
     samples: u32,
 }
 
-/// A decoded track reduced to its columns and the numbers the rest of the
-/// analysis needs.
+/// The bands rekordbox filters the signal into, each a chain of RBJ biquads
+/// at Q = 1/sqrt(2): the three-band low, mid and high (`PWV7`, `PWV6`,
+/// `PWVC`), the bass and the colour low, mid and high of `PWV4`, and the
+/// detail low, mid and high of `PWV5`.
+const BANDS: usize = 10;
+const BASS: usize = 3;
+const COLOUR: usize = 4;
+const DETAIL: usize = 7;
+
+fn band_filters(rate: f64) -> [Vec<Biquad>; BANDS] {
+    let (lp, hp) = (
+        |f: f64| Biquad::lowpass(f, rate),
+        |f: f64| Biquad::highpass(f, rate),
+    );
+    [
+        vec![lp(300.0)],
+        vec![hp(250.0), lp(1200.0)],
+        vec![hp(3000.0), lp(9000.0)],
+        vec![lp(400.0)],
+        vec![lp(200.0), lp(200.0)],
+        vec![hp(200.0), hp(200.0), lp(2000.0), lp(2000.0)],
+        vec![hp(2000.0), hp(2000.0)],
+        vec![lp(100.0)],
+        vec![hp(300.0), lp(3000.0)],
+        vec![hp(1500.0)],
+    ]
+}
+
+/// A value on rekordbox's 16-bit scale: truncated, not rounded.
+fn sixteen_bit(x: f64) -> i32 {
+    ((x * 32768.0).trunc() as i64).clamp(-32768, 32767) as i32
+}
+
+/// One millisecond of the track: the highest and lowest sample, and the peak
+/// of each band. A colour band's peak is weighted by the share of the
+/// samples in which it was the strongest of the three, and is full scale
+/// where the band reached full scale.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Milli {
+    high: i16,
+    low: i16,
+    band: [i16; BANDS],
+}
+
+impl Milli {
+    fn peak(&self) -> i32 {
+        i32::from(self.high).abs().max(i32::from(self.low).abs())
+    }
+}
+
+/// The milliseconds of a track, kept in blocks of one size: a whole track in
+/// one buffer is megabytes of a different size each time, which the
+/// allocator holds on to track after track instead of using again (8 MB a
+/// track on macOS, measured; issue #171 was the same with the audio).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Millis {
+    blocks: Vec<Vec<Milli>>,
+    len: usize,
+}
+
+const MILLIS_BLOCK: usize = 4096;
+
+impl Millis {
+    fn push(&mut self, ms: Milli) {
+        if self.len.is_multiple_of(MILLIS_BLOCK) {
+            self.blocks.push(Vec::with_capacity(MILLIS_BLOCK));
+        }
+        self.blocks[self.len / MILLIS_BLOCK].push(ms);
+        self.len += 1;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, i: usize) -> Milli {
+        self.blocks[i / MILLIS_BLOCK][i % MILLIS_BLOCK]
+    }
+
+    /// The milliseconds `a..=b`.
+    fn range(&self, a: usize, b: usize) -> impl Iterator<Item = Milli> + '_ {
+        (a..=b).map(|i| self.get(i))
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Milli> + '_ {
+        self.blocks.iter().flatten().copied()
+    }
+}
+
+/// The millisecond being measured.
+#[derive(Clone, Copy, Default)]
+struct Running {
+    samples: u32,
+    high: i32,
+    low: i32,
+    peak: [i32; BANDS],
+    led: [u32; 3],
+    full: [bool; 3],
+}
+
+impl Running {
+    fn close(&self) -> Milli {
+        let mut band = self.peak;
+        for j in 0..3 {
+            band[COLOUR + j] = if self.full[j] {
+                32767
+            } else {
+                (f64::from(band[COLOUR + j]) * f64::from(self.led[j])
+                    / f64::from(self.samples.max(1))) as i32
+            };
+        }
+        Milli {
+            high: self.high as i16,
+            low: self.low as i16,
+            band: band.map(|v| v.min(32767) as i16),
+        }
+    }
+}
+
+/// A decoded track reduced to its columns and milliseconds and the numbers
+/// the rest of the analysis needs.
 #[derive(Debug, Clone, Default)]
 pub struct Measured {
     pub sample_rate: u32,
     pub channels: usize,
     pub frames: u64,
     pub(crate) columns: Vec<Column>,
+    pub(crate) millis: Millis,
 }
 
 impl Measured {
@@ -157,7 +283,7 @@ impl Measured {
     }
 }
 
-/// Measures interleaved audio into columns as it arrives.
+/// Measures interleaved audio into columns and milliseconds as it arrives.
 pub struct Meter {
     sample_rate: u32,
     rate: f64,
@@ -167,8 +293,12 @@ pub struct Meter {
     columns: Vec<Column>,
     current: Column,
     next_edge: u64,
-    /// Whiteness low-pass, low, mid high-pass, mid low-pass, high.
-    filters: [Biquad; 5],
+    /// Whiteness low-pass of the blue waveform.
+    white: Biquad,
+    /// Finished milliseconds; `running` is the one being filled.
+    millis: Millis,
+    running: Running,
+    bands: [Vec<Biquad>; BANDS],
 }
 
 impl Meter {
@@ -182,58 +312,108 @@ impl Meter {
             columns: Vec::new(),
             current: Column::default(),
             next_edge: (rate / COLUMNS_PER_SECOND).round() as u64,
-            filters: [
-                Biquad::lowpass(WHITENESS_LOWPASS_HZ, rate),
-                Biquad::lowpass(LOW_HZ, rate),
-                Biquad::highpass(MID_LOW_HZ, rate),
-                Biquad::lowpass(MID_HIGH_HZ, rate),
-                Biquad::highpass(HIGH_HZ, rate),
-            ],
+            white: Biquad::lowpass(WHITENESS_LOWPASS_HZ, rate),
+            millis: Millis::default(),
+            running: Running::default(),
+            bands: band_filters(rate),
         }
     }
 
     pub fn push(&mut self, interleaved: &[f32]) {
         let channels = self.channels.max(1);
+        let rate = u64::from(self.sample_rate.max(1));
         // locals, so the per-sample state stays in registers
-        let [mut white, mut low, mut mid_hp, mut mid_lp, mut high] = self.filters;
+        let mut white = self.white;
         let (mut frames, mut next_edge) = (self.frames, self.next_edge);
         let mut c = std::mem::take(&mut self.current);
+        let mut ms = self.running;
         for frame in interleaved.chunks_exact(channels) {
             while frames >= next_edge {
                 self.columns.push(std::mem::take(&mut c));
                 next_edge = ((self.columns.len() + 1) as f64 * self.rate / COLUMNS_PER_SECOND)
                     .round() as u64;
             }
-            let x = frame.iter().map(|&s| s as f64).sum::<f64>() / channels as f64;
+            // millisecond `i` holds the frames from `ceil(i * rate / 1000)` on
+            while (frames * 1000 / rate) as usize > self.millis.len() {
+                self.millis.push(ms.close());
+                ms = Running::default();
+            }
             // A NaN would stay in the filters' state for the rest of the track.
-            let x = if x.is_finite() { x } else { 0.0 };
+            let clean = |s: f32| if s.is_finite() { f64::from(s) } else { 0.0 };
+            let x = frame.iter().map(|&s| clean(s)).sum::<f64>() / channels as f64;
             c.peak = c.peak.max(x.abs());
             c.white = c.white.max(white.step(x).abs());
-            c.band[0] = c.band[0].max(low.step(x).abs());
-            c.band[1] = c.band[1].max(mid_lp.step(mid_hp.step(x)).abs());
-            c.band[2] = c.band[2].max(high.step(x).abs());
             c.sumsq += x * x;
             c.samples += 1;
+
+            let m = rekordbox_mono(frame, x, clean);
+            let raw = sixteen_bit(m);
+            (ms.high, ms.low) = if ms.samples == 0 {
+                (raw, raw)
+            } else {
+                (ms.high.max(raw), ms.low.min(raw))
+            };
+            let mut out = [0i32; BANDS];
+            for (band, chain) in self.bands.iter_mut().enumerate() {
+                let y = chain.iter_mut().fold(m, |y, f| f.step(y));
+                out[band] = sixteen_bit(y).abs();
+                ms.peak[band] = ms.peak[band].max(out[band]);
+            }
+            let colour = &out[COLOUR..COLOUR + 3];
+            let leader = (0..3).max_by_key(|&j| colour[j]).unwrap_or(0);
+            ms.led[leader] += 1;
+            for j in 0..3 {
+                ms.full[j] |= colour[j] >= 32767;
+            }
+            ms.samples += 1;
             frames += 1;
         }
         self.current = c;
-        self.filters = [white, low, mid_hp, mid_lp, high];
+        self.white = white;
+        self.running = ms;
         (self.frames, self.next_edge) = (frames, next_edge);
     }
 
     /// `ceil(frames * 150 / rate)` columns: a last column that starts at
-    /// the end of the audio stays empty.
+    /// the end of the audio stays empty. `ceil(frames * 1000 / rate)`
+    /// milliseconds.
     pub fn finish(mut self) -> Measured {
         let n = ((self.frames as f64 * COLUMNS_PER_SECOND / self.rate).ceil() as usize).max(1);
         self.columns.push(self.current);
         debug_assert!(self.columns.len() <= n);
         self.columns.resize(n, Column::default());
+        if self.running.samples > 0 {
+            self.millis.push(self.running.close());
+        }
         Measured {
             sample_rate: self.sample_rate,
             channels: self.channels,
             frames: self.frames,
             columns: self.columns,
+            millis: self.millis,
         }
+    }
+}
+
+/// The mono value rekordbox's colour and three-band analysis works on: of a
+/// stereo frame brought to 16 bits, the louder channel where the two are
+/// within 0.001 of each other in level (the right one on a tie), so that
+/// channels of opposite sign do not cancel, and their mean otherwise. `mean`
+/// is the mean of all channels, used for anything but stereo.
+fn rekordbox_mono(frame: &[f32], mean: f64, clean: impl Fn(f32) -> f64) -> f64 {
+    let [l, r] = frame else {
+        return mean;
+    };
+    let (l, r) = (
+        f64::from(sixteen_bit(clean(*l))) / 32767.0,
+        f64::from(sixteen_bit(clean(*r))) / 32767.0,
+    );
+    if (l.abs() - r.abs()).abs() >= 0.001 {
+        (l + r) / 2.0
+    } else if l.abs() > r.abs() {
+        l
+    } else {
+        r
     }
 }
 
@@ -307,60 +487,6 @@ pub fn analyze(audio: &Measured) -> Waveforms {
         .map(|(h, w)| (w << 5) | h)
         .collect();
 
-    // Band envelopes with release, then the gain that scales the loudest
-    // column of each band to its target level.
-    let mut env = vec![[0.0f64; 3]; n];
-    for (i, c) in columns.iter().enumerate() {
-        for j in 0..3 {
-            let prev = if i == 0 {
-                0.0
-            } else {
-                env[i - 1][j] * RELEASE[j]
-            };
-            env[i][j] = c.band[j].max(prev);
-        }
-    }
-    let mut gains = [0u16; 3];
-    for j in 0..3 {
-        let max = env.iter().map(|e| e[j]).fold(0.0, f64::max);
-        gains[j] = if max > 0.0 {
-            ((GAIN_TARGET[j] / max).round() as u16).clamp(GAIN_FLOOR[j], GAIN_CAP[j])
-        } else {
-            GAIN_FLOOR[j]
-        };
-    }
-    let pwv7: Vec<[u8; 3]> = env
-        .iter()
-        .map(|e| {
-            let mut out = [0u8; 3];
-            for j in 0..3 {
-                out[j] = (BAND_SCALE[j] * gains[j] as f64 * e[j]).round().min(127.0) as u8;
-            }
-            out
-        })
-        .collect();
-
-    // Colour: each band's share of the strongest band, on a square root so
-    // faint bands still tint the column.
-    let pwv5: Vec<u16> = columns
-        .iter()
-        .zip(&heights)
-        .map(|(c, &h)| {
-            let max = c.band.iter().cloned().fold(0.0, f64::max);
-            let level = |b: f64| -> u16 {
-                if max <= 0.0 {
-                    0
-                } else {
-                    (7.0 * (b / max).sqrt()).round().min(7.0) as u16
-                }
-            };
-            (level(c.band[0]) << 13)
-                | (level(c.band[1]) << 10)
-                | (level(c.band[2]) << 7)
-                | ((h as u16) << 2)
-        })
-        .collect();
-
     // Previews from RMS per column group.
     let rms_over = |r: std::ops::Range<usize>| -> f64 {
         let (sumsq, samples) = columns[r]
@@ -408,38 +534,10 @@ pub fn analyze(audio: &Measured) -> Waveforms {
         })
         .collect();
 
-    // Three-band and colour previews from the detail bytes.
-    let band_f: Vec<[f64; 3]> = pwv7
-        .iter()
-        .map(|b| [b[0] as f64, b[1] as f64, b[2] as f64])
-        .collect();
-    let pwv6: Vec<[u8; 3]> = ranges(n, COLOUR_COLUMNS)
-        .map(|r| {
-            let mut out = [0u8; 3];
-            for j in 0..3 {
-                let m = band_f[r.clone()].iter().map(|b| b[j]).sum::<f64>() / r.len() as f64;
-                out[j] = (PWV6_SCALE[j] * m).round().min(127.0) as u8;
-            }
-            out
-        })
-        .collect();
-    let pwv4: Vec<[u8; 6]> = pwv6
-        .iter()
-        .map(|b6| {
-            let mut b = [0u8; 6];
-            for j in 0..3 {
-                b[3 + j] = (PWV4_SCALE[j] * b6[j] as f64).round().min(127.0) as u8;
-            }
-            let (r, g, bl) = (b[3] as f64, b[4] as f64, b[5] as f64);
-            let max = r.max(g).max(bl);
-            if max > 0.0 {
-                b[2] = (0.91 * (r * r + g * g + bl * bl).sqrt()).round().min(127.0) as u8;
-                b[0] = (0.88 * max + 38.0).round().min(127.0) as u8;
-                b[1] = (203.0 - 0.49 * b[0] as f64).round().clamp(0.0, 255.0) as u8;
-            }
-            b
-        })
-        .collect();
+    let millis = &audio.millis;
+    let pwv5 = colour_detail(millis, n);
+    let pwv4 = colour_preview(millis);
+    let (gains, pwv6, pwv7) = three_band(millis, n);
 
     Waveforms {
         pwv3,
@@ -451,6 +549,197 @@ pub fn analyze(audio: &Measured) -> Waveforms {
         pwv6,
         pwv4,
     }
+}
+
+/// The first and last millisecond of each of `n` points laid over `ms`
+/// milliseconds, the way rekordbox spreads them: a counter gains `n` every
+/// millisecond and closes a point each time it reaches `ms`.
+fn points(ms: usize, n: usize) -> impl Iterator<Item = (usize, usize)> {
+    // `taken` milliseconds are in; `first` is where the open point starts
+    let (mut counter, mut first, mut taken) = (0, 0, 0);
+    std::iter::from_fn(move || {
+        while counter < ms || ms == 0 {
+            if taken == ms {
+                return None;
+            }
+            counter += n;
+            taken += 1;
+        }
+        counter -= ms;
+        let last = taken - 1;
+        let point = (first.min(last), last);
+        first = taken;
+        Some(point)
+    })
+}
+
+/// The peak of `band` over the milliseconds `a..=b`, widened by `widen` on
+/// both sides.
+fn band_peak(millis: &Millis, band: usize, (a, b): (usize, usize), widen: usize) -> f64 {
+    let (a, b) = (a.saturating_sub(widen), (b + widen).min(millis.len() - 1));
+    f64::from(millis.range(a, b).map(|m| m.band[band]).max().unwrap_or(0))
+}
+
+/// `PWV5`, `rrrgggbbbhhhhh00` per point: the height on the square law of the
+/// blue waveform, from the point's largest sample against the track's, and
+/// the colour from the detail bands' peaks, brought to 255 for the strongest
+/// and then tempered the way rekordbox does it.
+fn colour_detail(millis: &Millis, n: usize) -> Vec<u16> {
+    if millis.len() == 0 {
+        return vec![PWV5_SILENCE; n];
+    }
+    let loudest = millis.iter().map(|m| m.peak()).max().unwrap_or(0).max(1);
+    points(millis.len(), n)
+        .map(|(a, b)| {
+            let peak = millis.range(a, b).map(|m| m.peak()).max().unwrap_or(0);
+            let scaled = (f64::from(peak) * 32767.0 / f64::from(loudest)).trunc();
+            let height = ((scaled * scaled * HEIGHT_SCALE).trunc() as u16).min(31);
+            let band: [f64; 3] =
+                std::array::from_fn(|j| band_peak(millis, DETAIL + j, (a, b), COLOUR_WIDEN[j]));
+            let top = band.iter().cloned().fold(0.0, f64::max);
+            if top <= 0.0 {
+                return PWV5_SILENCE | (height << 2);
+            }
+            let [mut r, mut g, mut bl] = band.map(|v| v * 255.0 / top);
+            if bl < 64.0 {
+                let cut = g * r / 765.0 * (1.0 - bl / 64.0);
+                r -= cut;
+                g -= cut;
+            }
+            g *= 1.0 - 0.00234375 * r.max(bl).min(128.0);
+            bl *= 1.3;
+            let level = |v: f64| (v.clamp(0.0, 255.0) as u16) >> 5;
+            let mut rgb = [level(r), level(g), level(bl)];
+            if r < 32.0 && g < 32.0 && bl < 32.0 {
+                // too faint for any level: the band that led shows alone
+                let leader = if band[0] >= band[1] && band[0] >= band[2] {
+                    0
+                } else if band[1] >= band[2] {
+                    1
+                } else {
+                    2
+                };
+                rgb = std::array::from_fn(|j| u16::from(j == leader));
+            }
+            (rgb[0] << 13) | (rgb[1] << 10) | (rgb[2] << 7) | (height << 2)
+        })
+        .collect()
+}
+
+/// `PWV4`, six signed bytes for each of 1200 columns, each a 16-bit value
+/// over 256: the highest and the lowest sample, the bass peak, and the
+/// colour bands' peaks.
+fn colour_preview(millis: &Millis) -> Vec<[u8; 6]> {
+    if millis.len() == 0 {
+        return vec![[0; 6]; COLOUR_COLUMNS];
+    }
+    let byte = |v: i32| ((v / 256) as i8) as u8;
+    points(millis.len(), COLOUR_COLUMNS)
+        .map(|(a, b)| {
+            let high = millis.range(a, b).map(|m| m.high).max().unwrap_or(0);
+            let low = millis.range(a, b).map(|m| m.low).min().unwrap_or(0);
+            let colour = |j: usize| band_peak(millis, COLOUR + j, (a, b), COLOUR_WIDEN[j]) as i32;
+            [
+                byte(i32::from(high)),
+                byte(i32::from(low)),
+                byte(band_peak(millis, BASS, (a, b), 0) as i32),
+                byte(colour(0)),
+                byte(colour(1)),
+                byte(colour(2)),
+            ]
+        })
+        .collect()
+}
+
+/// `PWVC`, `PWV6` and `PWV7`: the gain of each band, the 1200-column preview
+/// and the detail.
+///
+/// The gain comes from the preview: each column's mean of a band, taking in
+/// a lead before the column (a thousandth of the track for low, two thirds
+/// of that for mid, a third for high), the three bands brought to equal sums
+/// and the tallest column of their total to full scale. It is then held to
+/// what the band's own peak allows before it is stored. The detail runs an
+/// envelope up to each point that rises at once and falls slowly.
+fn three_band(millis: &Millis, n: usize) -> ([u16; 3], Vec<[u8; 3]>, Vec<[u8; 3]>) {
+    let m = millis.len();
+    if m == 0 {
+        return (
+            [GAIN_FLOOR; 3],
+            vec![[0; 3]; COLOUR_COLUMNS],
+            vec![[0; 3]; n],
+        );
+    }
+    let lead = [
+        m as f64 / 1000.0,
+        2.0 * (m as f64 / 1000.0) / 3.0,
+        m as f64 / 3000.0,
+    ]
+    .map(|ms| ms.round() as usize);
+    // what lies before the start counts as silence
+    let mean = |j: usize, (a, b): (usize, usize)| {
+        let sum: f64 = millis
+            .range(a.saturating_sub(lead[j]), b)
+            .map(|ms| f64::from(ms.band[j]))
+            .sum();
+        sum / (b + lead[j] + 1 - a) as f64
+    };
+    let means: Vec<[f64; 3]> = points(m, COLOUR_COLUMNS)
+        .map(|column| std::array::from_fn(|j| mean(j, column)))
+        .collect();
+    let totals: [f64; 3] = std::array::from_fn(|j| means.iter().map(|c| c[j]).sum());
+    let largest = totals.iter().cloned().fold(0.0, f64::max);
+    let equal: [f64; 3] = totals.map(|t| if t > 0.0 { largest / t } else { 0.0 });
+    let tallest = means
+        .iter()
+        .map(|c| (0..3).map(|j| c[j] * equal[j]).sum::<f64>())
+        .fold(0.0, f64::max);
+    let raw = equal.map(|e| {
+        if tallest > 0.0 {
+            32768.0 * e / tallest
+        } else {
+            0.0
+        }
+    });
+    let peaks: [f64; 3] =
+        std::array::from_fn(|j| f64::from(millis.iter().map(|ms| ms.band[j]).max().unwrap_or(0)));
+    // the high band is stored on a cosine curve, the others straight
+    let high_curve = |level: f64| 1.0 - (std::f64::consts::PI * level / 32768.0).cos();
+    let gains: [u16; 3] = std::array::from_fn(|j| {
+        let room = match j {
+            2 => 32768.0 / (16384.0 * high_curve(peaks[j])).max(f64::MIN_POSITIVE),
+            _ => 32768.0 / peaks[j].max(1.0),
+        };
+        match raw[j].min(room) {
+            held if held < 0.8 => GAIN_FLOOR,
+            held => (100.0 * held.min(GAIN_CAP[j])).trunc() as u16,
+        }
+    });
+    let byte = |v: f64| v.trunc().min(255.0) as u8;
+    let pwv6 = means
+        .iter()
+        .map(|c| std::array::from_fn(|j| byte(c[j] * raw[j].clamp(0.8, GAIN_CAP[j]) / 256.0)))
+        .collect();
+    let pwv7 = points(m, n)
+        .map(|(_, last)| {
+            std::array::from_fn(|j| {
+                let from = last.saturating_sub(ENVELOPE_MS[j]);
+                let level = millis.range(from, last).fold(0.0, |level, ms| {
+                    let now = f64::from(ms.band[j]);
+                    if now > level {
+                        now
+                    } else {
+                        now + (level - now) * ENVELOPE_KEEP[j]
+                    }
+                });
+                let gain = f64::from(gains[j]) / 100.0;
+                match j {
+                    2 => byte(gain * 64.0 * high_curve(level)),
+                    _ => byte(level * gain / 256.0),
+                }
+            })
+        })
+        .collect();
+    (gains, pwv6, pwv7)
 }
 
 fn be32(v: u32) -> [u8; 4] {
@@ -624,12 +913,54 @@ mod tests {
         }
     }
 
+    /// Every millisecond belongs to one point, in order, and a track shorter
+    /// than its points repeats milliseconds instead of leaving points out.
+    #[test]
+    fn points_cover_the_milliseconds_once() {
+        for (ms, n) in [(1000, 150), (6667, 1001), (300_123, 45_019), (7, 1200)] {
+            let points: Vec<_> = points(ms, n).collect();
+            assert_eq!(points.len(), n, "{ms} ms");
+            assert_eq!((points[0].0, points[n - 1].1), (0, ms - 1));
+            assert!(points
+                .windows(2)
+                .all(|w| w[1].0 <= w[0].1 + 1 && w[1].1 >= w[0].1));
+            assert!(points.iter().all(|&(a, b)| a <= b));
+        }
+    }
+
+    /// The same sample in both channels with opposite signs is one sample,
+    /// not silence, and channels apart in level are averaged.
+    #[test]
+    fn the_colour_mix_keeps_channels_of_opposite_sign() {
+        let clean = |s: f32| f64::from(s);
+        assert!((rekordbox_mono(&[0.5, -0.5], 0.0, clean) + 0.5).abs() < 1e-3);
+        assert!((rekordbox_mono(&[0.5, 0.1], 0.3, clean) - 0.3).abs() < 1e-3);
+        assert_eq!(rekordbox_mono(&[0.25], 0.25, clean), 0.25);
+        let mut meter = Meter::new(44100, 2);
+        let inverted: Vec<f32> = tone_samples(44100, 1.0, 1000.0, 0.5)
+            .chunks(2)
+            .flat_map(|f| [f[0], -f[0]])
+            .collect();
+        meter.push(&inverted);
+        let w = analyze(&meter.finish());
+        assert!(
+            w.pwv3.iter().all(|&b| b & 0x1f == 0),
+            "the blue mix cancels"
+        );
+        assert!(
+            w.pwv5[10..].iter().all(|&v| (v >> 2) & 0x1f >= 29),
+            "{:?}",
+            &w.pwv5[10..14]
+        );
+    }
+
     #[test]
     fn silence_is_zero() {
         let w = analyze(&metered(44100, 1, &[&[0.0; 44100]]));
         assert!(w.pwv3.iter().all(|&b| b == 0xe0));
         assert!(w.pwv7.iter().all(|b| *b == [0, 0, 0]));
-        assert_eq!(w.gains, GAIN_FLOOR);
+        assert_eq!(w.gains, [GAIN_FLOOR; 3]);
+        assert!(w.pwv5.iter().all(|&v| v == PWV5_SILENCE));
     }
 
     /// One NaN used to stay in the filters and blank the rest of the track
