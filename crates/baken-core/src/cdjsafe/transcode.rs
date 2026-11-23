@@ -137,24 +137,96 @@ pub fn probe(path: &Path) -> Result<SourceInfo> {
     })
 }
 
+/// Samples at 44.1 kHz that rekordbox and the players hear before the first
+/// sample ffmpeg encodes into an MP3 here: LAME's encoder delay (576), the
+/// decoder's (529), and the `Info` header frame ffmpeg writes first, which
+/// they decode as a frame of silence (1152). Measured on 2026-11-23 against
+/// rekordbox 7's own waveforms (issue #374).
+const OUTPUT_LEAD: i64 = 576 + 529 + 1152;
+
+/// ID3 `TXXX` frame that marks an MP3 written with its timing matched to the
+/// source (issue #374). `expressport --cdjsafe` keeps a transcode already on
+/// the stick only when it carries this, so earlier ones are made again.
+pub const MARK_KEY: &str = "BAKEN_CDJSAFE";
+pub const MARK_VALUE: &str = "1";
+
+/// Samples to cut from the start of the source (negative: samples of silence
+/// to put before it), at 44.1 kHz, so that the MP3 plays on the source's
+/// timeline as rekordbox and the players hear it: every cue, beat and
+/// waveform column then lands where it did. ffmpeg decodes the source with
+/// `skip_manual`, keeping the encoder delay and priming rekordbox keeps too
+/// (an MP3's LAME delay, AAC priming), so the source's own lead is only an
+/// MP3's `Info` frame, `info_frame` samples at `sample_rate`.
+fn alignment(sample_rate: u32, info_frame: Option<u32>) -> i64 {
+    let lead = f64::from(info_frame.unwrap_or(0)) / f64::from(sample_rate.max(1));
+    OUTPUT_LEAD - (lead * f64::from(SAFE_SAMPLE_RATE)).round() as i64
+}
+
+/// The audio filter that resamples to 44.1 kHz (`resampler`, empty for
+/// ffmpeg's default), counts time from the first sample (the encoder delay
+/// kept by `skip_manual` starts before zero), and then cuts or pads the start
+/// by `samples`.
+fn audio_filter(resampler: &str, samples: i64) -> String {
+    let base = format!("aresample={SAFE_SAMPLE_RATE}{resampler},asetpts=N/SR/TB");
+    match samples {
+        0 => base,
+        n if n > 0 => format!("{base},atrim=start_sample={n},asetpts=N/SR/TB"),
+        n => format!("{base},adelay=delays={}S:all=1", -n),
+    }
+}
+
+/// Whether the MP3 at `path` was written by [`transcode`] with its timing
+/// matched to its source: its ID3v2 tag holds the [`MARK_KEY`] frame.
+pub fn is_aligned(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 10];
+    if file.read_exact(&mut head).is_err() || &head[..3] != b"ID3" {
+        return false;
+    }
+    let size = head[6..10]
+        .iter()
+        .fold(0u64, |acc, &b| (acc << 7) | u64::from(b & 0x7F));
+    let mut tag = Vec::new();
+    if file.take(size).read_to_end(&mut tag).is_err() {
+        return false;
+    }
+    let mark = format!("{MARK_KEY}\0{MARK_VALUE}");
+    tag.windows(mark.len()).any(|w| w == mark.as_bytes())
+}
+
 /// Re-encode `src` to the CDJ-safe profile at `dst`. Metadata is carried over
 /// by ffmpeg (`-map_metadata 0`) and written as ID3v2.3; front-cover artwork
-/// is kept, re-encoded to JPEG and capped at 500×500. ffmpeg's libmp3lame
-/// writes a valid Xing/LAME header by default, so rekordbox skips the encoder
-/// priming delay and cues stay aligned (issue #40 pitfall table).
+/// is kept, re-encoded to JPEG and capped at 500×500.
+///
+/// rekordbox and the players decode an MP3 without cutting the encoder delay
+/// its LAME header states and play the `Info` frame as silence, so an MP3 of
+/// a lossless source would start 2257 samples (51 ms) late against the
+/// source's cues and grid. The start is cut or padded by [`alignment`] to
+/// keep them where they were (issue #374): the first 51 ms of a lossless
+/// source become silence, an AAC or MP3 source loses only what its own
+/// encoder put there.
 pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
+    let info = probe(src)?;
+    let info_frame = (info.codec == "mp3")
+        .then(|| std::fs::File::open(src).ok())
+        .flatten()
+        .and_then(|mut f| super::info_frame_samples(&mut f));
+    let shift = alignment(info.sample_rate, info_frame);
     // Preferred: soxr very-high resampling. Not every ffmpeg build has
     // libsoxr, so fall back to the default swresample on failure.
-    let attempts: [&[&str]; 2] = [&["-af", "aresample=resampler=soxr:precision=28"], &[]];
+    let resamplers = [":resampler=soxr:precision=28", ""];
 
     let mut last_err = String::new();
-    for resample_args in attempts {
+    for resampler in resamplers {
         let mut cmd = crate::tools::ffmpeg();
-        cmd.args(["-y", "-nostdin", "-i"])
+        cmd.args(["-y", "-nostdin", "-flags2", "+skip_manual", "-i"])
             .arg(src)
             .args(["-map", "0:a:0", "-map", "0:v:0?"])
             .args(["-c:a", "libmp3lame", "-b:a", "320k", "-ar", "44100"])
-            .args(resample_args)
+            .args(["-af", &audio_filter(resampler, shift)])
             .args(["-c:v", "mjpeg", "-q:v", "2"])
             .args([
                 "-vf",
@@ -162,6 +234,8 @@ pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
             ])
             .args(["-disposition:v", "attached_pic"])
             .args(["-map_metadata", "0", "-id3v2_version", "3", "-f", "mp3"])
+            .arg("-metadata")
+            .arg(format!("{MARK_KEY}={MARK_VALUE}"))
             .arg(dst);
 
         let output = cmd
@@ -223,6 +297,31 @@ mod tests {
         assert_eq!(parse_bits(&Some(serde_json::json!(0))), None);
         assert_eq!(parse_bits(&Some(serde_json::json!("N/A"))), None);
         assert_eq!(parse_bits(&None), None);
+    }
+
+    /// What each kind of source needs cut so that the MP3 lands on its
+    /// timeline (issue #374): the new MP3's whole lead, less an `Info` frame
+    /// the source already played as silence.
+    #[test]
+    fn alignment_follows_the_source_lead() {
+        assert_eq!(alignment(44100, None), 2257);
+        assert_eq!(alignment(48000, None), 2257);
+        assert_eq!(alignment(44100, Some(1152)), 1105);
+        assert_eq!(alignment(48000, Some(1152)), 1199);
+        assert_eq!(alignment(22050, Some(576)), 1105);
+    }
+
+    #[test]
+    fn audio_filter_cuts_or_pads_after_resampling() {
+        assert_eq!(audio_filter("", 0), "aresample=44100,asetpts=N/SR/TB");
+        assert_eq!(
+            audio_filter(":resampler=soxr:precision=28", 2257),
+            "aresample=44100:resampler=soxr:precision=28,asetpts=N/SR/TB,atrim=start_sample=2257,asetpts=N/SR/TB"
+        );
+        assert_eq!(
+            audio_filter("", -145),
+            "aresample=44100,asetpts=N/SR/TB,adelay=delays=145S:all=1"
+        );
     }
 
     #[test]

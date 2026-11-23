@@ -1613,12 +1613,14 @@ fn newer_than_source(dest: &Path, source: &Path) -> bool {
 
 /// The frames of the transcode already on the stick, when it can stay: it
 /// was written at least [`TRANSCODE_MARGIN`] after the source last changed
-/// (a headroom run, a re-rip), and it is a whole 320 kbps CBR MP3 at 44.1 kHz,
-/// not a copy cut short by an interrupted export or a file another export
-/// left there. The stick file is only read once its time says it may stay.
+/// (a headroom run, a re-rip), with its timing matched to the source (up to
+/// 4.14.0 it was not, issue #374), and it is a whole 320 kbps CBR MP3 at
+/// 44.1 kHz, not a copy cut short by an interrupted export or a file another
+/// export left there. The stick file is only read once its time says it may
+/// stay.
 fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<u32> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
-    if !newer_than_source(&dest, &pt.source) {
+    if !newer_than_source(&dest, &pt.source) || !baken_core::cdjsafe::is_aligned(&dest) {
         return None;
     }
     let mp3 = rewrite::mp3_audio(&dest).ok()?;

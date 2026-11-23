@@ -3,6 +3,7 @@
 
 use anyhow::anyhow;
 use std::fs::File;
+use std::io::{Seek, SeekFrom};
 use symphonia::core::codecs::audio::well_known::{CODEC_ID_AAC, CODEC_ID_MP3};
 use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoderOptions};
 use symphonia::core::errors::Error as SymphoniaError;
@@ -16,7 +17,11 @@ use crate::{Error, Result};
 
 /// Decode the default audio track of `file`, handing every decoded buffer to
 /// `sink` as interleaved f32 with its sample rate and channel count, and return
-/// the codec. `extension` is a hint for the format probe. Rate and channel
+/// the codec. The audio is on the timeline rekordbox and the players use, so
+/// that waveforms made from it line up with their grids and cues (issue #374):
+/// an MP3 keeps the encoder and decoder delay that a gapless decoder would cut,
+/// and an `Info` header frame counts as a frame of silence, as rekordbox
+/// decodes it. AAC keeps its priming, which symphonia does not cut either. `extension` is a hint for the format probe. Rate and channel
 /// count come from the decoded buffers rather than the container, since AAC
 /// parameters may not name a channel layout at all. Fails when they change
 /// mid-file or when nothing decodes; packets that fail to decode are skipped.
@@ -33,10 +38,12 @@ pub fn decode_with(
 /// [`decode_with`] for the crate's own callers, which work in `anyhow`, plus
 /// the packets that were skipped.
 pub(crate) fn decode(
-    file: File,
+    mut file: File,
     extension: Option<&str>,
     mut sink: impl FnMut(&[f32], u32, usize),
 ) -> anyhow::Result<(Codec, Option<DecodeErrors>)> {
+    let info_frame = crate::cdjsafe::info_frame_samples(&mut file);
+    file.seek(SeekFrom::Start(0))?;
     let stream = MediaSourceStream::new(Box::new(file), Default::default());
     let mut hint = Hint::new();
     if let Some(ext) = extension {
@@ -60,7 +67,11 @@ pub(crate) fn decode(
         .clone();
     let codec = codec_from_id(params.codec);
     let mut decoder = symphonia::default::get_codecs()
-        .make_audio_decoder(&params, &AudioDecoderOptions::default())?;
+        .make_audio_decoder(&params, &AudioDecoderOptions::default().gapless(false))?;
+    let mut lead = match codec {
+        Codec::Mp3 => info_frame.unwrap_or(0) as usize,
+        _ => 0,
+    };
 
     let mut spec: Option<(u32, usize)> = None;
     let mut buf: Vec<f32> = Vec::new();
@@ -94,6 +105,11 @@ pub(crate) fn decode(
             Some(s) if s != current => return Err(anyhow!("stream parameters changed mid-file")),
             Some(_) => {}
             None => spec = Some(current),
+        }
+        if lead > 0 {
+            sink(&vec![0.0; lead * current.1], current.0, current.1);
+            frames += lead as u64;
+            lead = 0;
         }
         buf.clear();
         decoded.copy_to_vec_interleaved(&mut buf);

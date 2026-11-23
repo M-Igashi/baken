@@ -13,9 +13,9 @@ mod spectrum;
 mod transcode;
 mod xml;
 
-pub(crate) use header::WAVE_FORMAT_EXTENSIBLE;
+pub(crate) use header::{info_frame_samples, WAVE_FORMAT_EXTENSIBLE};
 pub use location::{decode_location, encode_location, sanitize_filename, stick_path};
-pub use transcode::{probe, transcode, SourceInfo};
+pub use transcode::{is_aligned, probe, transcode, SourceInfo};
 pub use xml::CDJSAFE_FOLDER_NAME;
 
 use anyhow::Context;
