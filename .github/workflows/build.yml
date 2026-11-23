@@ -58,7 +58,7 @@ jobs:
           toolchain: stable
       - run: cargo build --release --locked
       - run: target\release\baken.exe --version
-      - run: cargo test -p baken-export --lib --locked -- onelibrary sqlcipher locate
+      - run: cargo test -p baken-export --lib --locked -- onelibrary sqlcipher locate prune
 
   licenses:
     runs-on: ubuntu-latest
