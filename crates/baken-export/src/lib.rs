@@ -1993,8 +1993,16 @@ fn with_measured(dt: &DeviceTrack, audio: &Measured, mp3: Option<Mp3Audio>) -> D
 /// since a sandboxed caller may not remove it then (issue #192), and removed
 /// once `X` is gone, unless the volume already dropped it together with `X`.
 fn prune_tree(root: &Path, keep: &HashSet<PathBuf>, errors: &mut Vec<String>) -> usize {
+    /// Component by component, so that a kept `E:\Contents/A/x.mp3` (a
+    /// stick path joined onto a drive) and the `E:\Contents\A\x.mp3` that
+    /// `read_dir` lists are one path on Windows (issue #373); NFC and
+    /// lowercase for #316.
     fn key(path: &Path) -> String {
-        fsname::nfc(path).to_string_lossy().to_lowercase()
+        fsname::nfc(path)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect::<Vec<_>>()
+            .join("/")
     }
     struct Walk<'a> {
         keep: HashSet<String>,
