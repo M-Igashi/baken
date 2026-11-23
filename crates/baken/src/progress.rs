@@ -18,6 +18,9 @@ fn make_progress_bar(len: usize, label: &str) -> ProgressBar {
 
 /// Run `f` with a progress bar of `len` steps, cleared when it returns.
 pub fn with_bar<T>(len: usize, label: &str, f: impl FnOnce(&dyn Progress, &CancelToken) -> T) -> T {
+    // Every long run goes through here, and nothing waits for the user
+    // in between, so this is where the computer is kept awake.
+    let _awake = crate::awake::KeepAwake::new();
     let pb = make_progress_bar(len, label);
     let out = f(&BarProgress(pb.clone()), &CancelToken::new());
     pb.finish_and_clear();
