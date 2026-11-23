@@ -182,7 +182,8 @@ fn pco2(list: u32, cues: &[&Cue], bpm_for_loops: f64) -> Section {
         e.extend_from_slice(&[0x00, 0x03, 0xe8]);
         e.extend_from_slice(&ms(c.start).to_be_bytes());
         e.extend_from_slice(&loop_ms(c).to_be_bytes());
-        e.push(0); // memory cue colour id: the XML carries none
+        // The colour of a memory cue or loop; a hot cue's follows its comment.
+        e.push(c.colour.filter(|_| list == MEMORY).unwrap_or(0));
         e.extend_from_slice(&[0x01, 0, 0, 0, 0, 0, 0]);
         let (num, den) = loop_fraction(c, bpm_for_loops);
         e.extend_from_slice(&num.to_be_bytes());
@@ -371,6 +372,30 @@ mod tests {
         };
         assert_eq!(loop_fraction(&l, 83.5), (8, 1));
         assert_eq!(pcob(MEMORY, &[&l], None).bytes[24 + 28], 2);
+    }
+
+    #[test]
+    fn a_memory_cue_carries_its_colour() {
+        let cue = |num: i32| Cue {
+            start: 1.0,
+            num,
+            colour: Some(3),
+            ..Default::default()
+        };
+        let plain = Cue {
+            colour: None,
+            ..cue(-1)
+        };
+        // the colour sits at 0x1c of the entry, which follows the 20-byte header
+        let colour = |list: u32, c: &Cue| pco2(list, &[c], 0.0).bytes[20 + 0x1c];
+        assert_eq!(colour(MEMORY, &cue(-1)), 3);
+        assert_eq!(colour(MEMORY, &plain), 0);
+        assert_eq!(colour(HOT, &cue(0)), 0);
+        let (with, without) = (pco2(MEMORY, &[&cue(-1)], 0.0), pco2(MEMORY, &[&plain], 0.0));
+        let other: Vec<usize> = (0..with.bytes.len())
+            .filter(|&i| with.bytes[i] != without.bytes[i])
+            .collect();
+        assert_eq!(other, [20 + 0x1c]);
     }
 
     #[test]

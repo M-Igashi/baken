@@ -339,6 +339,13 @@ fn print_plan(plan: &Plan) {
     for w in plan.active_loop_warnings() {
         println!("{} {w}", style("⚠").yellow());
     }
+    if plan.coloured_memory_cues() > 0 {
+        println!(
+            "{} {} memory cues get a colour from their name (as in [red] Drop)",
+            style("▸").cyan(),
+            plan.coloured_memory_cues()
+        );
+    }
     for s in &plan.skipped {
         println!("{} Skipped {}: {}", style("⚠").yellow(), s.name, s.reason);
     }
