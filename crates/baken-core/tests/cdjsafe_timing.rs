@@ -20,17 +20,19 @@ fn encode(path: &Path, codec_args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// The sample where the first click peaks, as `decode_with` hands it out.
-fn first_click(path: &Path) -> usize {
+/// Seconds to the peak of the first click, as `decode_with` hands it out.
+fn first_click(path: &Path) -> f64 {
     let mut mono = Vec::new();
+    let mut rate = 0;
     let ext = path.extension().and_then(|e| e.to_str());
-    decode_with(std::fs::File::open(path).unwrap(), ext, |buf, _, ch| {
+    decode_with(std::fs::File::open(path).unwrap(), ext, |buf, r, ch| {
+        rate = r;
         mono.extend(buf.chunks(ch).map(|f| f.iter().sum::<f32>().abs()));
     })
     .unwrap();
-    let window = &mono[..22050];
+    let window = &mono[..rate as usize / 2];
     let peak = window.iter().cloned().fold(0.0, f32::max);
-    window.iter().position(|&x| x == peak).unwrap()
+    window.iter().position(|&x| x == peak).unwrap() as f64 / f64::from(rate)
 }
 
 fn temp_dir() -> PathBuf {
@@ -43,14 +45,29 @@ fn temp_dir() -> PathBuf {
 #[test]
 fn a_transcode_keeps_the_source_timeline() {
     let dir = temp_dir();
-    let sources: [(&str, &[&str]); 4] = [
-        ("lossless.flac", &["-c:a", "flac"]),
-        ("lame-vbr.mp3", &["-c:a", "libmp3lame", "-q:a", "2"]),
-        ("lame-cbr.mp3", &["-c:a", "libmp3lame", "-b:a", "192k"]),
-        ("aac.m4a", &["-c:a", "aac", "-b:a", "256k"]),
+    // Tolerance in seconds: two samples, or one of an 8 kHz source.
+    let sources: [(&str, &[&str], f64); 5] = [
+        ("lossless.flac", &["-c:a", "flac"], 2.0 / 44100.0),
+        (
+            "lame-vbr.mp3",
+            &["-c:a", "libmp3lame", "-q:a", "2"],
+            2.0 / 44100.0,
+        ),
+        (
+            "lame-cbr.mp3",
+            &["-c:a", "libmp3lame", "-b:a", "192k"],
+            2.0 / 44100.0,
+        ),
+        ("aac.m4a", &["-c:a", "aac", "-b:a", "256k"], 2.0 / 44100.0),
+        // MPEG-2.5 with an Info frame: the one case that pads instead of cutting
+        (
+            "lame-8k.mp3",
+            &["-c:a", "libmp3lame", "-ar", "8000", "-b:a", "32k"],
+            1.0 / 8000.0,
+        ),
     ];
     let mut checked = 0;
-    for (name, args) in sources {
+    for (name, args, tolerance) in sources {
         let src = dir.join(name);
         if !encode(&src, args) {
             eprintln!("ffmpeg cannot write {name}, skipping it");
@@ -61,8 +78,8 @@ fn a_transcode_keeps_the_source_timeline() {
         assert!(cdjsafe::is_aligned(&out), "{name}: no mark");
         let (before, after) = (first_click(&src), first_click(&out));
         assert!(
-            before.abs_diff(after) <= 2,
-            "{name}: click at {before} in the source, {after} in the MP3"
+            (before - after).abs() <= tolerance,
+            "{name}: click at {before:.5} s in the source, {after:.5} s in the MP3"
         );
         checked += 1;
     }

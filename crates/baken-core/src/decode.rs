@@ -17,14 +17,16 @@ use crate::{Error, Result};
 
 /// Decode the default audio track of `file`, handing every decoded buffer to
 /// `sink` as interleaved f32 with its sample rate and channel count, and return
-/// the codec. The audio is on the timeline rekordbox and the players use, so
-/// that waveforms made from it line up with their grids and cues (issue #374):
-/// an MP3 keeps the encoder and decoder delay that a gapless decoder would cut,
-/// and an `Info` header frame counts as a frame of silence, as rekordbox
-/// decodes it. AAC keeps its priming, which symphonia does not cut either. `extension` is a hint for the format probe. Rate and channel
+/// the codec. `extension` is a hint for the format probe. Rate and channel
 /// count come from the decoded buffers rather than the container, since AAC
 /// parameters may not name a channel layout at all. Fails when they change
 /// mid-file or when nothing decodes; packets that fail to decode are skipped.
+///
+/// The audio is on the timeline rekordbox and the players use, so that
+/// waveforms made from it line up with their grids and cues (issue #374): an
+/// MP3 keeps the encoder and decoder delay that a gapless decoder would cut,
+/// and an `Info` header frame counts as a frame of silence, as rekordbox
+/// decodes it. AAC keeps its priming, which symphonia does not cut either.
 pub fn decode_with(
     file: File,
     extension: Option<&str>,

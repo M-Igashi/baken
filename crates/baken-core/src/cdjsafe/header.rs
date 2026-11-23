@@ -145,11 +145,12 @@ fn first_frame(buf: &[u8]) -> Option<usize> {
 /// Samples in the first frame of an MP3 when that frame is an `Info` header
 /// with a table of contents, the form LAME and ffmpeg write for CBR: 1152 for
 /// MPEG-1, 576 for MPEG-2 and 2.5. rekordbox decodes such a frame as audio,
-/// a frame of silence, where it skips a `Xing` frame (issue #374: on the
-/// library's MP3s that rekordbox 7 analysed, its waveform sits one frame
-/// later than the decoded audio on 100 files with such a frame, and on none
-/// of 10 with a `Xing` frame or the one `Info` frame without a table).
-/// `None` for everything else, other formats included.
+/// a frame of silence, where it skips a `Xing` frame (issue #374: of the
+/// library's MP3s that rekordbox 7 analysed, 135 with such a frame give its
+/// waveform only with that frame of silence in front, while 10 with a `Xing`
+/// frame and the one `Info` frame without a table give it without). MPEG-2
+/// files were not among them; they follow the same rule here. `None` for
+/// everything else, other formats included.
 pub(crate) fn info_frame_samples<R: Read + Seek>(file: &mut R) -> Option<u32> {
     let mut head = |offset: u64| -> Option<Vec<u8>> {
         file.seek(SeekFrom::Start(offset)).ok()?;
@@ -169,7 +170,11 @@ pub(crate) fn info_frame_samples<R: Read + Seek>(file: &mut R) -> Option<u32> {
     if buf.get(at..at + 4)? != b"Info" || flags & 4 == 0 {
         return None;
     }
-    Some(if (buf[start + 1] >> 3) & 3 == 3 { 1152 } else { 576 })
+    Some(if (buf[start + 1] >> 3) & 3 == 3 {
+        1152
+    } else {
+        576
+    })
 }
 
 /// `buf` is the start of the MPEG stream, after any ID3v2 tag.
@@ -277,7 +282,10 @@ mod tests {
         assert_eq!(info_frame_samples(&mut header(b"Xing", 0x0f)), None);
         let cbr: Vec<u8> = (0..10).flat_map(|_| mp3_frame(14, &[])).collect();
         assert_eq!(info_frame_samples(&mut std::io::Cursor::new(cbr)), None);
-        assert_eq!(info_frame_samples(&mut std::io::Cursor::new(b"fLaC".to_vec())), None);
+        assert_eq!(
+            info_frame_samples(&mut std::io::Cursor::new(b"fLaC".to_vec())),
+            None
+        );
     }
 
     /// Issue #331: a tag larger than the window hid the frames behind it.

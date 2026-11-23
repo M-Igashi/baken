@@ -147,8 +147,8 @@ const OUTPUT_LEAD: i64 = 576 + 529 + 1152;
 /// ID3 `TXXX` frame that marks an MP3 written with its timing matched to the
 /// source (issue #374). `expressport --cdjsafe` keeps a transcode already on
 /// the stick only when it carries this, so earlier ones are made again.
-pub const MARK_KEY: &str = "BAKEN_CDJSAFE";
-pub const MARK_VALUE: &str = "1";
+const MARK_KEY: &str = "BAKEN_CDJSAFE";
+const MARK_VALUE: &str = "1";
 
 /// Samples to cut from the start of the source (negative: samples of silence
 /// to put before it), at 44.1 kHz, so that the MP3 plays on the source's
@@ -205,9 +205,10 @@ pub fn is_aligned(path: &Path) -> bool {
 /// its LAME header states and play the `Info` frame as silence, so an MP3 of
 /// a lossless source would start 2257 samples (51 ms) late against the
 /// source's cues and grid. The start is cut or padded by [`alignment`] to
-/// keep them where they were (issue #374): the first 51 ms of a lossless
-/// source become silence, an AAC or MP3 source loses only what its own
-/// encoder put there.
+/// keep them where they were (issue #374). The cut takes the first 51 ms of
+/// a lossless source; of an MP3 or AAC source part of it is that file's own
+/// encoder delay, which leaves 26 ms of a VBR MP3, 3 ms of an AAC file and
+/// nothing of a CBR MP3 with an `Info` frame.
 pub fn transcode(src: &Path, dst: &Path) -> Result<()> {
     let info = probe(src)?;
     let info_frame = (info.codec == "mp3")
@@ -309,6 +310,8 @@ mod tests {
         assert_eq!(alignment(44100, Some(1152)), 1105);
         assert_eq!(alignment(48000, Some(1152)), 1199);
         assert_eq!(alignment(22050, Some(576)), 1105);
+        // MPEG-2.5: one frame is longer than the new lead, so silence is added
+        assert_eq!(alignment(8000, Some(576)), -918);
     }
 
     #[test]
