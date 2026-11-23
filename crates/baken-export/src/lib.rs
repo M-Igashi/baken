@@ -1654,8 +1654,11 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack, shift: f64) -> anyhow::Result<P
             None
         };
         let audio = generate::measure_delayed(&pt.source, shift)?;
-        let files =
+        let mut files =
             generate::build_files(&track, &pt.device.usb_path, &audio, mp3.map(|m| m.frames));
+        if pt.device.file_type == pdb::rows::FILE_TYPE_FLAC {
+            add_seek_table(&mut files[1], &pt.source);
+        }
         return Ok(Prepared {
             files: FileKind::ALL.into_iter().zip(files).collect(),
             device: with_measured(&pt.device, &audio, mp3),
@@ -1711,10 +1714,13 @@ enum SeekTable {
 /// #219). Checked again here rather than taken from the plan, since the file
 /// may have changed since: one that no longer fits is replaced by the table
 /// built from the file. A file whose frames cannot all be found loses it
-/// rather than send the player to the wrong bytes; a stick with generated
-/// analysis has none either.
+/// rather than send the player to the wrong bytes. An analysis without one
+/// gets one when the file now allows it (see [`add_seek_table`]).
 fn refresh_seek_table(ext: &mut AnlzFile, source: &Path) -> Option<SeekTable> {
-    let table = ext.find_mut(flac::TAG)?;
+    let Some(table) = ext.find_mut(flac::TAG) else {
+        add_seek_table(ext, source);
+        return None;
+    };
     if !flac::is_stale(table, source).unwrap_or(false) {
         return None;
     }
@@ -1728,6 +1734,25 @@ fn refresh_seek_table(ext: &mut AnlzFile, source: &Path) -> Option<SeekTable> {
             Some(SeekTable::Dropped)
         }
     }
+}
+
+/// Give a FLAC's `.EXT` the seek table rekordbox writes, after `PWV4` and
+/// before `PSSI`, as rekordbox places it (issue #375). Without one a
+/// CDJ-2000NXS2 loaded such FLACs slowly and wrote a partial table of its
+/// own onto the stick (rbxport PR 828). rekordbox writes none for a FLAC
+/// whose STREAMINFO gives no sample count (an encode piped through ffmpeg:
+/// 22 of the 30 FLACs it left without one on the library drive, 7 more
+/// rewritten since, 1 unreadable), and neither does [`flac::seek_table`].
+fn add_seek_table(ext: &mut AnlzFile, source: &Path) {
+    let Ok(table) = flac::seek_table(source) else {
+        return;
+    };
+    let at = ext
+        .sections
+        .iter()
+        .position(|s| &s.tag == b"PSSI")
+        .unwrap_or(ext.sections.len());
+    ext.sections.insert(at, table);
 }
 
 /// Everything that touches the stick, one track at a time in plan order. The
@@ -2156,6 +2181,48 @@ mod tests {
             frames: 44100 * 401 / 2,
             ..Default::default()
         }
+    }
+
+    /// Issue #375: a FLAC's `.EXT` gets rekordbox's seek table before
+    /// `PSSI`, unless STREAMINFO has no sample count (a piped encode), for
+    /// which rekordbox writes none either. Needs ffmpeg.
+    #[test]
+    fn a_flac_without_a_seek_table_gets_one_where_rekordbox_puts_it() {
+        use crate::anlz::section::section;
+        let dir = std::env::temp_dir().join(format!("baken-pvb2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (file, piped) = (dir.join("file.flac"), dir.join("piped.flac"));
+        let encode = |to_stdout: bool, path: &Path| {
+            let mut cmd = std::process::Command::new("ffmpeg");
+            cmd.args(["-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i"])
+                .args(["sine=frequency=440:duration=3", "-c:a", "flac"]);
+            if to_stdout {
+                let out = cmd.args(["-f", "flac", "-"]).output().ok()?;
+                std::fs::write(path, out.stdout).ok()
+            } else {
+                cmd.arg(path).status().ok()?.success().then_some(())
+            }
+        };
+        if encode(false, &file).is_none() || encode(true, &piped).is_none() {
+            eprintln!("ffmpeg not available, skipping");
+            return;
+        }
+        let ext = || AnlzFile {
+            header_tail: [0; 16],
+            sections: vec![section(b"PWV4", 24, &[]), section(b"PSSI", 32, &[])],
+        };
+        let tags = |f: &AnlzFile| f.sections.iter().map(|s| s.tag_str().to_string()).collect::<Vec<_>>();
+
+        let mut with = ext();
+        add_seek_table(&mut with, &file);
+        assert_eq!(tags(&with), ["PWV4", "PVB2", "PSSI"]);
+        assert_eq!(with.find(flac::TAG), Some(&flac::seek_table(&file).unwrap()));
+
+        let mut without = ext();
+        add_seek_table(&mut without, &piped);
+        assert_eq!(tags(&without), ["PWV4", "PSSI"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A folder keeps the case an earlier export created it with (#316).
