@@ -264,6 +264,16 @@ impl Plan {
             .count()
     }
 
+    /// Memory cues and loops that get a colour from their name, as in
+    /// `[red] Drop` (issue #379).
+    pub fn coloured_memory_cues(&self) -> usize {
+        self.tracks
+            .iter()
+            .flat_map(|t| &t.device.track.cues)
+            .filter(|c| !c.is_hot() && c.colour.is_some())
+            .count()
+    }
+
     /// Tracks whose FLAC changed after rekordbox analysed it (a headroom run
     /// re-encodes FLAC), so that its seek table is rebuilt from the file.
     pub fn stale_seek_tables(&self) -> impl Iterator<Item = &PlanTrack> {

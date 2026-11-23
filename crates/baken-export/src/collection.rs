@@ -25,6 +25,9 @@ pub struct Cue {
     pub rgb: Option<(u8, u8, u8)>,
     /// `Name` started with [`ACTIVE_LOOP_MARKER`], which is not kept in `name`.
     pub marked: bool,
+    /// The colour a marker at the start of `Name` gives a memory cue or loop,
+    /// 1 to 8 as in [`MEMORY_CUE_COLOURS`]; the marker is not kept in `name`.
+    pub colour: Option<u8>,
 }
 
 impl Cue {
@@ -44,14 +47,38 @@ impl Cue {
 /// in any case, is one (issue #210).
 pub const ACTIVE_LOOP_MARKER: &str = "[active]";
 
-fn split_marker(name: String) -> (String, bool) {
-    let trimmed = name.trim_start();
-    match trimmed.get(..ACTIVE_LOOP_MARKER.len()) {
-        Some(head) if head.eq_ignore_ascii_case(ACTIVE_LOOP_MARKER) => (
-            trimmed[ACTIVE_LOOP_MARKER.len()..].trim_start().to_string(),
-            true,
-        ),
-        _ => (name, false),
+/// rekordbox's XML gives a memory cue or loop no colour (issue #379), so one
+/// whose `Name` starts with one of these in brackets, in any case, as in
+/// `[red] Drop`, gets it. They are the names of rekordbox's eight colours;
+/// the stick stores the position in this list, counted from 1.
+pub const MEMORY_CUE_COLOURS: [&str; 8] = [
+    "pink", "red", "orange", "yellow", "green", "aqua", "blue", "purple",
+];
+
+/// The markers a cue name starts with, in any order: the name without them,
+/// whether [`ACTIVE_LOOP_MARKER`] was one, and the colour.
+fn split_markers(name: String) -> (String, bool, Option<u8>) {
+    let active = ACTIVE_LOOP_MARKER.trim_matches(['[', ']']);
+    let (mut rest, mut marked, mut colour) = (name.as_str(), false, None);
+    while let Some((word, tail)) = rest
+        .trim_start()
+        .strip_prefix('[')
+        .and_then(|t| t.split_once(']'))
+    {
+        let named = MEMORY_CUE_COLOURS
+            .iter()
+            .position(|c| c.eq_ignore_ascii_case(word));
+        match named {
+            _ if !marked && word.eq_ignore_ascii_case(active) => marked = true,
+            Some(i) if colour.is_none() => colour = Some(i as u8 + 1),
+            _ => break,
+        }
+        rest = tail;
+    }
+    if marked || colour.is_some() {
+        (rest.trim_start().to_string(), marked, colour)
+    } else {
+        (name, false, None)
     }
 }
 
@@ -249,11 +276,12 @@ impl Library {
                                 (Some(r), Some(g), Some(b)) => Some((r, g, b)),
                                 _ => None,
                             };
-                            let (name, marked) =
-                                split_marker(attr(&e, "Name")?.unwrap_or_default());
+                            let (name, marked, colour) =
+                                split_markers(attr(&e, "Name")?.unwrap_or_default());
                             t.cues.push(Cue {
                                 name,
                                 marked,
+                                colour,
                                 kind: num(&e, "Type")? as u32,
                                 start: num(&e, "Start")?,
                                 end: parsed(&e, "End")?,
@@ -473,17 +501,34 @@ mod tests {
     }
 
     #[test]
-    fn the_active_marker_is_read_and_left_out_of_the_name() {
-        let split = |n: &str| split_marker(n.to_string());
-        assert_eq!(split("[active] Build"), ("Build".to_string(), true));
-        assert_eq!(split(" [Active]Drop"), ("Drop".to_string(), true));
-        assert_eq!(split("[ACTIVE]"), (String::new(), true));
+    fn markers_are_read_and_left_out_of_the_name() {
+        let split = |n: &str| split_markers(n.to_string());
+        let name = |n: &str| n.to_string();
+        assert_eq!(split("[active] Build"), (name("Build"), true, None));
+        assert_eq!(split(" [Active]Drop"), (name("Drop"), true, None));
+        assert_eq!(split("[ACTIVE]"), (String::new(), true, None));
         assert_eq!(
             split("Build [active]"),
-            ("Build [active]".to_string(), false)
+            (name("Build [active]"), false, None)
         );
-        assert_eq!(split("[act"), ("[act".to_string(), false));
-        assert_eq!(split("ワーズワース"), ("ワーズワース".to_string(), false));
+        assert_eq!(split("[act"), (name("[act"), false, None));
+        assert_eq!(split("ワーズワース"), (name("ワーズワース"), false, None));
+
+        assert_eq!(split("[pink]"), (String::new(), false, Some(1)));
+        assert_eq!(split("[Red] Drop"), (name("Drop"), false, Some(2)));
+        assert_eq!(split("[PURPLE]Outro"), (name("Outro"), false, Some(8)));
+        assert_eq!(
+            split("[active][aqua] Build"),
+            (name("Build"), true, Some(6))
+        );
+        assert_eq!(
+            split("[blue] [active] Build"),
+            (name("Build"), true, Some(7))
+        );
+        // a second colour, and a word that is no marker, stay in the name
+        assert_eq!(split("[red][blue] x"), (name("[blue] x"), false, Some(2)));
+        assert_eq!(split("[intro] x"), (name("[intro] x"), false, None));
+        assert_eq!(split(" Drop [red]"), (name(" Drop [red]"), false, None));
     }
 
     #[test]
