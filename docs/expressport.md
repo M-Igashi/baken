@@ -67,7 +67,7 @@ The My Settings files `MYSETTING.DAT`, `MYSETTING2.DAT` and `DJMMYSETTING.DAT` a
 
 ### CDJ Safe on the way (`--cdjsafe`)
 
-`--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players.
+`--cdjsafe` transcodes every track to 320 kbps CBR MP3 on the way and ships it with the source track's analysis, for pre-NXS2 players. An MP3 plays 51 ms later than a lossless source does, as rekordbox and the players decode it (25 ms for a CBR MP3 source), so the analysis is moved by that much: every beat of the grid, every cue, and the scrolling waveforms, which get eight columns of silence in front (2 ms coarser than the shift). No sample of the audio is cut. Up to 4.14.0 the analysis went out unmoved and sat 51 ms ahead of the audio ([#374](https://github.com/M-Igashi/baken/issues/374)).
 
 ### Artwork (`--artwork`)
 
@@ -129,7 +129,7 @@ The Device Library (`export.pdb`) is what the CDJ-3000, CDJ-2000NXS2, XDJ-XZ and
 
 ### What is written again
 
-Audio already on the stick stays when it still matches its source, so re-running after a playlist change is quick: a copied file when its size and 64 KiB at its start, middle and end match the source, a `--cdjsafe` MP3 when it is whole and was written at least an hour after the source last changed (the hour absorbs the clock change, which shifts every time on a FAT stick). Anything else is written again, so a re-export after `baken headroom`, which changes MP3 and AAC files in place at the same size, carries the new audio ([#231](https://github.com/M-Igashi/baken/issues/231)). `export.pdb` is rebuilt every run.
+Audio already on the stick stays when it still matches its source, so re-running after a playlist change is quick: a copied file when its size and 64 KiB at its start, middle and end match the source, a `--cdjsafe` MP3 when it is whole, was written at least an hour after the source last changed (the hour absorbs the clock change, which shifts every time on a FAT stick), and says in its tags how much later than its source it plays (MP3s that 4.14.0 or earlier put there do not, and are converted again once). Anything else is written again, so a re-export after `baken headroom`, which changes MP3 and AAC files in place at the same size, carries the new audio ([#231](https://github.com/M-Igashi/baken/issues/231)). `export.pdb` is rebuilt every run.
 
 ### What the stick keeps from its last export
 

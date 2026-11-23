@@ -239,12 +239,23 @@ impl Meter {
 
 /// Decode `path` and measure it on the way.
 pub fn measure(path: &Path) -> anyhow::Result<Measured> {
+    measure_delayed(path, 0.0)
+}
+
+/// [`measure`] with `delay` seconds of silence before the audio, for a
+/// `--cdjsafe` MP3 that plays that much later than `path` (issue #374).
+pub fn measure_delayed(path: &Path, delay: f64) -> anyhow::Result<Measured> {
     let file = std::fs::File::open(path)?;
     let extension = path.extension().and_then(|e| e.to_str());
     let mut meter: Option<Meter> = None;
     decode_with(file, extension, |chunk, rate, channels| {
         meter
-            .get_or_insert_with(|| Meter::new(rate, channels))
+            .get_or_insert_with(|| {
+                let mut meter = Meter::new(rate, channels);
+                let frames = (delay.max(0.0) * f64::from(rate)).round() as usize;
+                meter.push(&vec![0.0; frames * channels]);
+                meter
+            })
             .push(chunk)
     })?;
     Ok(meter.map(Meter::finish).unwrap_or_default())

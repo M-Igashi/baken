@@ -1,6 +1,7 @@
-//! A cdjsafe MP3 plays on its source's timeline as rekordbox and the players
-//! decode it (issue #374): a click lands on the same sample before and after
-//! the transcode. Needs ffmpeg on `PATH`; returns early without it.
+//! A cdjsafe MP3 plays later than its source by exactly the shift `transcode`
+//! reports, as rekordbox and the players decode both (issue #374): a click
+//! lands that much later, and no sample is cut. Needs ffmpeg on `PATH`;
+//! returns early without it.
 
 use baken_core::cdjsafe;
 use baken_core::decode::decode_with;
@@ -45,41 +46,53 @@ fn temp_dir() -> PathBuf {
 #[test]
 fn a_transcode_keeps_the_source_timeline() {
     let dir = temp_dir();
-    // Tolerance in seconds: two samples, or one of an 8 kHz source.
-    let sources: [(&str, &[&str], f64); 5] = [
-        ("lossless.flac", &["-c:a", "flac"], 2.0 / 44100.0),
+    // Shift in samples, and the tolerance in seconds: two samples, or one of
+    // an 8 kHz source.
+    let (lossless, with_info) = (2257, 1105);
+    let sources: [(&str, &[&str], u32, f64); 5] = [
+        ("lossless.flac", &["-c:a", "flac"], lossless, 2.0 / 44100.0),
         (
             "lame-vbr.mp3",
             &["-c:a", "libmp3lame", "-q:a", "2"],
+            lossless,
             2.0 / 44100.0,
         ),
         (
             "lame-cbr.mp3",
             &["-c:a", "libmp3lame", "-b:a", "192k"],
+            with_info,
             2.0 / 44100.0,
         ),
-        ("aac.m4a", &["-c:a", "aac", "-b:a", "256k"], 2.0 / 44100.0),
-        // MPEG-2.5 with an Info frame: the one case that pads instead of cutting
+        (
+            "aac.m4a",
+            &["-c:a", "aac", "-b:a", "256k"],
+            lossless,
+            2.0 / 44100.0,
+        ),
+        // MPEG-2.5 with an Info frame: silence in front instead of a shift
         (
             "lame-8k.mp3",
             &["-c:a", "libmp3lame", "-ar", "8000", "-b:a", "32k"],
+            0,
             1.0 / 8000.0,
         ),
     ];
     let mut checked = 0;
-    for (name, args, tolerance) in sources {
+    for (name, args, expected, tolerance) in sources {
         let src = dir.join(name);
         if !encode(&src, args) {
             eprintln!("ffmpeg cannot write {name}, skipping it");
             continue;
         }
         let out = dir.join(format!("{name}.cdjsafe.mp3"));
-        cdjsafe::transcode(&src, &out).unwrap();
-        assert!(cdjsafe::is_aligned(&out), "{name}: no mark");
+        let shift = cdjsafe::transcode(&src, &out).unwrap();
+        assert_eq!(cdjsafe::shift_of(&out), Some(shift), "{name}: no note");
+        assert_eq!(cdjsafe::shift_of(&src), None);
+        assert_eq!(shift, expected as f64 / 44100.0, "{name}");
         let (before, after) = (first_click(&src), first_click(&out));
         assert!(
-            (before - after).abs() <= tolerance,
-            "{name}: click at {before:.5} s in the source, {after:.5} s in the MP3"
+            (before + shift - after).abs() <= tolerance,
+            "{name}: click at {before:.5} s in the source, {after:.5} s in the MP3, shift {shift:.5}"
         );
         checked += 1;
     }

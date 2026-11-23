@@ -1513,13 +1513,13 @@ impl Drop for TempFile {
 }
 
 fn prepare(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
-    let (audio, frames) = if plan.cdjsafe {
-        let (audio, frames) = cdjsafe_audio(plan, pt)?;
-        (audio, Some(frames))
+    let (audio, frames, shift) = if plan.cdjsafe {
+        let (audio, frames, shift) = cdjsafe_audio(plan, pt)?;
+        (audio, Some(frames), shift)
     } else {
-        (Audio::Source, None)
+        (Audio::Source, None, 0.0)
     };
-    let mut prepared = prepare_analysis(plan, pt)?;
+    let mut prepared = prepare_analysis(plan, pt, shift)?;
     // `PVBR` describes the MP3 that ends up on the stick, whichever that is
     if let Some(frames) = frames {
         for (kind, file) in &mut prepared.files {
@@ -1569,23 +1569,31 @@ fn artwork_on_stick(plan: &Plan, pt: &PlanTrack, audio: &Audio) -> bool {
             .all(|(path, _)| len(path).is_some_and(|n| n > 0))
 }
 
-/// `--cdjsafe`: the MP3 for the stick and its audio frames, encoded here on
-/// the worker so that the encoder never waits for the stick and the stick
-/// sees one plain copy (issue #197). A source that is already 320 kbps CBR
-/// MP3 goes as it is, and a copy of it already on the stick is judged by its
-/// bytes in [`write_track`] like any copied track. A transcode already on the
-/// stick is kept only when it still fits its source (issue #231).
-fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<(Audio, u32)> {
+/// `--cdjsafe`: the MP3 for the stick, its audio frames, and the seconds by
+/// which it plays later than the source (what the analysis has to move by,
+/// issue #374). It is encoded here on the worker so that the encoder never
+/// waits for the stick and the stick sees one plain copy (issue #197). A
+/// source that is already 320 kbps CBR MP3 goes as it is, and a copy of it
+/// already on the stick is judged by its bytes in [`write_track`] like any
+/// copied track. A transcode already on the stick is kept only when it still
+/// fits its source (issue #231).
+fn cdjsafe_audio(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<(Audio, u32, f64)> {
     if baken_core::cdjsafe::probe(&pt.source)?.is_compatible_mp3() {
-        return Ok((Audio::Source, rewrite::mp3_audio(&pt.source)?.frames));
+        // The stick's own transcode standing in for a source that is away
+        // (issue #291) still plays later than the source the analysis is of.
+        let shift = match pt.source_offline {
+            true => baken_core::cdjsafe::shift_of(&pt.source).unwrap_or(0.0),
+            false => 0.0,
+        };
+        return Ok((Audio::Source, rewrite::mp3_audio(&pt.source)?.frames, shift));
     }
-    if let Some(frames) = transcode_on_stick(plan, pt) {
-        return Ok((Audio::OnStick, frames));
+    if let Some((frames, shift)) = transcode_on_stick(plan, pt) {
+        return Ok((Audio::OnStick, frames, shift));
     }
     let tmp = TempFile::new("mp3");
-    baken_core::cdjsafe::transcode(&pt.source, &tmp.0)?;
+    let shift = baken_core::cdjsafe::transcode(&pt.source, &tmp.0)?;
     let frames = rewrite::mp3_audio(&tmp.0)?.frames;
-    Ok((Audio::Transcoded(tmp), frames))
+    Ok((Audio::Transcoded(tmp), frames, shift))
 }
 
 /// How much later than the source's last change a transcode on the stick
@@ -1611,38 +1619,43 @@ fn newer_than_source(dest: &Path, source: &Path) -> bool {
     }
 }
 
-/// The frames of the transcode already on the stick, when it can stay: it
-/// was written at least [`TRANSCODE_MARGIN`] after the source last changed
-/// (a headroom run, a re-rip), with its timing matched to the source (up to
-/// 4.14.0 it was not, issue #374), and it is a whole 320 kbps CBR MP3 at
-/// 44.1 kHz, not a copy cut short by an interrupted export or a file another
-/// export left there. The stick file is only read once its time says it may
-/// stay.
-fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<u32> {
+/// The frames of the transcode already on the stick and the seconds it plays
+/// later than its source, when it can stay: it was written at least
+/// [`TRANSCODE_MARGIN`] after the source last changed (a headroom run, a
+/// re-rip), it says how much later it plays (up to 4.14.0 transcodes were
+/// made another way and say nothing, issue #374), and it is a whole 320 kbps
+/// CBR MP3 at 44.1 kHz, not a copy cut short by an interrupted export or a
+/// file another export left there. The stick file is only read once its time
+/// says it may stay.
+fn transcode_on_stick(plan: &Plan, pt: &PlanTrack) -> Option<(u32, f64)> {
     let dest = device_path(&plan.device, &pt.device.usb_path);
-    if !newer_than_source(&dest, &pt.source) || !baken_core::cdjsafe::is_aligned(&dest) {
+    if !newer_than_source(&dest, &pt.source) {
         return None;
     }
+    let shift = baken_core::cdjsafe::shift_of(&dest)?;
     let mp3 = rewrite::mp3_audio(&dest).ok()?;
-    (mp3.complete && mp3.sample_rate == 44100 && mp3.kbps() == Some(320)).then_some(mp3.frames)
+    (mp3.complete && mp3.sample_rate == 44100 && mp3.kbps() == Some(320))
+        .then_some((mp3.frames, shift))
 }
 
 /// The analysis files: rekordbox's own rewritten for the stick, or generated
-/// from the audio. `--cdjsafe` sets `PVBR` afterwards, in [`prepare`].
-fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
+/// from the audio. `--cdjsafe` sets `PVBR` afterwards, in [`prepare`], and
+/// its MP3 plays `shift` seconds later than the source, so grid, cues and
+/// scrolling waveforms move by that much (issue #374).
+fn prepare_analysis(plan: &Plan, pt: &PlanTrack, shift: f64) -> anyhow::Result<Prepared> {
+    let track = match shift > 0.0 {
+        true => std::borrow::Cow::Owned(pt.device.track.delayed(shift)),
+        false => std::borrow::Cow::Borrowed(&pt.device.track),
+    };
     let Some(entry) = &pt.anlz else {
         let mp3 = if pt.device.file_type == pdb::rows::FILE_TYPE_MP3 && !plan.cdjsafe {
             Some(rewrite::mp3_audio(&pt.source)?)
         } else {
             None
         };
-        let audio = generate::measure(&pt.source)?;
-        let files = generate::build_files(
-            &pt.device.track,
-            &pt.device.usb_path,
-            &audio,
-            mp3.map(|m| m.frames),
-        );
+        let audio = generate::measure_delayed(&pt.source, shift)?;
+        let files =
+            generate::build_files(&track, &pt.device.usb_path, &audio, mp3.map(|m| m.frames));
         return Ok(Prepared {
             files: FileKind::ALL.into_iter().zip(files).collect(),
             device: with_measured(&pt.device, &audio, mp3),
@@ -1669,9 +1682,10 @@ fn prepare_analysis(plan: &Plan, pt: &PlanTrack) -> anyhow::Result<Prepared> {
             &mut file,
             kind,
             &pt.device.usb_path,
-            &pt.device.track.cues,
-            pt.device.track.grid_bpm(),
+            &track.cues,
+            track.grid_bpm(),
         );
+        rewrite::delay(&mut file, kind, shift);
         if kind == FileKind::Ext && pt.device.file_type == pdb::rows::FILE_TYPE_FLAC {
             seek_table = refresh_seek_table(&mut file, &pt.source);
         }

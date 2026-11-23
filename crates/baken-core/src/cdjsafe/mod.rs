@@ -15,7 +15,7 @@ mod xml;
 
 pub(crate) use header::{info_frame_samples, WAVE_FORMAT_EXTENSIBLE};
 pub use location::{decode_location, encode_location, sanitize_filename, stick_path};
-pub use transcode::{is_aligned, probe, transcode, SourceInfo};
+pub use transcode::{probe, shift_of, transcode, SourceInfo};
 pub use xml::CDJSAFE_FOLDER_NAME;
 
 use anyhow::Context;
@@ -281,7 +281,7 @@ pub fn convert(
     let total = plan.sources.len();
     let done = AtomicUsize::new(0);
 
-    let results: Vec<Option<anyhow::Result<Action>>> = plan
+    let results: Vec<Option<anyhow::Result<(Action, f64)>>> = plan
         .sources
         .par_iter()
         .zip(&dest_paths)
@@ -300,10 +300,14 @@ pub fn convert(
     }
 
     let mut actions = Vec::with_capacity(total);
+    let mut shifts = Vec::with_capacity(total);
     let mut failures = Vec::new();
     for (src, result) in plan.sources.iter().zip(results.into_iter().flatten()) {
         match result {
-            Ok(action) => actions.push(action),
+            Ok((action, shift)) => {
+                actions.push(action);
+                shifts.push(shift);
+            }
             Err(e) => failures.push(format!("{}: {:#}", src.name, e)),
         }
     }
@@ -315,7 +319,7 @@ pub fn convert(
     // An XML an earlier run wrote: its tracks at these files and its folder
     // are brought up to date instead of written a second time (issue #332).
     let earlier = xml::earlier(&plan.xml_data)?;
-    let new_tracks = build_new_tracks(&dest_paths, plan.max_track_id, &earlier.track_ids)?;
+    let new_tracks = build_new_tracks(&dest_paths, &shifts, plan.max_track_id, &earlier.track_ids)?;
     let replaced: HashSet<u64> = new_tracks
         .iter()
         .map(|t| t.track_id)
@@ -431,7 +435,9 @@ fn plan_filenames(sources: &[SourceTrack], out_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
+/// What was done with the track, and by how many seconds its cues and grid
+/// have to move to stay on the MP3's audio (0 for a copy).
+fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<(Action, f64)> {
     let src_path = Path::new(&src.location);
     // The XML keeps `dst` as planned; only the file on disk takes the native name.
     let dst = &crate::fsname::native(dst);
@@ -444,14 +450,15 @@ fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
 
     if info.is_compatible_mp3() {
         fs::copy(src_path, dst).context("Failed to copy")?;
-        Ok(Action::Copy)
+        Ok((Action::Copy, 0.0))
     } else {
-        transcode::transcode(src_path, dst)?;
-        if info.is_lossy() {
-            Ok(Action::ReencodeLossy)
+        let shift = transcode::transcode(src_path, dst)?;
+        let action = if info.is_lossy() {
+            Action::ReencodeLossy
         } else {
-            Ok(Action::Reencode)
-        }
+            Action::Reencode
+        };
+        Ok((action, shift))
     }
 }
 
@@ -460,13 +467,15 @@ fn process_track(src: &SourceTrack, dst: &Path) -> anyhow::Result<Action> {
 /// from the largest TrackID.
 fn build_new_tracks(
     dest_paths: &[PathBuf],
+    shifts: &[f64],
     max_track_id: u64,
     listed: &HashMap<String, u64>,
 ) -> anyhow::Result<Vec<NewTrack>> {
     let mut next = max_track_id;
     dest_paths
         .iter()
-        .map(|dst| {
+        .zip(shifts)
+        .map(|(dst, &shift)| {
             let size = fs::metadata(dst)
                 .with_context(|| format!("Missing output file {}", dst.display()))?
                 .len();
@@ -483,6 +492,7 @@ fn build_new_tracks(
                 track_id,
                 location_url: encode_location(dst),
                 size,
+                shift,
             })
         })
         .collect()
