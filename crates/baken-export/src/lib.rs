@@ -2212,12 +2212,20 @@ mod tests {
             header_tail: [0; 16],
             sections: vec![section(b"PWV4", 24, &[]), section(b"PSSI", 32, &[])],
         };
-        let tags = |f: &AnlzFile| f.sections.iter().map(|s| s.tag_str().to_string()).collect::<Vec<_>>();
+        let tags = |f: &AnlzFile| {
+            f.sections
+                .iter()
+                .map(|s| s.tag_str().to_string())
+                .collect::<Vec<_>>()
+        };
 
         let mut with = ext();
         add_seek_table(&mut with, &file);
         assert_eq!(tags(&with), ["PWV4", "PVB2", "PSSI"]);
-        assert_eq!(with.find(flac::TAG), Some(&flac::seek_table(&file).unwrap()));
+        assert_eq!(
+            with.find(flac::TAG),
+            Some(&flac::seek_table(&file).unwrap())
+        );
 
         let mut without = ext();
         add_seek_table(&mut without, &piped);
