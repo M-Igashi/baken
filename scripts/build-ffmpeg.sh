@@ -85,7 +85,7 @@ build_arch() {
   ( cd "$BUILD/work-$arch/lame-$LAME_VERSION"
     # lame 3.100 exports a symbol it no longer defines; the linker rejects the .sym file otherwise.
     sed -i '' '/lame_init_old/d' include/libmp3lame.sym
-    CC=clang CFLAGS="$cflags" LDFLAGS="-arch $arch" ./configure --host="$host" --prefix="$prefix" \
+    CC=clang CFLAGS="$cflags" LDFLAGS="-arch $arch -mmacosx-version-min=$MACOS_MIN" ./configure --host="$host" --prefix="$prefix" \
       --disable-static --enable-shared --disable-frontend --disable-gtktest >/dev/null
     make -j"$JOBS" >/dev/null && make install >/dev/null )
 
@@ -105,7 +105,7 @@ build_arch() {
       cross=(--enable-cross-compile --arch="$arch" --target-os=darwin)
     fi
     PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure --prefix="$prefix" \
-      --cc=clang --extra-cflags="$cflags -I$prefix/include" --extra-ldflags="-arch $arch -L$prefix/lib" \
+      --cc=clang --extra-cflags="$cflags -I$prefix/include" --extra-ldflags="-arch $arch -mmacosx-version-min=$MACOS_MIN -L$prefix/lib" \
       --install-name-dir=@rpath ${cross[@]+"${cross[@]}"} "${FFMPEG_FLAGS[@]}" >/dev/null
     make -j"$JOBS" >/dev/null && make install >/dev/null )
 }
@@ -145,7 +145,11 @@ fix_names() {
 }
 for f in "$DIST"/Frameworks/*.dylib; do
   [ -L "$f" ] && continue
-  install_name_tool -id "@rpath/$(basename "$f")" "$f"
+  # Keep the name the library was linked under (libavfilter.12.dylib, not the
+  # file's libavfilter.12.1.101.dylib): that is what its users ask for, and
+  # dyld refuses a library whose install name has another leaf when the
+  # binaries are built against the macOS 27.2 SDK under the hardened runtime.
+  install_name_tool -id "@rpath/$(basename "$(otool -D "$f" | tail -1)")" "$f"
   fix_names "$f"
 done
 for bin in "$DIST"/Helpers/*; do
@@ -166,6 +170,16 @@ LICENSE="$("$DIST/Helpers/ffmpeg" -hide_banner -L)"
 grep -q 'Lesser General Public' <<<"$LICENSE" || { echo "ERROR: license banner is not LGPL"; exit 1; }
 for f in "$DIST"/Helpers/* "$DIST"/Frameworks/*.dylib; do
   if otool -L "$f" | awk 'NR>1 {print $1}' | grep -q "$BUILD/prefix"; then echo "ERROR: absolute build path left in $f"; exit 1; fi
+done
+# The linker stamps the deployment target, not the compiler: without it in the
+# link flags every ffmpeg binary carried the SDK's version (26.0 in app 1.5.0,
+# 27.2 after a rebuild) and would not load on the macOS the app supports.
+for f in "$DIST"/Helpers/* "$DIST"/Frameworks/*.dylib; do
+  [ -L "$f" ] && continue
+  MINOS="$(xcrun vtool -show-build "$f" | awk '$1 == "minos" {print $2}' | sort -u | tr '\n' ' ')"
+  [ "$MINOS" = "$MACOS_MIN " ] || { echo "ERROR: $f is built for macOS $MINOS, not $MACOS_MIN"; exit 1; }
+  ID="$(otool -D "$f" | tail -1)"
+  case "$f" in *.dylib) [ -e "$DIST/Frameworks/$(basename "$ID")" ] || { echo "ERROR: $f has install name $ID, which no file in Frameworks carries"; exit 1; } ;; esac
 done
 
 {
