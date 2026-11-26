@@ -182,9 +182,10 @@ fn header_field(b: &[u8], at: usize) -> Option<String> {
 /// Those of `files` already in the stick's library folder `library`
 /// (`PIONEER` or `.PIONEER`) whose header names another program than
 /// rekordbox. rekordbox writes `rekordbox` in the
-/// software field; the one player-written file seen, the reference stick's
-/// `DEVSETTING.DAT`, names the player and its firmware (`CDJ-2000NXS2`,
-/// `1.85`). `djprofile.nxs` has no such header and is never kept.
+/// software field; a player's SAVE writes its model and firmware there. A
+/// CDJ-2000NXS2 (1.87) rewrote `MYSETTING.DAT` and `DEVSETTING.DAT` that way
+/// and left the other two as rekordbox wrote them, so one stick can hold
+/// files of both. `djprofile.nxs` has no such header and is never kept.
 pub fn player_saved(library: &Path, files: &[&'static str]) -> Vec<PlayerSaved> {
     files
         .iter()
@@ -365,6 +366,35 @@ mod tests {
         let kept = player_saved(&pioneer, &all);
         let kept: Vec<_> = kept.iter().map(|k| (k.file, k.model.as_str())).collect();
         assert_eq!(kept, [("DEVSETTING.DAT", "CDJ-2000NXS2")]);
+    }
+
+    /// MY SETTINGS > SAVE on a CDJ-2000NXS2 (1.87), over a stick whose four
+    /// files came from rekordbox.
+    #[test]
+    fn a_save_on_the_player_is_kept_and_still_validates() {
+        let saved = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.claude/fixtures/nxs2-settings-20261126");
+        if !saved.exists() {
+            return;
+        }
+        let mut all = REQUIRED.to_vec();
+        all.extend(OPTIONAL);
+        assert_eq!(player_saved(&saved.join("before"), &all), []);
+        let kept = player_saved(&saved.join("after"), &all);
+        let kept: Vec<_> = kept
+            .iter()
+            .map(|k| (k.file, k.model.as_str(), k.version.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("MYSETTING.DAT", "CDJ-2000NXS2", "1.87"),
+                ("DEVSETTING.DAT", "CDJ-2000NXS2", "1.87"),
+            ]
+        );
+        for (file, ..) in kept {
+            validate(&saved.join("after").join(file)).unwrap();
+        }
     }
 
     /// The stick's `DEVSETTING.DAT` was written by the player, its
