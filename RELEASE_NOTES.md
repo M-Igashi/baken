@@ -1,11 +1,16 @@
-# Bake'n Deck 4.15.1 - mp3rgain 3.17.1
+# Bake'n Deck 4.15.2 - mp3rgain 3.17.2, without the sha2 crate
 
-A patch release. `baken headroom` takes mp3rgain 3.17.1, which no longer crashes on M4A files with broken size fields. What baken writes is unchanged: the gains, the sticks, and the XML are the same as with 4.15.0.
+A patch release for those who build on the library crates. The `baken` program behaves exactly as 4.15.1 does: the gains, the sticks, and the XML are the same.
 
 ## Changes
 
-- **mp3rgain 3.17.1** (from 3.16.2). An M4A whose metadata item declares a 64-bit size near the maximum, or whose sample offset is near it, crashed mp3rgain where `baken headroom` uses it: the AAC gain, and reading and removing the ReplayGain tags of an AAC file. The bounds checks no longer wrap. By mp3rgain's notes the analysis and the applied gains are the same as in 3.16.2, byte for byte. The rest of mp3rgain [3.17.0](https://github.com/M-Igashi/mp3rgain/releases/tag/v3.17.0) and [3.17.1](https://github.com/M-Igashi/mp3rgain/releases/tag/v3.17.1) (`--audio-hash`, the new mp3rgui, a faster undo) is not used by baken ([#389](https://github.com/M-Igashi/baken/pull/389)).
-- **My Settings saved on a player: checked on a CDJ-2000NXS2.** Since 4.5.0 `expressport` keeps a settings file on the stick whose header names a player instead of rekordbox, so that what you saved on the player survives the next export. Until now that header had been seen on one file only. MY SETTINGS > SAVE on a CDJ-2000NXS2 (firmware 1.87) rewrites `MYSETTING.DAT` and `DEVSETTING.DAT` with `CDJ-2000NXS2` and `1.87` in the header and leaves `MYSETTING2.DAT` and `DJMMYSETTING.DAT` as rekordbox wrote them. The next export kept the two and said so: "Kept as a player saved them on the stick: MYSETTING.DAT (CDJ-2000NXS2 1.87), DEVSETTING.DAT (CDJ-2000NXS2 1.87)". No change in behaviour; the saved files are now a test ([#388](https://github.com/M-Igashi/baken/pull/388), closes [#234](https://github.com/M-Igashi/baken/issues/234)).
+- **mp3rgain 3.17.2, and no `sha2` in `baken-core`'s dependency tree.** mp3rgain 3.17.0 added an audio hash and an unconditional dependency on `sha2`, so with 4.15.1 everything that links `baken-core` got `sha2`, `digest`, `block-buffer`, `crypto-common`, `generic-array`, and `cpufeatures`, although baken never calls the hash. Bake'n Deck for Mac checks on every release that its dependency tree holds no crypto crate, because its export compliance answer rests on all cryptography running in the operating system's CommonCrypto. mp3rgain [3.17.2](https://github.com/M-Igashi/mp3rgain/releases/tag/v3.17.2) puts the hash behind a feature ([M-Igashi/mp3rgain#505](https://github.com/M-Igashi/mp3rgain/issues/505)) that `baken-core` does not enable, and the six crates are gone again. On Apple targets the tree is free of crypto crates, as it was up to 4.15.0; other targets keep the RustCrypto crates `baken-export` uses for OneLibrary. The code baken calls in mp3rgain is the same as in 3.17.1 ([#393](https://github.com/M-Igashi/baken/pull/393), closes [#392](https://github.com/M-Igashi/baken/issues/392)).
+- **`scripts/build-ffmpeg.sh`**, the published build script of the ffmpeg that Bake'n Deck for Mac bundles: `asetpts` and `adelay` join the filter list, since `cdjsafe` has needed them from 4.15.0 on (a stock ffmpeg has both), and two checks at the end no longer misread a pipe closed early. The script is in no crate and no release archive ([#391](https://github.com/M-Igashi/baken/pull/391)).
+
+## From 4.15.1
+
+- mp3rgain 3.17.1: an M4A whose metadata item or sample offset declares a size near the 64-bit maximum no longer crashes `baken headroom` ([#389](https://github.com/M-Igashi/baken/pull/389)).
+- My Settings saved on a CDJ-2000NXS2 (firmware 1.87) are kept by `expressport`, checked on the player ([#388](https://github.com/M-Igashi/baken/pull/388), [#234](https://github.com/M-Igashi/baken/issues/234)). The [4.15.1 release notes](https://github.com/M-Igashi/baken/releases/tag/v4.15.1) have the details.
 
 ## Upgrading from 4.14.0 or earlier
 
