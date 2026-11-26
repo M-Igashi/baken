@@ -61,7 +61,8 @@ FFMPEG_FLAGS=(
   --enable-encoder=pcm_s8,pcm_u8,pcm_s16le,pcm_s16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be
   --enable-parser=flac,mpegaudio,aac,mjpeg,png
   --enable-bsf=aac_adtstoasc
-  --enable-filter=loudnorm,volume,aresample,aformat,anull,format,null,scale,trim,atrim,copy
+  # asetpts and adelay: cdjsafe::transcode since baken-core 4.15.0 (the shift that keeps cues on the beat).
+  --enable-filter=loudnorm,volume,aresample,aformat,anull,format,null,scale,trim,atrim,copy,asetpts,adelay
   --enable-swresample --enable-swscale
   # png needs zlib; --disable-autodetect hides the system copy unless asked for.
   --enable-zlib
@@ -155,10 +156,14 @@ done
 echo "== verify"
 lipo -info "$DIST/Helpers/ffmpeg"
 "$DIST/Helpers/ffmpeg" -hide_banner -L | head -3
-if "$DIST/Helpers/ffmpeg" -hide_banner -buildconf | grep -q -- '--enable-gpl'; then
+# Captured first: under pipefail, ffmpeg killed by SIGPIPE when grep -q exits
+# at its match would read as "not found".
+BUILDCONF="$("$DIST/Helpers/ffmpeg" -hide_banner -buildconf)"
+if grep -q -- '--enable-gpl' <<<"$BUILDCONF"; then
   echo "ERROR: GPL component enabled"; exit 1
 fi
-"$DIST/Helpers/ffmpeg" -hide_banner -L | grep -q 'Lesser General Public' || { echo "ERROR: license banner is not LGPL"; exit 1; }
+LICENSE="$("$DIST/Helpers/ffmpeg" -hide_banner -L)"
+grep -q 'Lesser General Public' <<<"$LICENSE" || { echo "ERROR: license banner is not LGPL"; exit 1; }
 for f in "$DIST"/Helpers/* "$DIST"/Frameworks/*.dylib; do
   if otool -L "$f" | awk 'NR>1 {print $1}' | grep -q "$BUILD/prefix"; then echo "ERROR: absolute build path left in $f"; exit 1; fi
 done
