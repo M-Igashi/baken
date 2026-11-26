@@ -131,7 +131,7 @@ There is no shortage of tools that set out to replace rekordbox. Bake'n Deck is 
 - **On macOS 27**, a [BPM and key check against rekordbox, and energy and vocal tags on the stick](https://baken.ravers.workers.dev/music-understanding).
 - **Mac Tune-up** for the macOS settings that slow rekordbox down.
 
-One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel.
+One-time purchase, no subscription, no account, no network access. English and Japanese, macOS 14 or later, Apple silicon and Intel. Which versions get fixes, and when the minimum moves, is in [OS support](docs/os-support.md).
 
 ## Documentation
 
